@@ -1,0 +1,33 @@
+[package]
+name = "verbisage"
+version = "0.1.0"
+edition = "2024"
+description = "Multi-purpose word-list and word-frequency library with spell-check, swipe-typing queries, and next-word prediction"
+repository = "https://github.com/verbisage/verbisage"
+keywords = ["dictionary", "spellcheck", "text-prediction", "swipe-typing", "nlp"]
+categories = ["text-processing", "natural-language"]
+license = "MIT OR Apache-2.0"
+
+[package.metadata.docs.rs]
+features = ["sqlite", "hunspell"]
+
+[features]
+default = ["sqlite", "hunspell"]
+sqlite = ["dep:rusqlite"]
+hunspell = ["dep:zspell"]
+dbus = ["dep:zbus"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+zspell = { version = "0.5", optional = true }
+zbus = { version = "5", optional = true }
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "verbisaged"
+path = "src/bin/verbisaged.rs"
