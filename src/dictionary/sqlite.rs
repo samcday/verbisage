@@ -1,5 +1,6 @@
-use std::path::Path;
 use std::error::Error;
+use std::path::Path;
+use std::sync::Mutex;
 
 use rusqlite::Connection;
 
@@ -22,12 +23,11 @@ type SharedError = Box<dyn Error + Send + Sync>;
 ///
 /// # Thread safety
 ///
-/// [`rusqlite::Connection`] is `Send` but **not** `Sync`.  Cloning this
-/// struct opens a fresh `:memory:` connection — the clone is *not* a
-/// reference to the same database.  To share a single connection across
-/// threads, wrap it in a `Mutex`.
+/// The inner [`rusqlite::Connection`] is wrapped in a [`Mutex`] so that the
+/// backend implements [`Sync`].  Clone opens a fresh `:memory:` database
+/// and is *not* connected to the original file.
 pub struct SqliteDictionaryBackend {
-    conn: Connection,
+    conn: Mutex<Connection>,
     table_name: String,
     word_column: String,
     frequency_column: String,
@@ -65,7 +65,7 @@ impl SqliteDictionaryBackend {
         );
 
         Ok(Self {
-            conn,
+            conn: Mutex::new(conn),
             table_name: table_name.to_string(),
             word_column: word_column.to_string(),
             frequency_column: frequency_column.to_string(),
@@ -76,7 +76,7 @@ impl SqliteDictionaryBackend {
     /// Create an in-memory database (`:memory:`).
     pub fn new() -> Self {
         Self {
-            conn: Connection::open(":memory:").unwrap(),
+            conn: Mutex::new(Connection::open(":memory:").unwrap()),
             table_name: "words".to_string(),
             word_column: "word".to_string(),
             frequency_column: "frequency".to_string(),
@@ -98,14 +98,13 @@ impl SqliteDictionaryBackend {
             "SELECT {} FROM {} WHERE {} = ?1 LIMIT 1",
             self.frequency_column, self.table_name, self.word_column
         );
-        if let Ok(mut stmt) = self.conn.prepare(&sql) {
-            if let Ok(mut rows) = stmt.query_map([word], |row| {
-                match row.get::<_, f64>(0) {
-                    Ok(f) => Ok(f),
-                    Err(_) => {
-                        let int_freq: i64 = row.get(0)?;
-                        Ok(int_freq as f64)
-                    }
+        let conn = self.conn.lock().unwrap();
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            if let Ok(mut rows) = stmt.query_map([word], |row| match row.get::<_, f64>(0) {
+                Ok(f) => Ok(f),
+                Err(_) => {
+                    let int_freq: i64 = row.get(0)?;
+                    Ok(int_freq as f64)
                 }
             }) {
                 if let Some(result) = rows.next() {
@@ -118,7 +117,8 @@ impl SqliteDictionaryBackend {
 
     pub fn len(&self) -> usize {
         let sql = format!("SELECT COUNT(*) FROM {}", self.table_name);
-        if let Ok(mut stmt) = self.conn.prepare(&sql) {
+        let conn = self.conn.lock().unwrap();
+        if let Ok(mut stmt) = conn.prepare(&sql) {
             if let Ok(mut rows) = stmt.query_map([], |row| Ok(row.get::<_, i64>(0)?)) {
                 if let Some(result) = rows.next() {
                     return result.unwrap_or(0) as usize;
@@ -176,7 +176,8 @@ impl DictionaryBackend for SqliteDictionaryBackend {
             );
 
             let mut all_results = Vec::new();
-            if let Ok(mut stmt) = self.conn.prepare(&sql) {
+            let conn = self.conn.lock().unwrap();
+            if let Ok(mut stmt) = conn.prepare(&sql) {
                 if let Ok(rows) = stmt.query_map([], |row| {
                     let word: String = row.get(0)?;
                     let frequency = match row.get::<_, f64>(1) {
@@ -217,8 +218,8 @@ impl DictionaryBackend for SqliteDictionaryBackend {
             "SELECT 1 FROM {} WHERE {} = ?1 LIMIT 1",
             self.table_name, self.word_column
         );
-        self.conn
-            .prepare(&sql)
+        let conn = self.conn.lock().unwrap();
+        conn.prepare(&sql)
             .and_then(|mut stmt| stmt.exists([word]))
             .unwrap_or(false)
     }
@@ -231,7 +232,7 @@ impl Clone for SqliteDictionaryBackend {
     /// original file.  The clone is fully independent and empty.
     fn clone(&self) -> Self {
         Self {
-            conn: Connection::open(":memory:").unwrap(),
+            conn: Mutex::new(Connection::open(":memory:").unwrap()),
             table_name: self.table_name.clone(),
             word_column: self.word_column.clone(),
             frequency_column: self.frequency_column.clone(),
@@ -321,11 +322,8 @@ mod tests {
 
         {
             let conn = Connection::open(&db_path).unwrap();
-            conn.execute(
-                "CREATE TABLE dict (w TEXT NOT NULL, f REAL NOT NULL)",
-                [],
-            )
-            .unwrap();
+            conn.execute("CREATE TABLE dict (w TEXT NOT NULL, f REAL NOT NULL)", [])
+                .unwrap();
             for (w, f) in &[("hello", 10.0), ("help", 5.0), ("world", 1.0)] {
                 conn.execute(
                     "INSERT INTO dict (w, f) VALUES (?1, ?2)",

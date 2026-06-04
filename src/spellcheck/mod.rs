@@ -18,3 +18,11 @@ pub mod sqlite;
 
 #[cfg(feature = "hunspell")]
 pub mod hunspell;
+
+pub use dictionary::DictionarySpellChecker;
+
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteSpellChecker;
+
+#[cfg(feature = "hunspell")]
+pub use hunspell::HunspellSpellChecker;

@@ -36,7 +36,7 @@ impl FileDictionaryBackend {
         let mut words = HashMap::new();
         let mut words_sorted = Vec::new();
         let mut prefixes = HashSet::new();
-        let mut length_buckets = HashMap::new();
+        let mut length_buckets: HashMap<usize, Vec<String>> = HashMap::new();
 
         for line in reader.lines() {
             let line = line?;
@@ -77,7 +77,7 @@ impl FileDictionaryBackend {
         let mut words = HashMap::new();
         let mut words_sorted = Vec::new();
         let mut prefixes = HashSet::new();
-        let mut length_buckets = HashMap::new();
+        let mut length_buckets: HashMap<usize, Vec<String>> = HashMap::new();
 
         for line in reader.lines() {
             let line = line?;
@@ -198,11 +198,7 @@ impl DictionaryBackend for FileDictionaryBackend {
                 if SharedQueryCache::result_matches_query(word, query) {
                     all_results.push(DictionaryResult {
                         word: word.clone(),
-                        confidence: if confidence > 0.0 {
-                            confidence
-                        } else {
-                            -1.0
-                        },
+                        confidence: if confidence > 0.0 { confidence } else { -1.0 },
                     });
                     break;
                 }

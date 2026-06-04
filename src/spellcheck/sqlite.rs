@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use crate::dictionary::{
-    DictionaryBackend, DictionaryQuery, SharedQueryCache, SqliteDictionaryBackend,
-};
+use crate::dictionary::{DictionaryBackend, DictionaryQuery, SqliteDictionaryBackend};
 use crate::spellcheck::SpellChecker;
 
 /// [`SpellChecker`] implementation backed by [`SqliteDictionaryBackend`].
@@ -32,7 +30,7 @@ impl SpellChecker for SqliteSpellChecker {
     }
 
     fn suggest(&self, word: &str) -> Vec<String> {
-        let mut candidates = Vec::new();
+        let mut candidates: Vec<String> = Vec::new();
 
         // 1. Query with exact prefix.
         let exact = self.backend.query_prefixes(&[DictionaryQuery {
@@ -98,45 +96,11 @@ fn prefix_overlap(input: &str, candidate: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dictionary::{DictionaryBackend, DictionaryQuery, DictionaryResult};
-
-    // Helper: build an in‑memory backend with known words.
-    fn backend_with_words(words: &[(&str, f64)]) -> Arc<SqliteDictionaryBackend> {
-        let b = SqliteDictionaryBackend::new();
-        let conn = rusqlite::Connection::open(":memory:").unwrap();
-        conn.execute("CREATE TABLE words (word TEXT, frequency REAL)", [])
-            .unwrap();
-        for (w, f) in words {
-            conn.execute(
-                "INSERT INTO words (word, frequency) VALUES (?1, ?2)",
-                [*w, &f.to_string()],
-            )
-            .unwrap();
-        }
-        // We can't replace the connection after construction, so test via
-        // the public API only.
-        Arc::new(b)
-    }
 
     #[test]
-    fn sqlite_is_correct() {
+    fn empty_backend_contains_nothing() {
         let b = SqliteDictionaryBackend::new();
-        // Insert words
-        {
-            use rusqlite::Connection;
-            let conn = Connection::open(":memory:").unwrap();
-            conn.execute("CREATE TABLE words (word TEXT, frequency REAL)", [])
-                .unwrap();
-            conn.execute(
-                "INSERT INTO words (word, frequency) VALUES (?1, ?2)",
-                ["hello", "1.0"],
-            )
-            .unwrap();
-            // can't modify the backend's connection externally,
-            // so this is just a structural test.
-        }
         let checker = SqliteSpellChecker::new(Arc::new(b));
-        // The empty backend won't contain anything.
         assert!(!checker.is_correct("hello"));
     }
 }

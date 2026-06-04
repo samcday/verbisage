@@ -5,11 +5,7 @@ use std::collections::HashSet;
 /// Variants are emitted longest-first so callers see the most specific
 /// matches before shorter (less discriminative) ones.  Stops early once
 /// `limit` variants have been collected.
-pub fn generate_subsequence_variants(
-    chars: &[char],
-    max_len: usize,
-    limit: usize,
-) -> Vec<String> {
+pub fn generate_subsequence_variants(chars: &[char], max_len: usize, limit: usize) -> Vec<String> {
     let mut variants = Vec::new();
     let mut seen = HashSet::new();
     let cap = limit.max(1);

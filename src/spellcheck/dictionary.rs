@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::dictionary::{DictionaryBackend, DictionaryQuery, SharedQueryCache};
+use crate::dictionary::{DictionaryBackend, DictionaryQuery};
 use crate::spellcheck::SpellChecker;
 
 /// Generic [`SpellChecker`] implementation backed by any [`DictionaryBackend`].

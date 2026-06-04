@@ -1,8 +1,7 @@
-use std::sync::Arc;
+use std::sync::Mutex;
 
 use rusqlite::Connection;
 
-use crate::dictionary::SqliteDictionaryBackend;
 use crate::prediction::{Prediction, Predictor};
 
 /// Predictor backed by an n‑gram table in SQLite.
@@ -30,8 +29,13 @@ use crate::prediction::{Prediction, Predictor};
 ///   remaining columns left unconstrained (or omitted via `IS NULL`).
 /// * For large n‑gram tables, ensure there is a composite index on
 ///   `(context_1, context_2, …, frequency DESC)`.
+///
+/// # Thread safety
+///
+/// The inner [`rusqlite::Connection`] is wrapped in a [`Mutex`] to satisfy
+/// the [`Sync`] requirement of the [`Predictor`] trait.
 pub struct SqlitePredictor {
-    conn: Arc<Connection>,
+    conn: Mutex<Connection>,
     table_name: String,
     context_columns: Vec<String>,
     next_word_column: String,
@@ -39,19 +43,18 @@ pub struct SqlitePredictor {
 }
 
 impl SqlitePredictor {
-    /// Share the same connection as a [`SqliteDictionaryBackend`].
+    /// Create a new predictor with an existing connection.
     ///
-    /// This avoids opening a second file handle to the same database.
-    /// Requires the connection to be wrapped in an `Arc` beforehand.
+    /// The connection is wrapped in a [`Mutex`] internally.
     pub fn new(
-        conn: Arc<Connection>,
+        conn: Connection,
         table_name: &str,
         context_columns: &[String],
         next_word_column: &str,
         frequency_column: &str,
     ) -> Self {
         Self {
-            conn,
+            conn: Mutex::new(conn),
             table_name: table_name.to_string(),
             context_columns: context_columns.to_vec(),
             next_word_column: next_word_column.to_string(),
@@ -70,7 +73,7 @@ impl SqlitePredictor {
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let conn = Connection::open(path)?;
         Ok(Self {
-            conn: Arc::new(conn),
+            conn: Mutex::new(conn),
             table_name: table_name.to_string(),
             context_columns: vec![context_column.to_string()],
             next_word_column: next_word_column.to_string(),
@@ -85,7 +88,7 @@ impl Predictor for SqlitePredictor {
         // possible.
         let mut conditions = Vec::new();
         for (i, col) in self.context_columns.iter().enumerate() {
-            if let Some(word) = context.get(i) {
+            if context.get(i).is_some() {
                 conditions.push(format!("{} = ?{}", col, i + 1));
             }
         }
@@ -112,7 +115,8 @@ impl Predictor for SqlitePredictor {
             .collect();
 
         let mut results = Vec::new();
-        if let Ok(mut stmt) = self.conn.prepare(&sql) {
+        let conn = self.conn.lock().unwrap();
+        if let Ok(mut stmt) = conn.prepare(&sql) {
             if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
                 let word: String = row.get(0)?;
                 let freq: f64 = match row.get::<_, f64>(1) {
@@ -160,13 +164,8 @@ mod tests {
         conn.execute("INSERT INTO bigrams VALUES ('how', 'you', 20.0)", [])
             .unwrap();
 
-        let predictor = SqlitePredictor::new(
-            Arc::new(conn),
-            "bigrams",
-            &["prev".to_string()],
-            "next",
-            "freq",
-        );
+        let predictor =
+            SqlitePredictor::new(conn, "bigrams", &["prev".to_string()], "next", "freq");
 
         let results = predictor.predict_next(&["how"], 2);
         assert_eq!(results.len(), 2);

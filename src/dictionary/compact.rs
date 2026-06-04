@@ -54,10 +54,7 @@ impl CompactDictionary {
                 first_letter_cache.entry(first).or_default().push(index);
             }
 
-            length_cache
-                .entry(word.len())
-                .or_default()
-                .push(index);
+            length_cache.entry(word.len()).or_default().push(index);
         }
 
         Ok(Self {
@@ -104,10 +101,7 @@ impl CompactDictionary {
                 first_letter_cache.entry(first).or_default().push(index);
             }
 
-            length_cache
-                .entry(word.len())
-                .or_default()
-                .push(index);
+            length_cache.entry(word.len()).or_default().push(index);
         }
 
         Ok(Self {
@@ -204,11 +198,7 @@ impl CompactDictionary {
             word_count: self.words.len(),
             string_bytes: self.words.iter().map(|w| w.len()).sum(),
             index_entries: self.word_to_index.len(),
-            first_letter_entries: self
-                .first_letter_cache
-                .values()
-                .map(|v| v.len())
-                .sum(),
+            first_letter_entries: self.first_letter_cache.values().map(|v| v.len()).sum(),
             length_entries: self.length_cache.values().map(|v| v.len()).sum(),
         }
     }
@@ -234,11 +224,7 @@ impl DictionaryBackend for CompactDictionary {
                     if seen.insert(word.clone()) {
                         all_results.push(DictionaryResult {
                             word: word.clone(),
-                            confidence: if confidence > 0.0 {
-                                confidence
-                            } else {
-                                -1.0
-                            },
+                            confidence: if confidence > 0.0 { confidence } else { -1.0 },
                         });
                     }
                     break;
@@ -286,11 +272,7 @@ impl std::fmt::Display for MemoryStats {
         writeln!(f, "Word count:              {}", self.word_count)?;
         writeln!(f, "String bytes:            {}", self.string_bytes)?;
         writeln!(f, "Index entries:           {}", self.index_entries)?;
-        writeln!(
-            f,
-            "First-letter cache:      {}",
-            self.first_letter_entries
-        )?;
+        writeln!(f, "First-letter cache:      {}", self.first_letter_entries)?;
         writeln!(f, "Length cache:            {}", self.length_entries)
     }
 }

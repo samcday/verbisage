@@ -19,12 +19,12 @@ use crate::prediction::{Prediction, Predictor};
 ///   - Cache a pre‑sorted frequency list during backend construction.
 /// * The 10 hard‑coded entries below are placeholder values.
 pub struct FrequencyPredictor<B: DictionaryBackend> {
-    backend: Arc<B>,
+    _backend: Arc<B>,
 }
 
 impl<B: DictionaryBackend> FrequencyPredictor<B> {
     pub fn new(backend: Arc<B>) -> Self {
-        Self { backend }
+        Self { _backend: backend }
     }
 }
 
