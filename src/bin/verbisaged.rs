@@ -1,5 +1,6 @@
-use std::env;
 use std::path::PathBuf;
+
+use clap::Parser;
 
 use verbisage::daemon::{run, DaemonHandler};
 use verbisage::dictionary::FileDictionaryBackend;
@@ -13,31 +14,73 @@ use verbisage::spellcheck::HunspellSpellChecker;
 #[cfg(feature = "sqlite")]
 use verbisage::spellcheck::SqliteSpellChecker;
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    let backend = parse_arg(&args, "--backend")
-        .or_else(|| env::var("VERBISAGE_BACKEND").ok())
-        .unwrap_or_else(|| "file".to_string());
+#[derive(Parser)]
+#[command(
+    name = "verbisaged",
+    version,
+    about = "Word-list daemon with spell-check, swipe-typing queries, and next-word prediction"
+)]
+struct Cli {
+    /// Dictionary backend to use
+    #[arg(long, short, default_value = "file", env = "VERBISAGE_BACKEND")]
+    backend: String,
 
-    match backend.as_str() {
-        "file" => start_file(&args),
-        "sqlite" => start_sqlite(&args),
-        "hunspell" => start_hunspell(&args),
+    // ── File backend ──────────────────────────────────────────────────────
+    /// Path to word list (one word per line); used with --backend file
+    #[arg(long, short, default_value = "/usr/share/dict/words")]
+    path: PathBuf,
+
+    // ── SQLite backend ────────────────────────────────────────────────────
+    /// Table name for the SQLite backend
+    #[arg(long, default_value = "words")]
+    table: String,
+
+    /// Word column name for the SQLite backend
+    #[arg(long, default_value = "word")]
+    word_col: String,
+
+    /// Frequency column name for the SQLite backend
+    #[arg(long, default_value = "frequency")]
+    freq_col: String,
+
+    // ── Hunspell backend ──────────────────────────────────────────────────
+    /// Path to .aff file; used with --backend hunspell
+    #[arg(long)]
+    affix: Option<PathBuf>,
+
+    /// Path to .dic file; used with --backend hunspell
+    #[arg(long)]
+    dict: Option<PathBuf>,
+
+    /// Language tag (e.g. en_US); used with --backend hunspell when --affix/--dict are absent
+    #[arg(long, default_value = "en_US")]
+    tag: String,
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    match cli.backend.as_str() {
+        "file" => start_file(&cli),
+        "sqlite" => start_sqlite(&cli),
+        "hunspell" => start_hunspell(&cli),
         other => {
             eprintln!("[verbisaged] unknown backend '{}'", other);
-            eprintln!("Usage: verbisaged --backend (file|sqlite|hunspell) [options]");
+            eprintln!("  valid backends: file, sqlite, hunspell");
             std::process::exit(1);
         }
     }
 }
 
-fn start_file(args: &[String]) {
-    let path = parse_arg(args, "--path").unwrap_or_else(|| "/usr/share/dict/words".to_string());
-
-    let dict = match FileDictionaryBackend::from_word_list(PathBuf::from(&path)) {
+fn start_file(cli: &Cli) {
+    let dict = match FileDictionaryBackend::from_word_list(&cli.path) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("[verbisaged] failed to load word list '{}': {}", path, e);
+            eprintln!(
+                "[verbisaged] failed to load word list '{}': {}",
+                cli.path.display(),
+                e
+            );
             std::process::exit(1);
         }
     };
@@ -51,23 +94,19 @@ fn start_file(args: &[String]) {
 }
 
 #[cfg(feature = "sqlite")]
-fn start_sqlite(args: &[String]) {
-    let path = parse_arg(args, "--path").unwrap_or_else(|| "dictionary.db".to_string());
-    let table = parse_arg(args, "--table").unwrap_or_else(|| "words".to_string());
-    let word_col = parse_arg(args, "--word-col").unwrap_or_else(|| "word".to_string());
-    let freq_col = parse_arg(args, "--freq-col").unwrap_or_else(|| "frequency".to_string());
-
+fn start_sqlite(cli: &Cli) {
     let dict = match SqliteDictionaryBackend::from_sqlite(
-        PathBuf::from(&path),
-        &table,
-        &word_col,
-        &freq_col,
+        &cli.path,
+        &cli.table,
+        &cli.word_col,
+        &cli.freq_col,
     ) {
         Ok(d) => d,
         Err(e) => {
             eprintln!(
                 "[verbisaged] failed to open sqlite database '{}': {}",
-                path, e
+                cli.path.display(),
+                e
             );
             std::process::exit(1);
         }
@@ -82,38 +121,32 @@ fn start_sqlite(args: &[String]) {
 }
 
 #[cfg(not(feature = "sqlite"))]
-fn start_sqlite(_args: &[String]) {
+fn start_sqlite(_cli: &Cli) {
     eprintln!("[verbisaged] sqlite support not compiled in (enable feature 'sqlite')");
     std::process::exit(1);
 }
 
 #[cfg(feature = "hunspell")]
-fn start_hunspell(args: &[String]) {
-    let aff = parse_arg(args, "--affix").unwrap_or_else(|| "".to_string());
-    let dic = parse_arg(args, "--dict").unwrap_or_else(|| "".to_string());
-
-    let checker: Box<dyn SpellChecker> = if !aff.is_empty() && !dic.is_empty() {
-        Box::new(
-            HunspellSpellChecker::from_files(PathBuf::from(&aff), PathBuf::from(&dic))
-                .unwrap_or_else(|e| {
-                    eprintln!("[verbisaged] failed to load hunspell .aff/.dic: {}", e);
-                    std::process::exit(1);
-                }),
-        )
-    } else {
-        let tag = parse_arg(args, "--tag").unwrap_or_else(|| "en_US".to_string());
-        Box::new(HunspellSpellChecker::from_tag(&tag).unwrap_or_else(|e| {
-            eprintln!(
-                "[verbisaged] failed to load hunspell dictionary '{}': {}",
-                tag, e
-            );
-            std::process::exit(1);
-        }))
+fn start_hunspell(cli: &Cli) {
+    let checker: Box<dyn SpellChecker> = match (&cli.affix, &cli.dict) {
+        (Some(aff), Some(dic)) => Box::new(
+            HunspellSpellChecker::from_files(aff, dic).unwrap_or_else(|e| {
+                eprintln!("[verbisaged] failed to load hunspell .aff/.dic: {}", e);
+                std::process::exit(1);
+            }),
+        ),
+        _ => Box::new(
+            HunspellSpellChecker::from_tag(&cli.tag).unwrap_or_else(|e| {
+                eprintln!(
+                    "[verbisaged] failed to load hunspell dictionary '{}': {}",
+                    cli.tag, e
+                );
+                std::process::exit(1);
+            }),
+        ),
     };
 
     let handler = DaemonHandler::new(
-        // For hunspell mode we don't have a DictionaryBackend, so use an
-        // empty file backend as a fallback.
         Box::new(FileDictionaryBackend::new()),
         Some(checker),
         None as Option<Box<dyn Predictor>>,
@@ -122,18 +155,7 @@ fn start_hunspell(args: &[String]) {
 }
 
 #[cfg(not(feature = "hunspell"))]
-fn start_hunspell(_args: &[String]) {
+fn start_hunspell(_cli: &Cli) {
     eprintln!("[verbisaged] hunspell support not compiled in (enable feature 'hunspell')");
     std::process::exit(1);
-}
-
-/// Simple argument parser: returns the value after `--name` or `None`.
-fn parse_arg(args: &[String], name: &str) -> Option<String> {
-    args.windows(2).find_map(|w| {
-        if w[0] == name {
-            Some(w[1].clone())
-        } else {
-            None
-        }
-    })
 }
