@@ -97,13 +97,13 @@ struct Cli {
     #[arg(long)]
     context: Option<String>,
 
-    /// Prefix filter; used in query mode
+    /// Prefix filter(s); used in query mode (can be repeated)
     #[arg(long)]
-    prefix: Option<String>,
+    prefix: Vec<String>,
 
-    /// Suffix filter; used in query mode
+    /// Suffix filter(s); used in query mode (can be repeated)
     #[arg(long)]
-    suffix: Option<String>,
+    suffix: Vec<String>,
 
     /// Minimum word length; used in query mode
     #[arg(long)]
@@ -262,15 +262,31 @@ fn run_predict(cli: &Cli) {
 }
 
 fn run_query(cli: &Cli) {
-    let query = DictionaryQuery {
-        prefix: cli.prefix.clone(),
-        suffix: cli.suffix.clone(),
-        min_length: cli.min_len,
-        max_length: cli.max_len,
+    let prefixes = if cli.prefix.is_empty() {
+        vec![None]
+    } else {
+        cli.prefix.iter().map(|p| Some(p.clone())).collect()
+    };
+    let suffixes = if cli.suffix.is_empty() {
+        vec![None]
+    } else {
+        cli.suffix.iter().map(|s| Some(s.clone())).collect()
     };
 
+    let queries: Vec<DictionaryQuery> = prefixes
+        .iter()
+        .flat_map(|p| {
+            suffixes.iter().map(move |s| DictionaryQuery {
+                prefix: p.clone(),
+                suffix: s.clone(),
+                min_length: cli.min_len,
+                max_length: cli.max_len,
+            })
+        })
+        .collect();
+
     let (dict, _) = open_backend(cli);
-    let results = dict.query_prefixes(&[query]);
+    let results = dict.query_prefixes(&queries);
 
     for r in &results {
         println!("{}  {}", r.word, r.confidence);
