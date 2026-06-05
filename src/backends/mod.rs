@@ -1,4 +1,6 @@
+pub mod build;
 pub mod chain;
+pub mod merged;
 
 #[cfg(feature = "sqlite")]
 pub mod shared_sqlite;

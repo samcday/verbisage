@@ -102,6 +102,8 @@ pub struct LanguagePaths {
     pub user_dict_patterns: Vec<String>,
     pub system_sqlite_patterns: Vec<String>,
     pub user_sqlite_patterns: Vec<String>,
+    pub system_marisa_patterns: Vec<String>,
+    pub user_marisa_patterns: Vec<String>,
 }
 
 impl LanguagePaths {
@@ -125,6 +127,8 @@ impl LanguagePaths {
             ],
             system_sqlite_patterns: vec!["database_{lang}.db".into()],
             user_sqlite_patterns: vec!["lm_{lang}.db".into()],
+            system_marisa_patterns: vec!["{lang}.marisa".into()],
+            user_marisa_patterns: vec!["{lang}.marisa".into()],
         }
     }
 
@@ -211,6 +215,23 @@ impl LanguagePaths {
         let mut files = self.resolve_system(&sys_strs);
         files.extend(self.resolve_user(&usr_strs));
         files
+    }
+
+    /// Marisa trie files.
+    pub fn resolve_marisa_files(&self) -> Vec<PathBuf> {
+        let sys_strs: Vec<&str> = self
+            .system_marisa_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let usr_strs: Vec<&str> = self
+            .user_marisa_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let sys = self.resolve_system(&sys_strs);
+        let usr = self.resolve_user(&usr_strs);
+        sys.into_iter().chain(usr).collect()
     }
 
     /// SQLite dictionary files (sqlite backend).
