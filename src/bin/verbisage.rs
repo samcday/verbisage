@@ -265,7 +265,7 @@ fn run_check(
     let correct = if client_mode == ClientMode::Dbus {
         dbus_is_correct(word, lang)
     } else {
-        let (_, sc) = open_backend(shared, lang, named_backends);
+        let (_, sc, _) = open_backend(shared, lang, named_backends);
         match &sc {
             Some(s) => s.is_correct(word),
             None => {
@@ -293,7 +293,7 @@ fn run_correct(
     let suggestions: Vec<String> = if client_mode == ClientMode::Dbus {
         dbus_suggest(word, 10, lang)
     } else {
-        let (_, sc) = open_backend(shared, lang, named_backends);
+        let (_, sc, _) = open_backend(shared, lang, named_backends);
         match &sc {
             Some(s) => s.suggest(word),
             None => {
@@ -313,7 +313,7 @@ fn run_correct(
 
 fn run_predict(
     shared: &SharedArgs,
-    _named_backends: Option<&HashMap<String, BackendDef>>,
+    named_backends: Option<&HashMap<String, BackendDef>>,
     client_mode: ClientMode,
     context: Option<&str>,
     max: usize,
@@ -326,8 +326,20 @@ fn run_predict(
     let predictions: Vec<(String, f64)> = if client_mode == ClientMode::Dbus {
         dbus_predict(context_words, max, lang)
     } else {
-        eprintln!("warning: predict mode needs a Predictor backend (see --mode dbus)");
-        Vec::new()
+        let (_, _, predictor) = open_backend(shared, lang, named_backends);
+        match predictor {
+            Some(pred) => {
+                let ctx_refs: Vec<&str> = context_words.iter().map(|s| s.as_str()).collect();
+                pred.predict_next(&ctx_refs, max)
+                    .into_iter()
+                    .map(|p| (p.word, p.confidence))
+                    .collect()
+            }
+            None => {
+                eprintln!("warning: predict mode needs a Predictor backend (see --mode dbus)");
+                Vec::new()
+            }
+        }
     };
 
     for (word, confidence) in &predictions {
@@ -388,7 +400,7 @@ fn run_query(
             })
             .collect();
 
-        let (dict, sc) = open_backend(shared, lang, named_backends);
+        let (dict, sc, _) = open_backend(shared, lang, named_backends);
         let results = dict.query_prefixes(&queries);
         if results.is_empty() && sc.is_none() {
             eprintln!("warning: no dictionary loaded for '{}'", lang);
@@ -417,7 +429,7 @@ fn run_word_add(
     if client_mode == ClientMode::Dbus {
         dbus_add_word(word, frequency, allow_existing, lang);
     } else {
-        let (dict, _sc) = open_backend(shared, lang, named_backends);
+        let (dict, _, _) = open_backend(shared, lang, named_backends);
         match dict.add_word(word, frequency, allow_existing) {
             Ok(()) => println!("true"),
             Err(e) => {
@@ -429,20 +441,35 @@ fn run_word_add(
 }
 
 fn run_ngram_bump(
-    _shared: &SharedArgs,
+    shared: &SharedArgs,
     client_mode: ClientMode,
     context: &str,
     delta: f64,
     save_unknown: bool,
 ) {
     let ngram: Vec<String> = context.split_whitespace().map(String::from).collect();
-    let lang = _shared.lang();
+    let lang = shared.lang();
 
     if client_mode == ClientMode::Dbus {
         dbus_bump_ngram(ngram, delta, save_unknown, lang);
     } else {
-        eprintln!("warning: ngram-bump requires dbus mode for predictor access");
-        std::process::exit(1);
+        let (_, _, predictor) = open_backend(shared, lang, None);
+        match predictor {
+            Some(pred) => {
+                let ngram_refs: Vec<&str> = ngram.iter().map(|s| s.as_str()).collect();
+                match pred.increase_ngram_frequency(&ngram_refs, delta, save_unknown) {
+                    Ok(()) => println!("true"),
+                    Err(e) => {
+                        eprintln!("error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            None => {
+                eprintln!("warning: ngram-bump requires a Predictor backend");
+                std::process::exit(1);
+            }
+        }
     }
 }
 

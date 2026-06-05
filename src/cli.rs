@@ -203,7 +203,11 @@ pub fn open_backend(
     args: &SharedArgs,
     lang: &str,
     named_backends: Option<&std::collections::HashMap<String, crate::backends::BackendDef>>,
-) -> (Box<dyn DictionaryBackend>, Option<Box<dyn SpellChecker>>) {
+) -> (
+    Box<dyn DictionaryBackend>,
+    Option<Box<dyn SpellChecker>>,
+    Option<Box<dyn crate::prediction::Predictor>>,
+) {
     let chain = args.backend.as_deref().unwrap_or("file");
 
     let (assignment, warnings) = resolve_chain_with_backcompat(chain, named_backends)
@@ -219,7 +223,11 @@ pub fn open_backend(
     let lp = build_language_paths(args, lang);
     let composed = crate::backends::build::compose_chain(&assignment, lang, &lp);
 
-    (composed.dictionary, composed.spellchecker)
+    (
+        composed.dictionary,
+        composed.spellchecker,
+        composed.predictor,
+    )
 }
 
 // ── Backend config helper (used by both daemon and one-shot) ───────────────
