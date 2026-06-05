@@ -1,8 +1,10 @@
+pub mod clients;
 pub mod daemon;
 pub mod dictionary;
 pub mod prediction;
 pub mod spellcheck;
 
+pub use clients::{ClientError, StdioClient};
 pub use daemon::{DaemonHandler, DaemonRequest, DaemonResponse};
 pub use dictionary::{
     CompactDictionary, DictionaryBackend, DictionaryQuery, DictionaryResult, FileDictionaryBackend,
