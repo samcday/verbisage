@@ -697,10 +697,12 @@ pub fn resolve_chain_with_backcompat(
         None => HashMap::new(),
     };
 
-    // If chain is a single old-style name, generate an implicit def
-    let implicit = implicit_backend_def(chain);
-    if let Some(def) = implicit {
-        raw_defs.entry(chain.to_string()).or_insert(def);
+    // Generate implicit defs for each segment that's a built-in type
+    let segments: Vec<&str> = chain.split('+').map(|s| s.trim()).collect();
+    for seg in &segments {
+        if let Some(def) = implicit_backend_def(seg) {
+            raw_defs.entry(seg.to_string()).or_insert(def);
+        }
     }
 
     let defs = resolve_all_backends(&raw_defs).map_err(|e| e.to_string())?;
