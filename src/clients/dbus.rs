@@ -72,10 +72,11 @@ impl DbusClient {
     }
 
     /// Query the dictionary with prefix/suffix/length constraints for `lang`.
+    /// Multiple prefixes and suffixes produce the Cartesian product of queries.
     pub fn query(
         &self,
-        prefix: &str,
-        suffix: &str,
+        prefixes: &[String],
+        suffixes: &[String],
         min_len: u32,
         max_len: u32,
         lang: &str,
@@ -83,7 +84,7 @@ impl DbusClient {
         let msg = self.call(
             "Query",
             self.dest(),
-            &(prefix, suffix, min_len, max_len, lang),
+            &(prefixes, suffixes, min_len, max_len, lang),
         )?;
         msg.body().deserialize()
     }
@@ -189,11 +190,14 @@ mod tests {
         assert!(freq > 0.0);
         assert_eq!(client.frequency("nonexistent", "en_US").unwrap(), 0.0);
 
-        let results = client.query("hel", "", 0, 0, "en_US").unwrap();
+        let hel: &[String] = &[String::from("hel")];
+        let results = client.query(hel, &[], 0, 0, "en_US").unwrap();
         assert!(!results.is_empty());
         assert!(results.iter().any(|(w, _)| w == "hello"));
 
-        let results = client.query("hel", "o", 0, 0, "en_US").unwrap();
+        let hel: &[String] = &[String::from("hel")];
+        let o: &[String] = &[String::from("o")];
+        let results = client.query(hel, o, 0, 0, "en_US").unwrap();
         assert!(!results.is_empty());
 
         drop(client);

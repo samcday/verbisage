@@ -240,9 +240,9 @@ impl DaemonHandler {
         suggestions
     }
 
-    pub fn query(&self, query: &DictionaryQuery, lang: &str) -> Vec<DictionaryResult> {
+    pub fn query(&self, queries: &[DictionaryQuery], lang: &str) -> Vec<DictionaryResult> {
         let backend = self.get_or_load_backend(lang);
-        backend.dictionary.query_prefixes(&[query.clone()])
+        backend.dictionary.query_prefixes(queries)
     }
 
     pub fn predict(&self, context: &[&str], max: usize, lang: &str) -> Vec<Prediction> {
@@ -287,15 +287,8 @@ impl DaemonHandler {
                     Ok(p) => p,
                     Err(e) => return DaemonResponse::error(id, format!("bad params: {}", e)),
                 };
-                let results = self.query(
-                    &DictionaryQuery {
-                        prefix: params.prefix,
-                        suffix: params.suffix,
-                        min_length: params.min_len,
-                        max_length: params.max_len,
-                    },
-                    lang,
-                );
+                let queries: Vec<DictionaryQuery> = params.into_queries();
+                let results = self.query(&queries, lang);
                 let items: Vec<serde_json::Value> = results
                     .into_iter()
                     .map(|r| json!({"word": r.word, "confidence": r.confidence}))

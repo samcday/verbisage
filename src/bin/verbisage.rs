@@ -179,35 +179,68 @@ fn run_predict(_cli: &Cli) {
 }
 
 fn run_query(cli: &Cli) {
-    let prefixes = if cli.prefix.is_empty() {
-        vec![None]
-    } else {
-        cli.prefix.iter().map(|p| Some(p.clone())).collect()
-    };
-    let suffixes = if cli.suffix.is_empty() {
-        vec![None]
-    } else {
-        cli.suffix.iter().map(|s| Some(s.clone())).collect()
-    };
-
-    let queries: Vec<DictionaryQuery> = prefixes
-        .iter()
-        .flat_map(|p| {
-            suffixes.iter().map(move |s| DictionaryQuery {
-                prefix: p.clone(),
-                suffix: s.clone(),
-                min_length: cli.min_len,
-                max_length: cli.max_len,
-            })
-        })
-        .collect();
-
+    let min = cli.min_len.unwrap_or(0);
+    let max = cli.max_len.unwrap_or(0);
     let lang = cli.shared.language.as_deref().unwrap_or("en_US");
-    let (dict, _) = open_backend(&cli.shared, lang);
-    let results = dict.query_prefixes(&queries);
 
-    for r in &results {
-        println!("{}  {}", r.word, r.confidence);
+    let results: Vec<(String, f64)> = if cli.shared.dbus {
+        #[cfg(feature = "dbus")]
+        {
+            match DbusClient::new() {
+                Ok(client) => {
+                    match client.query(&cli.prefix, &cli.suffix, min as u32, max as u32, lang) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("dbus call failed: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("dbus connection failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        #[cfg(not(feature = "dbus"))]
+        {
+            let _ = (min, max, lang);
+            eprintln!("dbus feature not enabled; rebuild with --features dbus");
+            std::process::exit(1);
+        }
+    } else {
+        let prefixes = if cli.prefix.is_empty() {
+            vec![None]
+        } else {
+            cli.prefix.iter().map(|p| Some(p.clone())).collect()
+        };
+        let suffixes = if cli.suffix.is_empty() {
+            vec![None]
+        } else {
+            cli.suffix.iter().map(|s| Some(s.clone())).collect()
+        };
+
+        let queries: Vec<DictionaryQuery> = prefixes
+            .iter()
+            .flat_map(|p| {
+                suffixes.iter().map(move |s| DictionaryQuery {
+                    prefix: p.clone(),
+                    suffix: s.clone(),
+                    min_length: cli.min_len,
+                    max_length: cli.max_len,
+                })
+            })
+            .collect();
+
+        let (dict, _) = open_backend(&cli.shared, lang);
+        dict.query_prefixes(&queries)
+            .into_iter()
+            .map(|r| (r.word, r.confidence))
+            .collect()
+    };
+
+    for (word, confidence) in &results {
+        println!("{}  {}", word, confidence);
     }
     if results.is_empty() {
         std::process::exit(1);

@@ -32,44 +32,51 @@ impl VerbisageDbus {
 
     async fn query(
         &self,
-        prefix: &str,
-        suffix: &str,
+        prefixes: Vec<String>,
+        suffixes: Vec<String>,
         min_len: u32,
         max_len: u32,
         lang: &str,
     ) -> Vec<(String, f64)> {
         crate::veprintln!(
-            "[dbus-server] Query({}, {}, {}, {}, {})",
-            prefix,
-            suffix,
+            "[dbus-server] Query({:?}, {:?}, {}, {}, {})",
+            prefixes,
+            suffixes,
             min_len,
             max_len,
             lang
         );
-        let query = DictionaryQuery {
-            prefix: if prefix.is_empty() {
-                None
-            } else {
-                Some(prefix.to_string())
-            },
-            suffix: if suffix.is_empty() {
-                None
-            } else {
-                Some(suffix.to_string())
-            },
-            min_length: if min_len == 0 {
-                None
-            } else {
-                Some(min_len as usize)
-            },
-            max_length: if max_len == 0 {
-                None
-            } else {
-                Some(max_len as usize)
-            },
+        let prefix_opts: Vec<Option<String>> = if prefixes.is_empty() {
+            vec![None]
+        } else {
+            prefixes.into_iter().map(Some).collect()
         };
+        let suffix_opts: Vec<Option<String>> = if suffixes.is_empty() {
+            vec![None]
+        } else {
+            suffixes.into_iter().map(Some).collect()
+        };
+        let queries: Vec<DictionaryQuery> = prefix_opts
+            .into_iter()
+            .flat_map(|p| {
+                suffix_opts.iter().map(move |s| DictionaryQuery {
+                    prefix: p.clone(),
+                    suffix: s.clone(),
+                    min_length: if min_len == 0 {
+                        None
+                    } else {
+                        Some(min_len as usize)
+                    },
+                    max_length: if max_len == 0 {
+                        None
+                    } else {
+                        Some(max_len as usize)
+                    },
+                })
+            })
+            .collect();
         self.handler
-            .query(&query, lang)
+            .query(&queries, lang)
             .into_iter()
             .map(|r| (r.word, r.confidence))
             .collect()
