@@ -594,6 +594,7 @@ fn resolve_marisa_backend(
 ) -> Result<ResolvedBackendDef, BackendConfigError> {
     let mut capabilities = HashSet::new();
     capabilities.insert(Capability::Dictionary);
+    capabilities.insert(Capability::Ngrams);
 
     if let Some(en) = def.enable_unigrams {
         if en {
@@ -604,6 +605,8 @@ fn resolve_marisa_backend(
     if let Some(en) = def.enable_ngrams {
         if en {
             capabilities.insert(Capability::Ngrams);
+        } else {
+            capabilities.remove(&Capability::Ngrams);
         }
     }
 
