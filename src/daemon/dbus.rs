@@ -18,18 +18,45 @@ impl VerbisageDbus {
     }
 }
 
-#[interface(name = "org.verbisage.Dictionary1")]
+#[interface(name = "org.verbisage.Dictionary1", introspection_docs = true)]
 impl VerbisageDbus {
+    /// Check whether a single word is recognised by the dictionary for the
+    /// given language.
+    ///
+    /// @param word  Word to check.
+    /// @param lang  BCP-47 / POSIX language tag (e.g. "en_US").
+    /// @return      `true` if @word is recognised, `false` otherwise.
+    #[zbus(out_args("result"))]
     async fn is_correct(&self, word: &str, lang: &str) -> bool {
         crate::veprintln!("[dbus-server] IsCorrect({}, {})", word, lang);
         self.handler.is_correct(word, lang)
     }
 
+    /// Return spelling suggestions (corrections) for a given word in the
+    /// given language.
+    ///
+    /// @param word  Word to correct.
+    /// @param max   Maximum number of suggestions to return.
+    /// @param lang  Language tag.
+    /// @return      Ordered list of spelling suggestions (may be empty).
+    #[zbus(out_args("result"))]
     async fn suggest(&self, word: &str, max: u32, lang: &str) -> Vec<String> {
         crate::veprintln!("[dbus-server] Suggest({}, {}, {})", word, max, lang);
         self.handler.suggest(word, max as usize, lang)
     }
 
+    /// Search the dictionary for words matching prefix and/or suffix
+    /// constraints.  When both `prefixes` and `suffixes` are empty every
+    /// entry is a candidate (subject to length bounds).
+    ///
+    /// @param prefixes  Required prefixes (empty = no prefix constraint).
+    /// @param suffixes  Required suffixes (empty = no suffix constraint).
+    /// @param min_len   Minimum word length (0 = no constraint).
+    /// @param max_len   Maximum word length (0 = no constraint).
+    /// @param lang      Language tag.
+    /// @return          Array of (word, confidence) pairs matching the
+    ///                  Cartesian product of @prefixes × @suffixes.
+    #[zbus(out_args("result"))]
     async fn query(
         &self,
         prefixes: Vec<String>,
@@ -82,6 +109,14 @@ impl VerbisageDbus {
             .collect()
     }
 
+    /// Predict the next word(s) given a sequence of context words.
+    ///
+    /// @param context  Preceding words (space-split is the caller's
+    ///                 responsibility).
+    /// @param max      Maximum number of predictions to return.
+    /// @param lang     Language tag.
+    /// @return         Array of (word, confidence) predictions.
+    #[zbus(out_args("result"))]
     async fn predict(&self, context: Vec<String>, max: u32, lang: &str) -> Vec<(String, f64)> {
         crate::veprintln!("[dbus-server] Predict({:?}, {}, {})", context, max, lang);
         let ctx: Vec<&str> = context.iter().map(|s| s.as_str()).collect();
@@ -92,6 +127,13 @@ impl VerbisageDbus {
             .collect()
     }
 
+    /// Return the frequency / rank of a word in the dictionary for the
+    /// given language.
+    ///
+    /// @param word  Word to look up.
+    /// @param lang  Language tag.
+    /// @return      Frequency score (0.0 = unknown word).
+    #[zbus(out_args("result"))]
     async fn frequency(&self, word: &str, lang: &str) -> f64 {
         crate::veprintln!("[dbus-server] Frequency({}, {})", word, lang);
         self.handler.frequency(word, lang)

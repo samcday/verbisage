@@ -40,3 +40,8 @@ path = "src/bin/verbisaged.rs"
 [[bin]]
 name = "verbisage"
 path = "src/bin/verbisage.rs"
+
+[[bin]]
+name = "verbisage-introspect"
+path = "src/bin/verbisage-introspect.rs"
+required-features = ["dbus"]

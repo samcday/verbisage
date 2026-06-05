@@ -2,100 +2,83 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <node>
-  <!--
-      org.verbisage.Dictionary1
-      =========================
-      Well-known name:    org.verbisage.Dictionary
-      Object path:        /org/verbisage/Dictionary
-      Interface:          org.verbisage.Dictionary1
-
-      Dictionary query, spell-check, and next-word prediction service.
-  -->
-  <interface name="org.verbisage.Dictionary1">
-
+<interface name="org.verbisage.Dictionary1">
     <!--
-        IsCorrect:
-        @word:    Word to check.
-        @lang:    BCP-47 / POSIX language tag (e.g. "en_US").
-        @returns: %true if @word is recognised, %false otherwise.
+     Check whether a single word is recognised by the dictionary for the
+     given language.
 
-        Check whether a single word is present in (or correctly spelled
-        according to) the dictionary for the given language.
-    -->
+     @param word  Word to check.
+     @param lang  BCP-47 / POSIX language tag (e.g. "en_US").
+     @return      `true` if @word is recognised, `false` otherwise.
+     -->
     <method name="IsCorrect">
-      <arg name="word" direction="in" type="s"/>
-      <arg name="lang" direction="in" type="s"/>
-      <arg name="result" direction="out" type="b"/>
+      <arg name="word" type="s" direction="in"/>
+      <arg name="lang" type="s" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
     </method>
-
     <!--
-        Suggest:
-        @word:    Word to correct.
-        @max:     Maximum number of suggestions.
-        @lang:    Language tag.
-        @returns: Ordered list of spelling suggestions.
+     Return spelling suggestions (corrections) for a given word in the
+     given language.
 
-        Return spelling corrections for @word.
-    -->
+     @param word  Word to correct.
+     @param max   Maximum number of suggestions to return.
+     @param lang  Language tag.
+     @return      Ordered list of spelling suggestions (may be empty).
+     -->
     <method name="Suggest">
-      <arg name="word" direction="in" type="s"/>
-      <arg name="max" direction="in" type="u"/>
-      <arg name="lang" direction="in" type="s"/>
-      <arg name="result" direction="out" type="as"/>
+      <arg name="word" type="s" direction="in"/>
+      <arg name="max" type="u" direction="in"/>
+      <arg name="lang" type="s" direction="in"/>
+      <arg name="result" type="as" direction="out"/>
     </method>
-
     <!--
-        Query:
-        @prefixes:  Required prefixes (empty = no prefix constraint).
-        @suffixes:  Required suffixes (empty = no suffix constraint).
-        @min_len:   Minimum word length (0 = no constraint).
-        @max_len:   Maximum word length (0 = no constraint).
-        @lang:      Language tag.
-        @returns:   Array of (word, confidence) pairs matching the Cartesian
-                    product of @prefixes × @suffixes.
+     Search the dictionary for words matching prefix and/or suffix
+     constraints.  When both `prefixes` and `suffixes` are empty every
+     entry is a candidate (subject to length bounds).
 
-        Search the dictionary for words matching the given prefix and/or
-        suffix constraints.  When both @prefixes and @suffixes are empty
-        every entry is a candidate (subject to length bounds).
-    -->
+     @param prefixes  Required prefixes (empty = no prefix constraint).
+     @param suffixes  Required suffixes (empty = no suffix constraint).
+     @param min_len   Minimum word length (0 = no constraint).
+     @param max_len   Maximum word length (0 = no constraint).
+     @param lang      Language tag.
+     @return          Array of (word, confidence) pairs matching the
+                      Cartesian product of @prefixes × @suffixes.
+     -->
     <method name="Query">
-      <arg name="prefixes" direction="in" type="as"/>
-      <arg name="suffixes" direction="in" type="as"/>
-      <arg name="min_len" direction="in" type="u"/>
-      <arg name="max_len" direction="in" type="u"/>
-      <arg name="lang" direction="in" type="s"/>
-      <arg name="result" direction="out" type="a(sd)"/>
+      <arg name="prefixes" type="as" direction="in"/>
+      <arg name="suffixes" type="as" direction="in"/>
+      <arg name="min_len" type="u" direction="in"/>
+      <arg name="max_len" type="u" direction="in"/>
+      <arg name="lang" type="s" direction="in"/>
+      <arg name="result" type="a(sd)" direction="out"/>
     </method>
-
     <!--
-        Predict:
-        @context:  Preceding words (space-split is caller's responsibility).
-        @max:      Maximum number of predictions.
-        @lang:     Language tag.
-        @returns:  Array of (word, confidence) predictions.
+     Predict the next word(s) given a sequence of context words.
 
-        Predict the next word given a sequence of context words.
-    -->
+     @param context  Preceding words (space-split is the caller's
+                     responsibility).
+     @param max      Maximum number of predictions to return.
+     @param lang     Language tag.
+     @return         Array of (word, confidence) predictions.
+     -->
     <method name="Predict">
-      <arg name="context" direction="in" type="as"/>
-      <arg name="max" direction="in" type="u"/>
-      <arg name="lang" direction="in" type="s"/>
-      <arg name="result" direction="out" type="a(sd)"/>
+      <arg name="context" type="as" direction="in"/>
+      <arg name="max" type="u" direction="in"/>
+      <arg name="lang" type="s" direction="in"/>
+      <arg name="result" type="a(sd)" direction="out"/>
     </method>
-
     <!--
-        Frequency:
-        @word:    Word to look up.
-        @lang:    Language tag.
-        @returns: Frequency score (0.0 = unknown).
+     Return the frequency / rank of a word in the dictionary for the
+     given language.
 
-        Return the frequency / rank of @word in the dictionary.
-    -->
+     @param word  Word to look up.
+     @param lang  Language tag.
+     @return      Frequency score (0.0 = unknown word).
+     -->
     <method name="Frequency">
-      <arg name="word" direction="in" type="s"/>
-      <arg name="lang" direction="in" type="s"/>
-      <arg name="result" direction="out" type="d"/>
+      <arg name="word" type="s" direction="in"/>
+      <arg name="lang" type="s" direction="in"/>
+      <arg name="result" type="d" direction="out"/>
     </method>
-
   </interface>
 </node>
