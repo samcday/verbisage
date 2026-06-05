@@ -48,21 +48,25 @@ impl SqliteDictionaryBackend {
         let conn = Connection::open(path)?;
 
         let idx_word = format!("idx_{}_{}", table_name, word_column);
-        let _ = conn.execute(
+        if let Err(e) = conn.execute(
             &format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {}({})",
                 idx_word, table_name, word_column
             ),
             [],
-        );
+        ) {
+            eprintln!("warning: sqlite schema issue — {}", e);
+        }
         let idx_len = format!("idx_{}_{}_length", table_name, word_column);
-        let _ = conn.execute(
+        if let Err(e) = conn.execute(
             &format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {}(LENGTH({}))",
                 idx_len, table_name, word_column
             ),
             [],
-        );
+        ) {
+            eprintln!("warning: sqlite schema issue — {}", e);
+        }
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -177,24 +181,29 @@ impl DictionaryBackend for SqliteDictionaryBackend {
 
             let mut all_results = Vec::new();
             let conn = self.conn.lock().unwrap();
-            if let Ok(mut stmt) = conn.prepare(&sql) {
-                if let Ok(rows) = stmt.query_map([], |row| {
-                    let word: String = row.get(0)?;
-                    let frequency = match row.get::<_, f64>(1) {
-                        Ok(f) => f,
-                        Err(_) => {
-                            let int_freq: i64 = row.get(1)?;
-                            int_freq as f64
+            match conn.prepare(&sql) {
+                Ok(mut stmt) => {
+                    if let Ok(rows) = stmt.query_map([], |row| {
+                        let word: String = row.get(0)?;
+                        let frequency = match row.get::<_, f64>(1) {
+                            Ok(f) => f,
+                            Err(_) => {
+                                let int_freq: i64 = row.get(1)?;
+                                int_freq as f64
+                            }
+                        };
+                        Ok(DictionaryResult {
+                            word,
+                            confidence: if frequency > 0.0 { frequency } else { -1.0 },
+                        })
+                    }) {
+                        for row in rows.flatten() {
+                            all_results.push(row);
                         }
-                    };
-                    Ok(DictionaryResult {
-                        word,
-                        confidence: if frequency > 0.0 { frequency } else { -1.0 },
-                    })
-                }) {
-                    for row in rows.flatten() {
-                        all_results.push(row);
                     }
+                }
+                Err(e) => {
+                    eprintln!("warning: sqlite query failed — {}", e);
                 }
             }
 
