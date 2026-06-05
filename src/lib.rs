@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod clients;
+pub mod config;
 pub mod daemon;
 pub mod debug;
 pub mod dictionary;

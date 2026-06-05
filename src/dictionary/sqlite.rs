@@ -119,7 +119,7 @@ impl SqliteDictionaryBackend {
         let sql = format!("SELECT COUNT(*) FROM {}", self.table_name);
         let conn = self.conn.lock().unwrap();
         if let Ok(mut stmt) = conn.prepare(&sql) {
-            if let Ok(mut rows) = stmt.query_map([], |row| Ok(row.get::<_, i64>(0)?)) {
+            if let Ok(mut rows) = stmt.query_map([], |row| row.get::<_, i64>(0)) {
                 if let Some(result) = rows.next() {
                     return result.unwrap_or(0) as usize;
                 }

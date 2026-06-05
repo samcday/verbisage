@@ -23,7 +23,6 @@ pub struct DaemonConfig {
     pub sqlite_freq_col: String,
     pub hunspell_affix: Option<PathBuf>,
     pub hunspell_dict: Option<PathBuf>,
-    pub eager_path: Option<PathBuf>,
     pub eager_system_dict: Option<String>,
     pub eager_user_dict: Option<String>,
 }
@@ -39,25 +38,23 @@ impl DaemonConfig {
             sqlite_freq_col: String::new(),
             hunspell_affix: None,
             hunspell_dict: None,
-            eager_path: None,
             eager_system_dict: None,
             eager_user_dict: None,
         }
     }
 
     pub fn from_cli(args: &SharedArgs) -> Self {
-        let default_lang = args.language.as_deref().unwrap_or("en_US").to_string();
+        let default_lang = args.lang().to_string();
         let lp = crate::cli::base_language_paths(args);
         Self {
-            backend: args.backend.clone(),
+            backend: args.backend.clone().unwrap_or(BackendKind::File),
             language_paths: lp,
             default_lang,
-            sqlite_table: args.table.clone(),
-            sqlite_word_col: args.word_col.clone(),
-            sqlite_freq_col: args.freq_col.clone(),
+            sqlite_table: args.table.clone().unwrap_or_else(|| "words".into()),
+            sqlite_word_col: args.word_col.clone().unwrap_or_else(|| "word".into()),
+            sqlite_freq_col: args.freq_col.clone().unwrap_or_else(|| "frequency".into()),
             hunspell_affix: args.affix.clone(),
             hunspell_dict: args.dict.clone(),
-            eager_path: args.path.clone(),
             eager_system_dict: args.system_dict.clone(),
             eager_user_dict: args.user_dict.clone(),
         }

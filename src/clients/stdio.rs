@@ -261,19 +261,24 @@ mod tests {
     /// Build a temporary word-list file and test all client methods.
     #[test]
     fn stdio_client_basic() {
-        let dir = std::env::temp_dir();
-        let dict_path = dir.join("verbisage_test_dict.txt");
+        let dir = std::env::temp_dir().join("verbisage_test_dict");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dict_file = dir.join("en_US.dic");
         {
-            let mut f = std::fs::File::create(&dict_path).unwrap();
+            let mut f = std::fs::File::create(&dict_file).unwrap();
             writeln!(f, "hello").unwrap();
             writeln!(f, "world").unwrap();
             writeln!(f, "help").unwrap();
             writeln!(f, "helium").unwrap();
         }
 
-        let mut client =
-            StdioClient::spawn(&["--backend", "file", "--path", &dict_path.to_string_lossy()])
-                .unwrap();
+        let mut client = StdioClient::spawn(&[
+            "--backend",
+            "file",
+            "--system-data-dir",
+            &dir.to_string_lossy(),
+        ])
+        .unwrap();
 
         // is_correct
         assert!(client.is_correct("hello").unwrap());
@@ -324,23 +329,29 @@ mod tests {
             .unwrap();
         assert!(results.iter().any(|r| r.word == "help"));
 
-        let _ = std::fs::remove_file(&dict_path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Error responses from the daemon are propagated.
     #[test]
     fn stdio_client_unknown_method() {
-        let dir = std::env::temp_dir();
-        let dict_path = dir.join("verbisage_test_unknown.txt");
+        let dir = std::env::temp_dir().join("verbisage_test_unknown");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dict_file = dir.join("en_US.dic");
         {
-            let mut f = std::fs::File::create(&dict_path).unwrap();
+            let mut f = std::fs::File::create(&dict_file).unwrap();
             writeln!(f, "test").unwrap();
         }
 
         // Manually craft an invalid request to test error handling.
         let exe = find_binary();
         let mut child = Command::new(&exe)
-            .args(&["--backend", "file", "--path", &dict_path.to_string_lossy()])
+            .args([
+                "--backend",
+                "file",
+                "--system-data-dir",
+                &dir.to_string_lossy(),
+            ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -363,6 +374,6 @@ mod tests {
 
         let _ = child.kill();
         let _ = child.wait();
-        let _ = std::fs::remove_file(&dict_path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,8 +1,10 @@
 use clap::Parser;
 
 use verbisage::cli::SharedArgs;
+use verbisage::config::{default_config_path, load_config};
 use verbisage::daemon::{DaemonConfig, DaemonHandler, run};
 use verbisage::debug;
+use verbisage::dictionary::paths::expand_tilde;
 
 #[cfg(feature = "dbus")]
 use verbisage::daemon::run_dbus;
@@ -21,10 +23,21 @@ struct DaemonCli {
 fn main() {
     let cli = DaemonCli::parse();
     debug::set_verbose(cli.shared.verbose);
-    let config = DaemonConfig::from_cli(&cli.shared);
-    let handler = DaemonHandler::with_config(config);
 
-    if cli.shared.dbus {
+    // Resolve config path: CLI override, then default.
+    let config_path = cli
+        .shared
+        .config
+        .clone()
+        .map(|p| expand_tilde(p.to_str().unwrap_or("")))
+        .or_else(|| Some(default_config_path()));
+    let config = config_path.as_ref().and_then(load_config);
+
+    let shared = cli.shared.apply_defaults(config.as_ref());
+    let cfg = DaemonConfig::from_cli(&shared);
+    let handler = DaemonHandler::with_config(cfg);
+
+    if shared.dbus {
         #[cfg(feature = "dbus")]
         {
             let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| {

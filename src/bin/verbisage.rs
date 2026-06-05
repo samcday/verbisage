@@ -1,7 +1,9 @@
 use clap::{Parser, ValueEnum};
 
 use verbisage::cli::{SharedArgs, open_backend};
+use verbisage::config::{default_config_path, load_config};
 use verbisage::debug;
+use verbisage::dictionary::paths::expand_tilde;
 use verbisage::dictionary::{DictionaryQuery, DictionaryResult};
 
 #[cfg(feature = "dbus")]
@@ -64,6 +66,18 @@ fn main() {
     let cli = Cli::parse();
     debug::set_verbose(cli.shared.verbose);
 
+    // Resolve config path: CLI override, then default.
+    let config_path = cli
+        .shared
+        .config
+        .clone()
+        .map(|p| expand_tilde(p.to_str().unwrap_or("")))
+        .or_else(|| Some(default_config_path()));
+    let config = config_path.as_ref().and_then(load_config);
+
+    // Merge config into CLI and apply defaults.
+    let shared = cli.shared.clone().apply_defaults(config.as_ref());
+
     let mode = cli.mode.clone().unwrap_or_else(|| {
         if cli.word.is_some() || cli.context.is_some() {
             Mode::Check
@@ -74,27 +88,27 @@ fn main() {
     });
 
     match mode {
-        Mode::Check => run_check(&cli),
-        Mode::Correct => run_correct(&cli),
-        Mode::Predict => run_predict(&cli),
-        Mode::Query => run_query(&cli),
+        Mode::Check => run_check(&cli, &shared),
+        Mode::Correct => run_correct(&cli, &shared),
+        Mode::Predict => run_predict(&cli, &shared),
+        Mode::Query => run_query(&cli, &shared),
     }
 }
 
 // ── Mode dispatchers ───────────────────────────────────────────────────────
 
-fn run_check(cli: &Cli) {
+fn run_check(cli: &Cli, shared: &SharedArgs) {
     let word = cli
         .word
         .as_deref()
-        .or_else(|| cli.context.as_deref())
+        .or(cli.context.as_deref())
         .unwrap_or_else(|| {
             eprintln!("usage: verbisage check --word <word>");
             std::process::exit(1);
         });
 
-    let lang = cli.shared.language.as_deref().unwrap_or("en_US");
-    let correct = if cli.shared.dbus {
+    let lang = shared.lang();
+    let correct = if shared.dbus {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
@@ -118,7 +132,7 @@ fn run_check(cli: &Cli) {
             std::process::exit(1);
         }
     } else {
-        let (_, sc) = open_backend(&cli.shared, lang);
+        let (_, sc) = open_backend(shared, lang);
         match &sc {
             Some(s) => s.is_correct(word),
             None => {
@@ -136,14 +150,14 @@ fn run_check(cli: &Cli) {
     }
 }
 
-fn run_correct(cli: &Cli) {
+fn run_correct(cli: &Cli, shared: &SharedArgs) {
     let word = cli.word.as_deref().unwrap_or_else(|| {
         eprintln!("usage: verbisage correct --word <word>");
         std::process::exit(1);
     });
 
-    let lang = cli.shared.language.as_deref().unwrap_or("en_US");
-    let suggestions: Vec<String> = if cli.shared.dbus {
+    let lang = shared.lang();
+    let suggestions: Vec<String> = if shared.dbus {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
@@ -167,7 +181,7 @@ fn run_correct(cli: &Cli) {
             std::process::exit(1);
         }
     } else {
-        let (_, sc) = open_backend(&cli.shared, lang);
+        let (_, sc) = open_backend(shared, lang);
         match &sc {
             Some(s) => s.suggest(word),
             None => {
@@ -185,7 +199,7 @@ fn run_correct(cli: &Cli) {
     }
 }
 
-fn run_predict(cli: &Cli) {
+fn run_predict(cli: &Cli, shared: &SharedArgs) {
     let context: Vec<String> = cli
         .context
         .as_deref()
@@ -193,9 +207,9 @@ fn run_predict(cli: &Cli) {
         .unwrap_or_default();
 
     let max = 10;
-    let lang = cli.shared.language.as_deref().unwrap_or("en_US");
+    let lang = shared.lang();
 
-    let predictions: Vec<(String, f64)> = if cli.shared.dbus {
+    let predictions: Vec<(String, f64)> = if shared.dbus {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
@@ -231,12 +245,12 @@ fn run_predict(cli: &Cli) {
     }
 }
 
-fn run_query(cli: &Cli) {
+fn run_query(cli: &Cli, shared: &SharedArgs) {
     let min = cli.min_len.unwrap_or(0);
     let max = cli.max_len.unwrap_or(0);
-    let lang = cli.shared.language.as_deref().unwrap_or("en_US");
+    let lang = shared.lang();
 
-    let results: Vec<(String, f64)> = if cli.shared.dbus {
+    let results: Vec<(String, f64)> = if shared.dbus {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
@@ -285,7 +299,7 @@ fn run_query(cli: &Cli) {
             })
             .collect();
 
-        let (dict, sc) = open_backend(&cli.shared, lang);
+        let (dict, sc) = open_backend(shared, lang);
         let results: Vec<DictionaryResult> = dict.query_prefixes(&queries);
         if results.is_empty() && sc.is_none() {
             eprintln!("warning: no dictionary loaded for '{}'", lang);

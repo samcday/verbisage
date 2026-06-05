@@ -53,31 +53,12 @@ impl DaemonHandler {
     }
 
     /// Create from config with an empty cache (used by daemon).
-    /// When `eager_path` is set, the default language backend is loaded at
-    /// startup instead of lazily.
+    /// Backends are loaded lazily on first request per language.
     pub fn with_config(config: DaemonConfig) -> Self {
         let default_lang = config.default_lang.clone();
-        let mut cache = HashMap::new();
-
-        if let Some(path) = &config.eager_path {
-            if let Ok(dict) = FileDictionaryBackend::from_multiple_files(&[path.clone()]) {
-                let sc: Box<dyn SpellChecker> = Box::new(DictionarySpellChecker::new(
-                    std::sync::Arc::new(dict.clone()),
-                ));
-                cache.insert(
-                    default_lang.clone(),
-                    Arc::new(CachedBackend {
-                        dictionary: Box::new(dict),
-                        spellchecker: Some(sc),
-                        predictor: None,
-                    }),
-                );
-            }
-        }
-
         Self {
             config,
-            cache: Mutex::new(cache),
+            cache: Mutex::new(HashMap::new()),
             default_lang,
         }
     }
@@ -209,6 +190,10 @@ impl DaemonHandler {
         lp.user_dir = config.language_paths.user_dir.clone();
         lp.system_file_override = config.language_paths.system_file_override.clone();
         lp.user_file_override = config.language_paths.user_file_override.clone();
+        lp.system_dict_patterns = config.language_paths.system_dict_patterns.clone();
+        lp.user_dict_patterns = config.language_paths.user_dict_patterns.clone();
+        lp.system_sqlite_patterns = config.language_paths.system_sqlite_patterns.clone();
+        lp.user_sqlite_patterns = config.language_paths.user_sqlite_patterns.clone();
         lp
     }
 

@@ -98,6 +98,10 @@ pub struct LanguagePaths {
     pub language: String,
     pub system_file_override: PathOverride,
     pub user_file_override: PathOverride,
+    pub system_dict_patterns: Vec<String>,
+    pub user_dict_patterns: Vec<String>,
+    pub system_sqlite_patterns: Vec<String>,
+    pub user_sqlite_patterns: Vec<String>,
 }
 
 impl LanguagePaths {
@@ -109,6 +113,18 @@ impl LanguagePaths {
             language: language.to_string(),
             system_file_override: PathOverride::Default,
             user_file_override: PathOverride::Default,
+            system_dict_patterns: vec![
+                "{lang}.dic".into(),
+                "{lang}.freq".into(),
+                "{lang}.wordlist".into(),
+            ],
+            user_dict_patterns: vec![
+                "{lang}.dic".into(),
+                "{lang}.freq".into(),
+                "{lang}.wordlist".into(),
+            ],
+            system_sqlite_patterns: vec!["database_{lang}.db".into()],
+            user_sqlite_patterns: vec!["lm_{lang}.db".into()],
         }
     }
 
@@ -122,6 +138,28 @@ impl LanguagePaths {
     pub fn with_user_dir(mut self, dir: PathBuf) -> Self {
         self.user_dir = dir;
         self
+    }
+
+    /// Apply non-`None` pattern overrides for all four categories.
+    pub fn set_patterns(
+        &mut self,
+        system_dict: Option<&[String]>,
+        user_dict: Option<&[String]>,
+        system_sqlite: Option<&[String]>,
+        user_sqlite: Option<&[String]>,
+    ) {
+        if let Some(p) = system_dict {
+            self.system_dict_patterns = p.to_vec();
+        }
+        if let Some(p) = user_dict {
+            self.user_dict_patterns = p.to_vec();
+        }
+        if let Some(p) = system_sqlite {
+            self.system_sqlite_patterns = p.to_vec();
+        }
+        if let Some(p) = user_sqlite {
+            self.user_sqlite_patterns = p.to_vec();
+        }
     }
 
     // ── Pattern-based resolution ────────────────────────────────────────
@@ -164,19 +202,31 @@ impl LanguagePaths {
     /// then falls back to the base language (e.g. `en`).  Files are checked
     /// in system-then-user order so user frequencies take precedence.
     pub fn resolve_dict_files(&self) -> Vec<PathBuf> {
-        let patterns = &["{lang}.dic", "{lang}.freq", "{lang}.wordlist"];
-        let mut files = self.resolve_system(patterns);
-        files.extend(self.resolve_user(patterns));
+        let sys_strs: Vec<&str> = self
+            .system_dict_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let usr_strs: Vec<&str> = self.user_dict_patterns.iter().map(|s| s.as_str()).collect();
+        let mut files = self.resolve_system(&sys_strs);
+        files.extend(self.resolve_user(&usr_strs));
         files
     }
 
     /// SQLite dictionary files (sqlite backend).
-    ///
-    /// System: `database_{lang}.db` — falls back to `database_en.db`
-    /// User:   `lm_{lang}.db`       — falls back to `lm_en.db`
     pub fn resolve_sqlite_files(&self) -> Vec<PathBuf> {
-        let sys = self.resolve_system(&["database_{lang}.db"]);
-        let usr = self.resolve_user(&["lm_{lang}.db"]);
+        let sys_strs: Vec<&str> = self
+            .system_sqlite_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let usr_strs: Vec<&str> = self
+            .user_sqlite_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let sys = self.resolve_system(&sys_strs);
+        let usr = self.resolve_user(&usr_strs);
         sys.into_iter().chain(usr).collect()
     }
 }
