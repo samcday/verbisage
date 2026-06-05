@@ -406,7 +406,7 @@ where
 
 #[cfg(feature = "dbus")]
 fn dbus_is_correct(word: &str, lang: &str) -> bool {
-    dbus_call(|client| client.is_correct(word, lang))
+    dbus_call(|client| Ok(client.is_correct(word, lang)?))
 }
 
 #[cfg(not(feature = "dbus"))]
@@ -416,7 +416,7 @@ fn dbus_is_correct(_word: &str, _lang: &str) -> bool {
 
 #[cfg(feature = "dbus")]
 fn dbus_suggest(word: &str, max: usize, lang: &str) -> Vec<String> {
-    dbus_call(|client| client.suggest(word, max, lang))
+    dbus_call(|client| Ok(client.suggest(word, max as u32, lang)?))
 }
 
 #[cfg(not(feature = "dbus"))]
@@ -426,7 +426,7 @@ fn dbus_suggest(_word: &str, _max: usize, _lang: &str) -> Vec<String> {
 
 #[cfg(feature = "dbus")]
 fn dbus_predict(context: Vec<String>, max: usize, lang: &str) -> Vec<(String, f64)> {
-    dbus_call(|client| client.predict(context, max, lang))
+    dbus_call(|client| Ok(client.predict(context, max as u32, lang)?))
 }
 
 #[cfg(not(feature = "dbus"))]
@@ -442,7 +442,7 @@ fn dbus_query(
     max_len: usize,
     lang: &str,
 ) -> Vec<(String, f64)> {
-    dbus_call(|client| client.query(prefix, suffix, min_len as u32, max_len as u32, lang))
+    dbus_call(|client| Ok(client.query(prefix, suffix, min_len as u32, max_len as u32, lang)?))
 }
 
 #[cfg(not(feature = "dbus"))]
@@ -458,11 +458,23 @@ fn dbus_query(
 
 #[cfg(feature = "dbus")]
 fn dbus_add_word(word: &str, frequency: f64, allow_existing: bool, lang: &str) {
-    dbus_call(|client| {
-        client
-            .add_word(word, frequency, allow_existing, lang)
-            .map(|_| ())
-    })
+    match DbusClient::new() {
+        Ok(client) => match client.add_word(word, frequency, allow_existing, lang) {
+            Ok(true) => println!("true"),
+            Ok(false) => {
+                eprintln!("word add failed");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("dbus call failed: {}", e);
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("dbus connection failed: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(not(feature = "dbus"))]
@@ -472,11 +484,23 @@ fn dbus_add_word(_word: &str, _frequency: f64, _allow_existing: bool, _lang: &st
 
 #[cfg(feature = "dbus")]
 fn dbus_bump_ngram(ngram: Vec<String>, delta: f64, save_unknown: bool, lang: &str) {
-    dbus_call(|client| {
-        client
-            .bump_ngram(ngram, delta, save_unknown, lang)
-            .map(|_| ())
-    })
+    match DbusClient::new() {
+        Ok(client) => match client.bump_ngram(ngram, delta, save_unknown, lang) {
+            Ok(true) => println!("true"),
+            Ok(false) => {
+                eprintln!("ngram bump failed");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("dbus call failed: {}", e);
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("dbus connection failed: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(not(feature = "dbus"))]
