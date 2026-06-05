@@ -77,6 +77,9 @@ enum Command {
         allow_existing: bool,
     },
 
+    /// Dump the effective runtime config (config file + CLI overrides + defaults) as TOML.
+    ConfigDump,
+
     /// Bump the n-gram frequency for a sequence of words.
     NgramBump {
         /// N-gram words (space-separated).
@@ -139,6 +142,7 @@ fn main() {
     match cli.command {
         Command::Check { word } => run_check(&shared, named_backends, client_mode, &word),
         Command::Correct { word } => run_correct(&shared, named_backends, client_mode, &word),
+        Command::ConfigDump => run_config_dump(&cli.global.shared, config.as_ref()),
         Command::Predict { context, max } => run_predict(
             &shared,
             named_backends,
@@ -371,6 +375,92 @@ fn run_ngram_bump(
         eprintln!("warning: ngram-bump requires dbus mode for predictor access");
         std::process::exit(1);
     }
+}
+
+// ── Config dump ────────────────────────────────────────────────────────────
+
+fn run_config_dump(shared: &SharedArgs, config: Option<&verbisage::config::Config>) {
+    let merged = merge_config(shared, config);
+    let toml = toml::to_string_pretty(&merged).unwrap();
+    println!("{}", toml);
+}
+
+/// Merge config file + CLI overrides + defaults into a single Config struct.
+fn merge_config(
+    shared: &SharedArgs,
+    file_config: Option<&verbisage::config::Config>,
+) -> verbisage::config::Config {
+    let mut cfg = file_config.cloned().unwrap_or_default();
+
+    // Backend chain: CLI > config > default
+    cfg.backend = shared
+        .backend
+        .clone()
+        .or_else(|| cfg.backend.clone())
+        .or(Some("file".into()));
+
+    // Language: CLI > config > default
+    cfg.language_default = shared
+        .language
+        .clone()
+        .or_else(|| cfg.language_default.clone())
+        .or(Some("en_US".into()));
+
+    // Paths: CLI overrides > config
+    if shared.system_data_dir.is_some() || shared.user_data_dir.is_some() {
+        let mut paths = cfg.paths.take().unwrap_or_default();
+        if let Some(dir) = &shared.system_data_dir {
+            paths.system_dir = Some(
+                expand_tilde(dir.to_str().unwrap_or(""))
+                    .to_str()
+                    .unwrap_or("")
+                    .to_string(),
+            );
+        }
+        if let Some(dir) = &shared.user_data_dir {
+            paths.user_dir = Some(
+                expand_tilde(dir.to_str().unwrap_or(""))
+                    .to_str()
+                    .unwrap_or("")
+                    .to_string(),
+            );
+        }
+        cfg.paths = Some(paths);
+    }
+
+    // SQLite: CLI overrides > config
+    if shared.table.is_some() || shared.word_col.is_some() || shared.freq_col.is_some() {
+        let mut sqlite = cfg.sqlite.take().unwrap_or_default();
+        sqlite.table = shared
+            .table
+            .clone()
+            .or_else(|| sqlite.table.clone())
+            .or(Some("words".into()));
+        sqlite.word_col = shared
+            .word_col
+            .clone()
+            .or_else(|| sqlite.word_col.clone())
+            .or(Some("word".into()));
+        sqlite.freq_col = shared
+            .freq_col
+            .clone()
+            .or_else(|| sqlite.freq_col.clone())
+            .or(Some("frequency".into()));
+        cfg.sqlite = Some(sqlite);
+    }
+
+    // Client mode: CLI > config
+    if shared.mode.is_some() {
+        let mut client = cfg.client.take().unwrap_or_default();
+        client.mode = shared.mode.map(|m| match m {
+            ClientMode::Standalone => "standalone".into(),
+            ClientMode::Dbus => "dbus".into(),
+            ClientMode::Stdio => "stdio".into(),
+        });
+        cfg.client = Some(client);
+    }
+
+    cfg
 }
 
 // ── D-Bus helpers ──────────────────────────────────────────────────────────

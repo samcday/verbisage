@@ -1,19 +1,19 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::backends::BackendDef;
 
 /// Per-layer pattern overrides for dictionary files.
-#[derive(Debug, Default, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct LayerPatterns {
     pub dict: Option<Vec<String>>,
     pub sqlite: Option<Vec<String>>,
 }
 
-#[derive(Debug, Default, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct PathConfig {
     pub system_dir: Option<String>,
@@ -22,7 +22,7 @@ pub struct PathConfig {
     pub user: Option<LayerPatterns>,
 }
 
-#[derive(Debug, Default, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct SqliteConfig {
     pub table: Option<String>,
@@ -31,7 +31,7 @@ pub struct SqliteConfig {
 }
 
 /// Client-side configuration (`[client]` section).
-#[derive(Debug, Default, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct ClientConfig {
     /// Client operation mode: "standalone" (default) or "dbus".
@@ -39,31 +39,31 @@ pub struct ClientConfig {
 }
 
 /// Daemon-side configuration (`[daemon]` section).
-#[derive(Debug, Default, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct DaemonConfigSection {
     /// Daemon transport mode: "stdio" (default) or "dbus".
     pub mode: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct Config {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language_default: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paths: Option<PathConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqlite: Option<SqliteConfig>,
     /// Named backend definitions (`[backends.<name>]` sections).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backends: Option<HashMap<String, BackendDef>>,
     /// Client-side configuration.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<ClientConfig>,
     /// Daemon-side configuration.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon: Option<DaemonConfigSection>,
 }
 

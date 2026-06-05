@@ -9,13 +9,13 @@ pub use shared_sqlite::SharedSqliteConnection;
 
 use std::collections::{HashMap, HashSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Backend types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum BackendType {
     #[serde(rename = "file")]
     File,
@@ -214,7 +214,7 @@ impl SqlitePreset {
 // ---------------------------------------------------------------------------
 
 /// Per-backend definition from TOML `[backends.<name>]` sections.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BackendDef {
     #[serde(rename = "type")]
     pub backend_type: BackendType,
