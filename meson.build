@@ -18,7 +18,7 @@ endforeach
 cargo_features = features.length() > 0 ? '--features=' + ','.join(features) : ''
 
 # ── Build stamp (always stale — Cargo handles its own incremental rebuilds) ──
-custom_target('cargo-build',
+cargo_build = custom_target('cargo-build',
   output: 'cargo-build.stamp',
   build_always_stale: true,
   build_by_default: true,
@@ -32,6 +32,7 @@ custom_target('cargo-build',
 
 # ── Paths shared by install scripts ──────────────────────────────────────────
 _release_dir = meson.project_source_root() / 'target' / 'release'
+dbus_interfaces_dir = join_paths(get_option('datadir'), 'dbus-1', 'interfaces')
 
 # ── Binaries ─────────────────────────────────────────────────────────────────
 meson.add_install_script('sh', '-c',
@@ -54,6 +55,25 @@ meson.add_install_script('sh', '-c',
   _release_dir,
   get_option('libdir') / 'libverbisage.so',
 )
+
+# ── D-Bus introspection XML (generated from the interface code) ──────────────
+if get_option('dbus')
+  # Wrap in sh -c so Meson doesn't validate the binary path at configure time
+  # (the binary is produced by cargo build).
+  custom_target('introspect-xml',
+    depends: [cargo_build],
+    output: 'org.verbisage.Dictionary.xml',
+    build_by_default: true,
+    console: true,
+    command: [
+      'sh', '-c', '"$1" "$2"', 'sh',
+      _release_dir / 'verbisage-introspect',
+      '@OUTPUT@',
+    ],
+    install: true,
+    install_dir: dbus_interfaces_dir,
+  )
+endif
 
 # ── Data files ───────────────────────────────────────────────────────────────
 subdir('data')
