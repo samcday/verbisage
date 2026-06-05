@@ -78,6 +78,7 @@ impl DaemonHandler {
         }
 
         let backend = self.build_backend(lang);
+        crate::veprintln!("[handler] loaded backend for '{}'", lang);
 
         let mut cache = self.cache.lock().unwrap();
         cache
@@ -101,6 +102,12 @@ impl DaemonHandler {
         let files = lp.resolve_dict_files();
 
         if files.is_empty() {
+            eprintln!(
+                "warning: no dictionary files found for '{}' (dirs: system={}, user={})",
+                lang,
+                lp.system_dir.display(),
+                lp.user_dir.display(),
+            );
             return CachedBackend {
                 dictionary: Box::new(FileDictionaryBackend::new()),
                 spellchecker: None,
@@ -110,7 +117,11 @@ impl DaemonHandler {
 
         let dict = match FileDictionaryBackend::from_multiple_files(&files) {
             Ok(d) => d,
-            Err(_) => {
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to load dictionary files for '{}': {}",
+                    lang, e,
+                );
                 return CachedBackend {
                     dictionary: Box::new(FileDictionaryBackend::new()),
                     spellchecker: None,
@@ -138,20 +149,37 @@ impl DaemonHandler {
         let files = lp.resolve_sqlite_files();
 
         if let Some(path) = files.first() {
-            if let Ok(dict) = SqliteDictionaryBackend::from_sqlite(
+            match SqliteDictionaryBackend::from_sqlite(
                 path,
                 &config.sqlite_table,
                 &config.sqlite_word_col,
                 &config.sqlite_freq_col,
             ) {
-                let sc: Box<dyn SpellChecker> =
-                    Box::new(SqliteSpellChecker::new(std::sync::Arc::new(dict.clone())));
-                return CachedBackend {
-                    dictionary: Box::new(dict),
-                    spellchecker: Some(sc),
-                    predictor: None,
-                };
+                Ok(dict) => {
+                    let sc: Box<dyn SpellChecker> =
+                        Box::new(SqliteSpellChecker::new(std::sync::Arc::new(dict.clone())));
+                    return CachedBackend {
+                        dictionary: Box::new(dict),
+                        spellchecker: Some(sc),
+                        predictor: None,
+                    };
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to open sqlite database for '{}' ({}): {}",
+                        lang,
+                        path.display(),
+                        e,
+                    );
+                }
             }
+        } else {
+            eprintln!(
+                "warning: no sqlite database found for '{}' (dirs: system={}, user={})",
+                lang,
+                lp.system_dir.display(),
+                lp.user_dir.display(),
+            );
         }
 
         CachedBackend {
@@ -166,8 +194,26 @@ impl DaemonHandler {
         use crate::spellcheck::HunspellSpellChecker;
 
         let sc = match (&config.hunspell_affix, &config.hunspell_dict) {
-            (Some(aff), Some(dic)) => HunspellSpellChecker::from_files(aff, dic).ok(),
-            _ => HunspellSpellChecker::from_tag(lang).ok(),
+            (Some(aff), Some(dic)) => match HunspellSpellChecker::from_files(aff, dic) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to load hunspell files for '{}': {}",
+                        lang, e,
+                    );
+                    None
+                }
+            },
+            _ => match HunspellSpellChecker::from_tag(lang) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to load hunspell dictionary for '{}': {}",
+                        lang, e,
+                    );
+                    None
+                }
+            },
         };
 
         match sc {
