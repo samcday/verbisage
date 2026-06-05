@@ -601,6 +601,9 @@ pub fn compose_chain(
             SegmentRole::Dictionary | SegmentRole::Unigrams => {
                 dict_backends.push(dict);
                 spellcheckers.push(sc);
+                if let Some(p) = pred {
+                    predictors.push(p);
+                }
             }
             SegmentRole::Ngrams => {
                 if let Some(p) = pred {
