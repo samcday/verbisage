@@ -2,7 +2,7 @@ use std::error::Error;
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 
 use super::{DictionaryBackend, DictionaryQuery, DictionaryResult, SharedQueryCache};
 
@@ -35,46 +35,91 @@ pub struct SqliteDictionaryBackend {
 }
 
 impl SqliteDictionaryBackend {
-    /// Open a SQLite database at `path`.
+    /// Open a SQLite database at `path` read-write.
     ///
-    /// Automatically creates indexes on `word_column` and
-    /// `LENGTH(word_column)` if they do not exist.
+    /// The table is expected to already exist with the correct schema.
+    /// No indexes are created — call [`ensure_table`](Self::ensure_table)
+    /// explicitly (e.g. from [`add_word`](Self::add_word)) if needed.
     pub fn from_sqlite<P: AsRef<Path>>(
         path: P,
         table_name: &str,
         word_column: &str,
         frequency_column: &str,
     ) -> Result<Self, SharedError> {
-        let conn = Connection::open(path)?;
-
-        let idx_word = format!("idx_{}_{}", table_name, word_column);
-        if let Err(e) = conn.execute(
-            &format!(
-                "CREATE INDEX IF NOT EXISTS {} ON {}({})",
-                idx_word, table_name, word_column
-            ),
-            [],
-        ) {
-            eprintln!("warning: sqlite schema issue — {}", e);
-        }
-        let idx_len = format!("idx_{}_{}_length", table_name, word_column);
-        if let Err(e) = conn.execute(
-            &format!(
-                "CREATE INDEX IF NOT EXISTS {} ON {}(LENGTH({}))",
-                idx_len, table_name, word_column
-            ),
-            [],
-        ) {
-            eprintln!("warning: sqlite schema issue — {}", e);
-        }
-
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: Mutex::new(Connection::open(path)?),
             table_name: table_name.to_string(),
             word_column: word_column.to_string(),
             frequency_column: frequency_column.to_string(),
             cache: SharedQueryCache::new(),
         })
+    }
+
+    /// Open a SQLite database **read-only** (system dictionaries).
+    ///
+    /// Does not create any files or indexes.  Returns an error if the file
+    /// does not exist.
+    pub fn from_sqlite_readonly<P: AsRef<Path>>(
+        path: P,
+        table_name: &str,
+        word_column: &str,
+        frequency_column: &str,
+    ) -> Result<Self, SharedError> {
+        Ok(Self {
+            conn: Mutex::new(Connection::open_with_flags(
+                path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?),
+            table_name: table_name.to_string(),
+            word_column: word_column.to_string(),
+            frequency_column: frequency_column.to_string(),
+            cache: SharedQueryCache::new(),
+        })
+    }
+
+    /// Ensure the table and indexes exist (idempotent).
+    /// Safe to call even when the table already exists.
+    fn ensure_table(&self) {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {} ({} TEXT NOT NULL, {} REAL NOT NULL)",
+            self.table_name, self.word_column, self.frequency_column,
+        );
+        if let Err(e) = conn.execute(&sql, []) {
+            eprintln!("warning: sqlite ensure_table failed — {}", e);
+            return;
+        }
+        let idx_word = format!("idx_{}_{}", self.table_name, self.word_column);
+        let _ = conn.execute(
+            &format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {}({})",
+                idx_word, self.table_name, self.word_column,
+            ),
+            [],
+        );
+        let idx_len = format!("idx_{}_{}_length", self.table_name, self.word_column);
+        let _ = conn.execute(
+            &format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {}(LENGTH({}))",
+                idx_len, self.table_name, self.word_column,
+            ),
+            [],
+        );
+    }
+
+    /// Insert or update a word's frequency.
+    ///
+    /// Creates the table and indexes on first call (lazy initialization).
+    pub fn add_word(&self, word: &str, frequency: f64) {
+        self.ensure_table();
+        let sql = format!(
+            "INSERT OR REPLACE INTO {} ({}, {}) VALUES (?1, ?2)",
+            self.table_name, self.word_column, self.frequency_column,
+        );
+        let conn = self.conn.lock().unwrap();
+        if let Err(e) = conn.execute(&sql, [word, &frequency.to_string()]) {
+            eprintln!("warning: sqlite add_word failed — {}", e);
+        }
     }
 
     /// Create an in-memory database (`:memory:`).

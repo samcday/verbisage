@@ -146,46 +146,70 @@ impl DaemonHandler {
         use crate::spellcheck::SqliteSpellChecker;
 
         let lp = Self::lang_paths(lang, config);
-        let files = lp.resolve_sqlite_files();
 
-        if let Some(path) = files.first() {
-            match SqliteDictionaryBackend::from_sqlite(
-                path,
-                &config.sqlite_table,
-                &config.sqlite_word_col,
-                &config.sqlite_freq_col,
-            ) {
-                Ok(dict) => {
-                    let sc: Box<dyn SpellChecker> =
-                        Box::new(SqliteSpellChecker::new(std::sync::Arc::new(dict.clone())));
-                    return CachedBackend {
-                        dictionary: Box::new(dict),
-                        spellchecker: Some(sc),
-                        predictor: None,
-                    };
-                }
-                Err(e) => {
+        // Prefer user DB (writable) over system DB (read-only).
+        let dict = lp
+            .user_sqlite_file()
+            .and_then(|path| {
+                SqliteDictionaryBackend::from_sqlite(
+                    &path,
+                    &config.sqlite_table,
+                    &config.sqlite_word_col,
+                    &config.sqlite_freq_col,
+                )
+                .map_err(|e| {
                     eprintln!(
-                        "warning: failed to open sqlite database for '{}' ({}): {}",
+                        "warning: failed to open user sqlite db for '{}' ({}): {}",
                         lang,
                         path.display(),
                         e,
-                    );
+                    )
+                })
+                .ok()
+            })
+            .or_else(|| {
+                lp.system_sqlite_file().and_then(|path| {
+                    SqliteDictionaryBackend::from_sqlite_readonly(
+                        &path,
+                        &config.sqlite_table,
+                        &config.sqlite_word_col,
+                        &config.sqlite_freq_col,
+                    )
+                    .map_err(|e| {
+                        eprintln!(
+                            "warning: failed to open system sqlite db for '{}' ({}): {}",
+                            lang,
+                            path.display(),
+                            e,
+                        )
+                    })
+                    .ok()
+                })
+            });
+
+        match dict {
+            Some(d) => {
+                let sc: Box<dyn SpellChecker> =
+                    Box::new(SqliteSpellChecker::new(std::sync::Arc::new(d.clone())));
+                CachedBackend {
+                    dictionary: Box::new(d),
+                    spellchecker: Some(sc),
+                    predictor: None,
                 }
             }
-        } else {
-            eprintln!(
-                "warning: no sqlite database found for '{}' (dirs: system={}, user={})",
-                lang,
-                lp.system_dir.display(),
-                lp.user_dir.display(),
-            );
-        }
-
-        CachedBackend {
-            dictionary: Box::new(FileDictionaryBackend::new()),
-            spellchecker: None,
-            predictor: None,
+            None => {
+                eprintln!(
+                    "warning: no sqlite database found for '{}' (dirs: system={}, user={})",
+                    lang,
+                    lp.system_dir.display(),
+                    lp.user_dir.display(),
+                );
+                CachedBackend {
+                    dictionary: Box::new(FileDictionaryBackend::new()),
+                    spellchecker: None,
+                    predictor: None,
+                }
+            }
         }
     }
 

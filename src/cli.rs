@@ -295,28 +295,45 @@ fn open_sqlite_backend(
         args.patterns.user_sqlite.as_deref(),
     );
 
-    let db_path = match lp.resolve_sqlite_files().first() {
-        Some(p) => p.clone(),
-        None => return (Box::new(FileDictionaryBackend::new()), None),
-    };
-
     let table = args.table.as_deref().unwrap_or("words");
     let word_col = args.word_col.as_deref().unwrap_or("word");
     let freq_col = args.freq_col.as_deref().unwrap_or("frequency");
 
-    let dict = SqliteDictionaryBackend::from_sqlite(&db_path, table, word_col, freq_col)
-        .unwrap_or_else(|e| {
-            eprintln!(
-                "failed to open sqlite database '{}': {}",
-                db_path.display(),
-                e
-            );
-            std::process::exit(1);
+    let dict = lp
+        .user_sqlite_file()
+        .and_then(|path| {
+            SqliteDictionaryBackend::from_sqlite(&path, table, word_col, freq_col)
+                .map_err(|e| {
+                    eprintln!(
+                        "warning: failed to open user sqlite db '{}': {}",
+                        path.display(),
+                        e
+                    )
+                })
+                .ok()
+        })
+        .or_else(|| {
+            lp.system_sqlite_file().and_then(|path| {
+                SqliteDictionaryBackend::from_sqlite_readonly(&path, table, word_col, freq_col)
+                    .map_err(|e| {
+                        eprintln!(
+                            "warning: failed to open system sqlite db '{}': {}",
+                            path.display(),
+                            e
+                        )
+                    })
+                    .ok()
+            })
         });
 
-    let sc: Box<dyn SpellChecker> =
-        Box::new(SqliteSpellChecker::new(std::sync::Arc::new(dict.clone())));
-    (Box::new(dict), Some(sc))
+    match dict {
+        Some(d) => {
+            let sc: Box<dyn SpellChecker> =
+                Box::new(SqliteSpellChecker::new(std::sync::Arc::new(d.clone())));
+            (Box::new(d), Some(sc))
+        }
+        None => (Box::new(FileDictionaryBackend::new()), None),
+    }
 }
 
 // ── Backend config helper (used by both daemon and one-shot) ───────────────

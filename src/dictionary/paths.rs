@@ -229,6 +229,36 @@ impl LanguagePaths {
         let usr = self.resolve_user(&usr_strs);
         sys.into_iter().chain(usr).collect()
     }
+
+    /// Resolve only the **system** sqlite file (read-only backend).
+    pub fn system_sqlite_file(&self) -> Option<PathBuf> {
+        let strs: Vec<&str> = self
+            .system_sqlite_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        self.resolve_system(&strs).into_iter().next()
+    }
+
+    /// Resolve only the **user** sqlite file (read-write backend).
+    /// Returns the first existing file, if any.
+    pub fn user_sqlite_file(&self) -> Option<PathBuf> {
+        let strs: Vec<&str> = self
+            .user_sqlite_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        self.resolve_user(&strs).into_iter().next()
+    }
+
+    /// Intended user sqlite file path, whether it exists or not.
+    /// Uses the first pattern so the caller can create it lazily.
+    pub fn user_sqlite_path(&self) -> Option<PathBuf> {
+        let fallbacks = language_fallbacks(&self.language);
+        let pattern = self.user_sqlite_patterns.first()?;
+        let lang = fallbacks.first().unwrap_or(&self.language);
+        Some(self.user_dir.join(pattern.replace("{lang}", lang)))
+    }
 }
 
 // ── internal helpers ──────────────────────────────────────────────────────
