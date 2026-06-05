@@ -29,8 +29,7 @@ struct Cli {
     #[command(flatten)]
     shared: SharedArgs,
 
-    /// Operation mode
-    #[arg(long)]
+    /// Operation mode (positional)
     mode: Option<Mode>,
 
     /// Word to check / correct / query against
@@ -67,7 +66,7 @@ fn main() {
         if cli.word.is_some() || cli.context.is_some() {
             Mode::Check
         } else {
-            eprintln!("usage: verbisage --mode <check|correct|predict|query> [options]");
+            eprintln!("usage: verbisage <check|correct|predict|query> [options]");
             std::process::exit(1);
         }
     });
@@ -88,7 +87,7 @@ fn run_check(cli: &Cli) {
         .as_deref()
         .or_else(|| cli.context.as_deref())
         .unwrap_or_else(|| {
-            eprintln!("usage: verbisage --mode check --word <word>");
+            eprintln!("usage: verbisage check --word <word>");
             std::process::exit(1);
         });
 
@@ -125,7 +124,7 @@ fn run_check(cli: &Cli) {
 
 fn run_correct(cli: &Cli) {
     let word = cli.word.as_deref().unwrap_or_else(|| {
-        eprintln!("usage: verbisage --mode correct --word <word>");
+        eprintln!("usage: verbisage correct --word <word>");
         std::process::exit(1);
     });
 

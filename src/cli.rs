@@ -65,10 +65,6 @@ pub struct SharedArgs {
     #[arg(long)]
     pub dict: Option<PathBuf>,
 
-    /// Language tag for hunspell when --affix/--dict are absent
-    #[arg(long, default_value = "en_US")]
-    pub tag: String,
-
     /// Use D-Bus transport (server in daemon mode, client in one-shot modes).
     #[arg(long)]
     pub dbus: bool,
