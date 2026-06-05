@@ -1,8 +1,3 @@
-# When the dbus feature is disabled no introspection XML is generated from
-# code, so we install the checked-in snapshot instead.
-if not get_option('dbus')
-  install_data(
-    'org.verbisage.Dictionary.xml',
-    install_dir: dbus_interfaces_dir,
-  )
-endif
+# No-op: the D-Bus introspection XML is generated at build time when
+# -Ddbus=true (see top-level meson.build). When dbus is disabled there
+# is no interface to describe, so no XML is installed.
