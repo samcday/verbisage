@@ -2,10 +2,9 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
-use verbisage::daemon::{DaemonHandler, run};
+use verbisage::daemon::{BackendKind, DaemonConfig, DaemonHandler, run};
 use verbisage::dictionary::paths::{LanguagePaths, PathOverride, expand_tilde};
 use verbisage::dictionary::{DictionaryQuery, FileDictionaryBackend};
-use verbisage::prediction::Predictor;
 use verbisage::spellcheck::{DictionarySpellChecker, SpellChecker};
 
 #[cfg(feature = "dbus")]
@@ -22,15 +21,6 @@ use verbisage::spellcheck::HunspellSpellChecker;
 use verbisage::spellcheck::SqliteSpellChecker;
 
 // ── Enums ─────────────────────────────────────────────────────────────────
-
-#[derive(ValueEnum, Clone)]
-enum BackendKind {
-    File,
-    #[cfg(feature = "sqlite")]
-    Sqlite,
-    #[cfg(feature = "hunspell")]
-    Hunspell,
-}
 
 #[derive(ValueEnum, Clone, Default)]
 enum Mode {
@@ -291,14 +281,21 @@ fn open_sqlite_backend(
 // ── Mode dispatchers ──────────────────────────────────────────────────────
 
 fn run_daemon(cli: &Cli) {
-    let lang = cli.language.as_deref().unwrap_or("en_US");
-    let (dict, sc) = open_backend(cli, lang);
-    let handler = DaemonHandler::new(
-        dict,
-        sc,
-        None as Option<Box<dyn Predictor>>,
-        lang.to_string(),
+    let config = DaemonConfig::from_cli(
+        &cli.backend,
+        cli.language.as_deref(),
+        cli.path.as_ref(),
+        cli.system_data_dir.as_ref(),
+        cli.user_data_dir.as_ref(),
+        cli.system_dict.as_deref(),
+        cli.user_dict.as_deref(),
+        &cli.table,
+        &cli.word_col,
+        &cli.freq_col,
+        cli.affix.as_ref(),
+        cli.dict.as_ref(),
     );
+    let handler = DaemonHandler::with_config(config);
 
     if cli.dbus {
         #[cfg(feature = "dbus")]

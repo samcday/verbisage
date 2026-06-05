@@ -1,37 +1,83 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
-use crate::dictionary::{DictionaryBackend, DictionaryQuery, DictionaryResult};
+use crate::dictionary::paths::LanguagePaths;
+use crate::dictionary::{
+    DictionaryBackend, DictionaryQuery, DictionaryResult, FileDictionaryBackend,
+};
 use crate::prediction::{Prediction, Predictor};
-use crate::spellcheck::SpellChecker;
+use crate::spellcheck::{DictionarySpellChecker, SpellChecker};
 
+use super::config::{BackendKind, DaemonConfig};
 use super::protocol::{
     DaemonRequest, DaemonResponse, FrequencyParams, IsCorrectParams, PredictParams, QueryParams,
     SuggestParams,
 };
 
-/// Concrete handler that owns the three backend trait objects and dispatches
-/// incoming requests to the appropriate one.
+struct CachedBackend {
+    dictionary: Box<dyn DictionaryBackend>,
+    spellchecker: Option<Box<dyn SpellChecker>>,
+    predictor: Option<Box<dyn Predictor>>,
+}
+
 pub struct DaemonHandler {
-    pub dictionary: Arc<Box<dyn DictionaryBackend>>,
-    pub spellchecker: Option<Arc<Box<dyn SpellChecker>>>,
-    pub predictor: Option<Arc<Box<dyn Predictor>>>,
-    /// Language tag used when a request provides no override.
+    config: DaemonConfig,
+    cache: Mutex<HashMap<String, Arc<CachedBackend>>>,
     pub default_lang: String,
 }
 
 impl DaemonHandler {
+    /// Create from pre-built backends (used by tests).
     pub fn new(
         dictionary: Box<dyn DictionaryBackend>,
         spellchecker: Option<Box<dyn SpellChecker>>,
         predictor: Option<Box<dyn Predictor>>,
         default_lang: String,
     ) -> Self {
+        let mut cache = HashMap::new();
+        cache.insert(
+            default_lang.clone(),
+            Arc::new(CachedBackend {
+                dictionary,
+                spellchecker,
+                predictor,
+            }),
+        );
         Self {
-            dictionary: Arc::new(dictionary),
-            spellchecker: spellchecker.map(|s| Arc::new(s)),
-            predictor: predictor.map(|p| Arc::new(p)),
+            config: DaemonConfig::default_for(&default_lang),
+            cache: Mutex::new(cache),
+            default_lang,
+        }
+    }
+
+    /// Create from config with an empty cache (used by daemon).
+    /// When `eager_path` is set, the default language backend is loaded at
+    /// startup instead of lazily.
+    pub fn with_config(config: DaemonConfig) -> Self {
+        let default_lang = config.default_lang.clone();
+        let mut cache = HashMap::new();
+
+        if let Some(path) = &config.eager_path {
+            if let Ok(dict) = FileDictionaryBackend::from_multiple_files(&[path.clone()]) {
+                let sc: Box<dyn SpellChecker> = Box::new(DictionarySpellChecker::new(
+                    std::sync::Arc::new(dict.clone()),
+                ));
+                cache.insert(
+                    default_lang.clone(),
+                    Arc::new(CachedBackend {
+                        dictionary: Box::new(dict),
+                        spellchecker: Some(sc),
+                        predictor: None,
+                    }),
+                );
+            }
+        }
+
+        Self {
+            config,
+            cache: Mutex::new(cache),
             default_lang,
         }
     }
@@ -42,20 +88,146 @@ impl DaemonHandler {
         req_lang.unwrap_or(&self.default_lang)
     }
 
-    // ── Typed API (used by DBus server and stdio handler) ────────────────
+    fn get_or_load_backend(&self, lang: &str) -> Arc<CachedBackend> {
+        {
+            let cache = self.cache.lock().unwrap();
+            if let Some(backend) = cache.get(lang) {
+                return backend.clone();
+            }
+        }
 
-    pub fn is_correct(&self, word: &str, _lang: &str) -> bool {
-        match &self.spellchecker {
-            Some(sc) => sc.is_correct(word),
-            None => self.dictionary.contains(word),
+        let backend = self.build_backend(lang);
+
+        let mut cache = self.cache.lock().unwrap();
+        cache
+            .entry(lang.to_string())
+            .or_insert_with(|| Arc::new(backend))
+            .clone()
+    }
+
+    fn build_backend(&self, lang: &str) -> CachedBackend {
+        match self.config.backend {
+            BackendKind::File => Self::build_file_backend(lang, &self.config),
+            #[cfg(feature = "sqlite")]
+            BackendKind::Sqlite => Self::build_sqlite_backend(lang, &self.config),
+            #[cfg(feature = "hunspell")]
+            BackendKind::Hunspell => Self::build_hunspell_backend(lang, &self.config),
         }
     }
 
-    pub fn suggest(&self, word: &str, max: usize, _lang: &str) -> Vec<String> {
-        let mut suggestions = match &self.spellchecker {
+    fn build_file_backend(lang: &str, config: &DaemonConfig) -> CachedBackend {
+        let lp = Self::lang_paths(lang, config);
+        let files = lp.resolve_dict_files();
+
+        if files.is_empty() {
+            return CachedBackend {
+                dictionary: Box::new(FileDictionaryBackend::new()),
+                spellchecker: None,
+                predictor: None,
+            };
+        }
+
+        let dict = match FileDictionaryBackend::from_multiple_files(&files) {
+            Ok(d) => d,
+            Err(_) => {
+                return CachedBackend {
+                    dictionary: Box::new(FileDictionaryBackend::new()),
+                    spellchecker: None,
+                    predictor: None,
+                };
+            }
+        };
+
+        let sc: Box<dyn SpellChecker> = Box::new(DictionarySpellChecker::new(std::sync::Arc::new(
+            dict.clone(),
+        )));
+        CachedBackend {
+            dictionary: Box::new(dict),
+            spellchecker: Some(sc),
+            predictor: None,
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn build_sqlite_backend(lang: &str, config: &DaemonConfig) -> CachedBackend {
+        use crate::dictionary::SqliteDictionaryBackend;
+        use crate::spellcheck::SqliteSpellChecker;
+
+        let lp = Self::lang_paths(lang, config);
+        let files = lp.resolve_sqlite_files();
+
+        if let Some(path) = files.first() {
+            if let Ok(dict) = SqliteDictionaryBackend::from_sqlite(
+                path,
+                &config.sqlite_table,
+                &config.sqlite_word_col,
+                &config.sqlite_freq_col,
+            ) {
+                let sc: Box<dyn SpellChecker> =
+                    Box::new(SqliteSpellChecker::new(std::sync::Arc::new(dict.clone())));
+                return CachedBackend {
+                    dictionary: Box::new(dict),
+                    spellchecker: Some(sc),
+                    predictor: None,
+                };
+            }
+        }
+
+        CachedBackend {
+            dictionary: Box::new(FileDictionaryBackend::new()),
+            spellchecker: None,
+            predictor: None,
+        }
+    }
+
+    #[cfg(feature = "hunspell")]
+    fn build_hunspell_backend(lang: &str, config: &DaemonConfig) -> CachedBackend {
+        use crate::spellcheck::HunspellSpellChecker;
+
+        let sc = match (&config.hunspell_affix, &config.hunspell_dict) {
+            (Some(aff), Some(dic)) => HunspellSpellChecker::from_files(aff, dic).ok(),
+            _ => HunspellSpellChecker::from_tag(lang).ok(),
+        };
+
+        match sc {
+            Some(checker) => CachedBackend {
+                dictionary: Box::new(FileDictionaryBackend::new()),
+                spellchecker: Some(Box::new(checker)),
+                predictor: None,
+            },
+            None => CachedBackend {
+                dictionary: Box::new(FileDictionaryBackend::new()),
+                spellchecker: None,
+                predictor: None,
+            },
+        }
+    }
+
+    fn lang_paths(lang: &str, config: &DaemonConfig) -> LanguagePaths {
+        let mut lp = LanguagePaths::new(lang);
+        lp.system_dir = config.language_paths.system_dir.clone();
+        lp.user_dir = config.language_paths.user_dir.clone();
+        lp.system_file_override = config.language_paths.system_file_override.clone();
+        lp.user_file_override = config.language_paths.user_file_override.clone();
+        lp
+    }
+
+    // ── Typed API ─────────────────────────────────────────────────────────
+
+    pub fn is_correct(&self, word: &str, lang: &str) -> bool {
+        let backend = self.get_or_load_backend(lang);
+        match &backend.spellchecker {
+            Some(sc) => sc.is_correct(word),
+            None => backend.dictionary.contains(word),
+        }
+    }
+
+    pub fn suggest(&self, word: &str, max: usize, lang: &str) -> Vec<String> {
+        let backend = self.get_or_load_backend(lang);
+        let mut suggestions = match &backend.spellchecker {
             Some(sc) => sc.suggest(word),
             None => {
-                let results = self.dictionary.query_prefixes(&[DictionaryQuery {
+                let results = backend.dictionary.query_prefixes(&[DictionaryQuery {
                     prefix: Some(word.to_string()),
                     suffix: None,
                     min_length: None,
@@ -68,22 +240,25 @@ impl DaemonHandler {
         suggestions
     }
 
-    pub fn query(&self, query: &DictionaryQuery, _lang: &str) -> Vec<DictionaryResult> {
-        self.dictionary.query_prefixes(&[query.clone()])
+    pub fn query(&self, query: &DictionaryQuery, lang: &str) -> Vec<DictionaryResult> {
+        let backend = self.get_or_load_backend(lang);
+        backend.dictionary.query_prefixes(&[query.clone()])
     }
 
-    pub fn predict(&self, context: &[&str], max: usize, _lang: &str) -> Vec<Prediction> {
-        match &self.predictor {
+    pub fn predict(&self, context: &[&str], max: usize, lang: &str) -> Vec<Prediction> {
+        let backend = self.get_or_load_backend(lang);
+        match &backend.predictor {
             Some(pred) => pred.predict_next(context, max),
             None => Vec::new(),
         }
     }
 
-    pub fn frequency(&self, word: &str, _lang: &str) -> f64 {
-        self.dictionary.get_frequency(word)
+    pub fn frequency(&self, word: &str, lang: &str) -> f64 {
+        let backend = self.get_or_load_backend(lang);
+        backend.dictionary.get_frequency(word)
     }
 
-    // ── JSON-protocol dispatch (used by stdio daemon) ────────────────────
+    // ── JSON-protocol dispatch ────────────────────────────────────────────
 
     pub fn handle(&self, req: DaemonRequest) -> DaemonResponse {
         let id = req.id;
