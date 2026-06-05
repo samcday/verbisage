@@ -168,28 +168,7 @@ fn open_backend(
         BackendKind::File => open_file_backend(cli),
 
         #[cfg(feature = "sqlite")]
-        BackendKind::Sqlite => {
-            let dict = SqliteDictionaryBackend::from_sqlite(
-                &cli.path.as_deref().unwrap_or_else(|| {
-                    eprintln!("--path is required for sqlite backend");
-                    std::process::exit(1);
-                }),
-                &cli.table,
-                &cli.word_col,
-                &cli.freq_col,
-            )
-            .unwrap_or_else(|e| {
-                eprintln!(
-                    "failed to open sqlite database '{}': {}",
-                    cli.path.as_ref().unwrap().display(),
-                    e
-                );
-                std::process::exit(1);
-            });
-            let sc: Box<dyn SpellChecker> =
-                Box::new(SqliteSpellChecker::new(std::sync::Arc::new(dict.clone())));
-            (Box::new(dict), Some(sc))
-        }
+        BackendKind::Sqlite => open_sqlite_backend(cli),
 
         #[cfg(feature = "hunspell")]
         BackendKind::Hunspell => {
@@ -256,6 +235,59 @@ fn open_file_backend(
     let sc: Box<dyn SpellChecker> = Box::new(DictionarySpellChecker::new(std::sync::Arc::new(
         dict.clone(),
     )));
+    (Box::new(dict), Some(sc))
+}
+
+/// Open the SQLite backend, resolving via LanguagePaths when --path is absent.
+#[cfg(feature = "sqlite")]
+fn open_sqlite_backend(
+    cli: &Cli,
+) -> (
+    Box<dyn verbisage::dictionary::DictionaryBackend>,
+    Option<Box<dyn SpellChecker>>,
+) {
+    let db_path = if let Some(path) = &cli.path {
+        path.clone()
+    } else {
+        let mut lp = LanguagePaths::new(&cli.language);
+        if let Some(dir) = &cli.system_data_dir {
+            lp = lp.with_system_dir(expand_tilde(dir.to_str().unwrap_or("")));
+        }
+        if let Some(dir) = &cli.user_data_dir {
+            lp = lp.with_user_dir(expand_tilde(dir.to_str().unwrap_or("")));
+        }
+        lp.system_file_override = PathOverride::from_cli(cli.system_dict.as_deref());
+        lp.user_file_override = PathOverride::from_cli(cli.user_dict.as_deref());
+
+        let files = lp.resolve_sqlite_files();
+        match files.first() {
+            Some(p) => p.clone(),
+            None => {
+                eprintln!("no sqlite database found for language '{}'", cli.language);
+                eprintln!(
+                    "  looked for database_{}.db / lm_{}.db in:",
+                    cli.language, cli.language
+                );
+                eprintln!("    system: {}", lp.system_dir.display());
+                eprintln!("    user:   {}", lp.user_dir.display());
+                std::process::exit(1);
+            }
+        }
+    };
+
+    let dict =
+        SqliteDictionaryBackend::from_sqlite(&db_path, &cli.table, &cli.word_col, &cli.freq_col)
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "failed to open sqlite database '{}': {}",
+                    db_path.display(),
+                    e
+                );
+                std::process::exit(1);
+            });
+
+    let sc: Box<dyn SpellChecker> =
+        Box::new(SqliteSpellChecker::new(std::sync::Arc::new(dict.clone())));
     (Box::new(dict), Some(sc))
 }
 

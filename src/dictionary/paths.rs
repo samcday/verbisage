@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Build-time overridable defaults
@@ -28,9 +28,6 @@ pub const SYSTEM_DATA_DIR: &str = env_or!("VERBISAGE_SYSTEM_DIR", "/usr/share/ve
 /// Override at build time via `VERBISAGE_USER_DIR`.
 pub const USER_DATA_DIR_REL: &str = env_or!("VERBISAGE_USER_DIR", ".local/share/verbisage");
 
-/// Extension list searched when resolving dictionary files for a language.
-const DICT_EXTENSIONS: &[&str] = &["dic", "freq", "wordlist"];
-
 // ---------------------------------------------------------------------------
 // Helper: tilde expansion
 // ---------------------------------------------------------------------------
@@ -48,7 +45,6 @@ pub fn expand_tilde(path: &str) -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         PathBuf::from(home).join(after.trim_start_matches('/'))
     } else {
-        // ~user — not supported; pass through verbatim
         PathBuf::from(path)
     }
 }
@@ -60,11 +56,11 @@ pub fn expand_tilde(path: &str) -> PathBuf {
 /// How to treat a particular dictionary layer (system or user).
 #[derive(Debug, Clone)]
 pub enum PathOverride {
-    /// No explicit override — look up files inside the standard directory.
+    /// No explicit override — look up files via pattern matching.
     Default,
     /// Explicitly skip this layer (empty string was passed).
     Skip,
-    /// Use this specific file path.
+    /// Use this specific file path directly.
     File(PathBuf),
 }
 
@@ -84,15 +80,17 @@ impl PathOverride {
 
 /// Resolved system + user dictionary paths for a given language.
 ///
-/// The resolution order is:
+/// Each backend provides its own filename patterns; `{lang}` inside a
+/// pattern is replaced with the configured language tag.  For example:
 ///
-/// 1. If a system-file override is given, use only that file
-///    (or skip the system layer entirely if the override was empty).
-/// 2. Otherwise scan `system_dir` for `<language>.{dic,freq,wordlist}`.
-/// 3. Same for the user layer (override first, then directory scan).
+/// | Backend | System pattern | User pattern |
+/// |---------|----------------|--------------|
+/// | file    | `{lang}.dic`   | `{lang}.dic` |
+/// | sqlite  | `database_{lang}.db` | `lm_{lang}.db` |
 ///
-/// Files are returned **system-first, user-last** so that user entries
-/// override system entries when merged.
+/// Call [`resolve_system`](Self::resolve_system) and
+/// [`resolve_user`](Self::resolve_user) with the appropriate patterns,
+/// then combine the results.
 #[derive(Debug, Clone)]
 pub struct LanguagePaths {
     pub system_dir: PathBuf,
@@ -114,59 +112,87 @@ impl LanguagePaths {
         }
     }
 
-    /// Set the system data directory (overrides the built-in default).
+    /// Override the system data directory.
     pub fn with_system_dir(mut self, dir: PathBuf) -> Self {
         self.system_dir = dir;
         self
     }
 
-    /// Set the user data directory (overrides the built-in default).
+    /// Override the user data directory.
     pub fn with_user_dir(mut self, dir: PathBuf) -> Self {
         self.user_dir = dir;
         self
     }
 
-    /// Resolve all dictionary files that should be loaded, in load order.
+    // ── Pattern-based resolution ────────────────────────────────────────
+
+    /// Resolve files in **system** directory matching any of `patterns`.
     ///
-    /// **System files come first, user files come last**, so that user
-    /// frequencies take precedence when a word appears in both layers.
-    pub fn resolve_dict_files(&self) -> Vec<PathBuf> {
-        let mut files: Vec<PathBuf> = Vec::new();
-
-        // ── System layer ────────────────────────────────────────────────
+    /// Each pattern has `{lang}` replaced with [`self.language`].  An
+    /// override (file / skip) bypasses the directory scan entirely.
+    ///
+    /// Returns an empty vec when nothing is found and no file override
+    /// was given.
+    pub fn resolve_system(&self, patterns: &[&str]) -> Vec<PathBuf> {
         match &self.system_file_override {
-            PathOverride::Skip => { /* skip entirely */ }
+            PathOverride::Skip => return Vec::new(),
             PathOverride::File(p) => {
-                files.push(expand_tilde(p.to_str().unwrap_or("")));
+                return vec![expand_tilde(p.to_str().unwrap_or(""))];
             }
-            PathOverride::Default => {
-                for ext in DICT_EXTENSIONS {
-                    let f = self.system_dir.join(format!("{}.{}", self.language, ext));
-                    if f.exists() {
-                        files.push(f);
-                    }
-                }
-            }
+            PathOverride::Default => {}
         }
+        find_files(&self.system_dir, &self.language, patterns)
+    }
 
-        // ── User layer ──────────────────────────────────────────────────
+    /// Resolve files in **user** directory matching any of `patterns`.
+    ///
+    /// Same semantics as [`resolve_system`](Self::resolve_system).
+    pub fn resolve_user(&self, patterns: &[&str]) -> Vec<PathBuf> {
         match &self.user_file_override {
-            PathOverride::Skip => { /* skip entirely */ }
+            PathOverride::Skip => return Vec::new(),
             PathOverride::File(p) => {
-                files.push(expand_tilde(p.to_str().unwrap_or("")));
+                return vec![expand_tilde(p.to_str().unwrap_or(""))];
             }
-            PathOverride::Default => {
-                for ext in DICT_EXTENSIONS {
-                    let f = self.user_dir.join(format!("{}.{}", self.language, ext));
-                    if f.exists() {
-                        files.push(f);
-                    }
-                }
-            }
+            PathOverride::Default => {}
         }
+        find_files(&self.user_dir, &self.language, patterns)
+    }
 
+    /// Convenience: word-list dictionary files (file backend).
+    ///
+    /// Looks for `<lang>.dic`, `<lang>.freq`, and `<lang>.wordlist` in
+    /// both system and user directories.  User files are returned after
+    /// system files so their frequencies take precedence.
+    pub fn resolve_dict_files(&self) -> Vec<PathBuf> {
+        let patterns = &["{lang}.dic", "{lang}.freq", "{lang}.wordlist"];
+        let mut files = self.resolve_system(patterns);
+        files.extend(self.resolve_user(patterns));
         files
     }
+
+    /// SQLite dictionary files (sqlite backend).
+    ///
+    /// System: `database_{lang}.db`  (read‑only reference)
+    /// User:   `lm_{lang}.db`       (trainable language model)
+    pub fn resolve_sqlite_files(&self) -> Vec<PathBuf> {
+        let sys = self.resolve_system(&["database_{lang}.db"]);
+        let usr = self.resolve_user(&["lm_{lang}.db"]);
+        sys.into_iter().chain(usr).collect()
+    }
+}
+
+// ── internal helper ───────────────────────────────────────────────────────
+
+fn find_files(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for pattern in patterns {
+        let filename = pattern.replace("{lang}", language);
+        let f = dir.join(&filename);
+        if f.exists() {
+            files.push(f);
+        }
+    }
+    files
 }
 
 // ---------------------------------------------------------------------------
@@ -197,9 +223,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_empty_for_nonexistent_language() {
-        let lp = LanguagePaths::new("nonexistent_lang_xyz");
-        let files = lp.resolve_dict_files();
+    fn resolve_empty_for_nonexistent_patterns() {
+        let lp = LanguagePaths::new("en_US");
+        let files = lp.resolve_system(&["nonexistent_{lang}.xyz"]);
         assert!(files.is_empty());
     }
 
@@ -211,5 +237,15 @@ mod tests {
             ..LanguagePaths::new("en_US")
         };
         assert!(lp.resolve_dict_files().is_empty());
+        assert!(lp.resolve_sqlite_files().is_empty());
+    }
+
+    #[test]
+    fn lang_substitution() {
+        assert_eq!(
+            "database_en_US.db",
+            "database_{lang}.db".replace("{lang}", "en_US")
+        );
+        assert_eq!("lm_de.db", "lm_{lang}.db".replace("{lang}", "de"));
     }
 }
