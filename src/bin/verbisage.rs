@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use clap::{Parser, ValueEnum};
 
 use verbisage::backends::BackendDef;
-use verbisage::cli::{SharedArgs, open_backend};
+use verbisage::cli::{ClientMode, SharedArgs, open_backend};
 use verbisage::config::{default_config_path, load_config};
 use verbisage::debug;
 use verbisage::dictionary::paths::expand_tilde;
@@ -78,11 +78,14 @@ fn main() {
         .or_else(|| Some(default_config_path()));
     let config = config_path.as_ref().and_then(load_config);
 
+    // Capture CLI --mode before apply_defaults consumes cli.shared.
+    let cli_mode = cli.shared.mode;
+
     // Merge config into CLI and apply defaults.
     let shared = cli.shared.clone().apply_defaults(config.as_ref());
     let named_backends = config.as_ref().and_then(|c| c.backends.as_ref());
 
-    let mode = cli.mode.clone().unwrap_or_else(|| {
+    let operation = cli.mode.clone().unwrap_or_else(|| {
         if cli.word.is_some() || cli.context.is_some() {
             Mode::Check
         } else {
@@ -91,17 +94,31 @@ fn main() {
         }
     });
 
-    match mode {
-        Mode::Check => run_check(&cli, &shared, named_backends),
-        Mode::Correct => run_correct(&cli, &shared, named_backends),
-        Mode::Predict => run_predict(&cli, &shared, named_backends),
-        Mode::Query => run_query(&cli, &shared, named_backends),
+    let client_mode = SharedArgs::resolve_mode(
+        cli_mode,
+        config
+            .as_ref()
+            .and_then(|c| c.client.as_ref())
+            .and_then(|cl| cl.mode.as_deref()),
+        ClientMode::Standalone,
+    );
+
+    match operation {
+        Mode::Check => run_check(&cli, &shared, named_backends, client_mode),
+        Mode::Correct => run_correct(&cli, &shared, named_backends, client_mode),
+        Mode::Predict => run_predict(&cli, &shared, named_backends, client_mode),
+        Mode::Query => run_query(&cli, &shared, named_backends, client_mode),
     }
 }
 
 // ── Mode dispatchers ───────────────────────────────────────────────────────
 
-fn run_check(cli: &Cli, shared: &SharedArgs, named_backends: Option<&HashMap<String, BackendDef>>) {
+fn run_check(
+    cli: &Cli,
+    shared: &SharedArgs,
+    named_backends: Option<&HashMap<String, BackendDef>>,
+    client_mode: ClientMode,
+) {
     let word = cli
         .word
         .as_deref()
@@ -112,7 +129,7 @@ fn run_check(cli: &Cli, shared: &SharedArgs, named_backends: Option<&HashMap<Str
         });
 
     let lang = shared.lang();
-    let correct = if shared.dbus {
+    let correct = if client_mode == ClientMode::Dbus {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
@@ -158,6 +175,7 @@ fn run_correct(
     cli: &Cli,
     shared: &SharedArgs,
     named_backends: Option<&HashMap<String, BackendDef>>,
+    client_mode: ClientMode,
 ) {
     let word = cli.word.as_deref().unwrap_or_else(|| {
         eprintln!("usage: verbisage correct --word <word>");
@@ -165,7 +183,7 @@ fn run_correct(
     });
 
     let lang = shared.lang();
-    let suggestions: Vec<String> = if shared.dbus {
+    let suggestions: Vec<String> = if client_mode == ClientMode::Dbus {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
@@ -211,6 +229,7 @@ fn run_predict(
     cli: &Cli,
     shared: &SharedArgs,
     _named_backends: Option<&HashMap<String, BackendDef>>,
+    client_mode: ClientMode,
 ) {
     let context: Vec<String> = cli
         .context
@@ -221,7 +240,7 @@ fn run_predict(
     let max = 10;
     let lang = shared.lang();
 
-    let predictions: Vec<(String, f64)> = if shared.dbus {
+    let predictions: Vec<(String, f64)> = if client_mode == ClientMode::Dbus {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
@@ -257,12 +276,17 @@ fn run_predict(
     }
 }
 
-fn run_query(cli: &Cli, shared: &SharedArgs, named_backends: Option<&HashMap<String, BackendDef>>) {
+fn run_query(
+    cli: &Cli,
+    shared: &SharedArgs,
+    named_backends: Option<&HashMap<String, BackendDef>>,
+    client_mode: ClientMode,
+) {
     let min = cli.min_len.unwrap_or(0);
     let max = cli.max_len.unwrap_or(0);
     let lang = shared.lang();
 
-    let results: Vec<(String, f64)> = if shared.dbus {
+    let results: Vec<(String, f64)> = if client_mode == ClientMode::Dbus {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {

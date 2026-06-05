@@ -15,6 +15,7 @@ features = ["sqlite", "hunspell"]
 default = ["sqlite", "hunspell"]
 sqlite = ["dep:rusqlite"]
 hunspell = ["dep:zspell"]
+marisa = ["dep:rsmarisa"]
 dbus = ["dep:zbus", "dep:tokio"]
 
 [dependencies]
@@ -25,6 +26,7 @@ clap = { version = "4", features = ["derive", "env"] }
 
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 zspell = { version = "0.5", features = ["unstable-suggestions"], optional = true }
+rsmarisa = { version = "0.4", optional = true }
 zbus = { version = "5", features = ["p2p"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
 

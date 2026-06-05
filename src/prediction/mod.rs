@@ -7,6 +7,9 @@ pub mod frequency;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
+#[cfg(feature = "marisa")]
+pub mod marisa;
+
 /// A single next‑word prediction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Prediction {

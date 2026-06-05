@@ -1,12 +1,23 @@
 use std::path::PathBuf;
 
-use clap::Args;
+use clap::{Args, ValueEnum};
 
 use crate::backends::resolve_chain_with_backcompat;
 use crate::config::Config;
 use crate::dictionary::DictionaryBackend;
 use crate::dictionary::paths::{LanguagePaths, PathOverride, expand_tilde};
 use crate::spellcheck::SpellChecker;
+
+/// Transport / client mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ClientMode {
+    /// One-shot, local backend (client only).
+    Standalone,
+    /// Serve/connect over D-Bus.
+    Dbus,
+    /// Serve over stdio JSON (daemon only).
+    Stdio,
+}
 
 /// Pattern overrides carried from config file (not CLI args).
 #[derive(Clone, Default)]
@@ -68,9 +79,9 @@ pub struct SharedArgs {
     #[arg(long)]
     pub dict: Option<PathBuf>,
 
-    /// Use D-Bus transport (server in daemon mode, client in one-shot modes).
-    #[arg(long)]
-    pub dbus: bool,
+    /// Operation mode: "standalone" (client, local backend), "dbus" (client or daemon, D-Bus transport), "stdio" (daemon, stdio JSON server).
+    #[arg(long, value_enum)]
+    pub mode: Option<ClientMode>,
 
     /// Enable verbose debug output to stderr.
     #[arg(long)]
@@ -179,6 +190,28 @@ impl SharedArgs {
         }
 
         self
+    }
+
+    /// Resolve transport mode: CLI `--mode` > config section value > default.
+    pub fn resolve_mode(
+        cli_mode: Option<ClientMode>,
+        config_mode: Option<&str>,
+        default_mode: ClientMode,
+    ) -> ClientMode {
+        if let Some(m) = cli_mode {
+            return m;
+        }
+        if let Some(s) = config_mode {
+            match s {
+                "standalone" => return ClientMode::Standalone,
+                "dbus" => return ClientMode::Dbus,
+                "stdio" => return ClientMode::Stdio,
+                _ => {
+                    eprintln!("warning: invalid mode '{}', using default", s);
+                }
+            }
+        }
+        default_mode
     }
 
     /// Convenience: get the resolved language (or default).

@@ -30,6 +30,22 @@ pub struct SqliteConfig {
     pub freq_col: Option<String>,
 }
 
+/// Client-side configuration (`[client]` section).
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(default)]
+pub struct ClientConfig {
+    /// Client operation mode: "standalone" (default) or "dbus".
+    pub mode: Option<String>,
+}
+
+/// Daemon-side configuration (`[daemon]` section).
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(default)]
+pub struct DaemonConfigSection {
+    /// Daemon transport mode: "stdio" (default) or "dbus".
+    pub mode: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -43,11 +59,17 @@ pub struct Config {
     /// Named backend definitions (`[backends.<name>]` sections).
     #[serde(default)]
     pub backends: Option<HashMap<String, BackendDef>>,
+    /// Client-side configuration.
+    #[serde(default)]
+    pub client: Option<ClientConfig>,
+    /// Daemon-side configuration.
+    #[serde(default)]
+    pub daemon: Option<DaemonConfigSection>,
 }
 
 pub fn default_config_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-    PathBuf::from(home).join(".config/verbisage/daemon.conf")
+    PathBuf::from(home).join(".config/verbisage/config.toml")
 }
 
 pub fn load_config(path: &PathBuf) -> Option<Config> {

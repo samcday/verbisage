@@ -223,6 +223,11 @@ pub struct BackendDef {
     #[serde(default)]
     pub path: Option<String>,
 
+    /// Explicit path to n-gram data (marisa trie/companion counts).
+    /// If not set, derived from `path` parent directory or LanguagePaths patterns.
+    #[serde(default)]
+    pub ngram_path: Option<String>,
+
     // ── Format / preset ──────────────────────────────────────────────────
     /// Format preset name (e.g. "flat", "presage", "custom").
     /// Interpreted differently for each BackendType.
@@ -266,6 +271,7 @@ pub struct ResolvedBackendDef {
     pub name: String,
     pub backend_type: BackendType,
     pub path: Option<String>,
+    pub ngram_path: Option<String>,
     pub capabilities: HashSet<Capability>,
 
     // File fields
@@ -415,6 +421,7 @@ fn resolve_file_backend(
         name: name.to_string(),
         backend_type: BackendType::File,
         path: def.path.clone(),
+        ngram_path: def.ngram_path.clone(),
         capabilities,
         delimiter,
         has_header,
@@ -524,6 +531,7 @@ fn resolve_sqlite_backend(
         name: name.to_string(),
         backend_type: BackendType::Sqlite,
         path: def.path.clone(),
+        ngram_path: def.ngram_path.clone(),
         capabilities,
         delimiter: None,
         has_header: false,
@@ -553,6 +561,12 @@ fn resolve_marisa_backend(
         }
     }
 
+    if let Some(en) = def.enable_ngrams {
+        if en {
+            capabilities.insert(Capability::Ngrams);
+        }
+    }
+
     if capabilities.is_empty() {
         return Err(BackendConfigError::EmptyCapabilities(name.to_string()));
     }
@@ -561,6 +575,7 @@ fn resolve_marisa_backend(
         name: name.to_string(),
         backend_type: BackendType::Marisa,
         path: def.path.clone(),
+        ngram_path: def.ngram_path.clone(),
         capabilities,
         delimiter: None,
         has_header: false,
@@ -598,6 +613,7 @@ fn resolve_hunspell_backend(
         name: name.to_string(),
         backend_type: BackendType::Hunspell,
         path: def.path.clone(),
+        ngram_path: def.ngram_path.clone(),
         capabilities,
         delimiter: None,
         has_header: false,
@@ -660,6 +676,7 @@ fn implicit_backend_def(name: &str) -> Option<BackendDef> {
             backend_type: BackendType::File,
             format: Some("flat".into()),
             path: None,
+            ngram_path: None,
             delimiter: None,
             has_header: None,
             word_index: None,
@@ -677,6 +694,7 @@ fn implicit_backend_def(name: &str) -> Option<BackendDef> {
             backend_type: BackendType::Sqlite,
             format: Some("presage_words".into()),
             path: None,
+            ngram_path: None,
             delimiter: None,
             has_header: None,
             word_index: None,
@@ -694,6 +712,7 @@ fn implicit_backend_def(name: &str) -> Option<BackendDef> {
             backend_type: BackendType::Hunspell,
             format: None,
             path: None,
+            ngram_path: None,
             delimiter: None,
             has_header: None,
             word_index: None,

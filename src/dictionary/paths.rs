@@ -104,6 +104,10 @@ pub struct LanguagePaths {
     pub user_sqlite_patterns: Vec<String>,
     pub system_marisa_patterns: Vec<String>,
     pub user_marisa_patterns: Vec<String>,
+    pub system_marisa_ngram_trie_patterns: Vec<String>,
+    pub user_marisa_ngram_trie_patterns: Vec<String>,
+    pub system_marisa_ngram_counts_patterns: Vec<String>,
+    pub user_marisa_ngram_counts_patterns: Vec<String>,
 }
 
 impl LanguagePaths {
@@ -129,6 +133,10 @@ impl LanguagePaths {
             user_sqlite_patterns: vec!["lm_{lang}.db".into()],
             system_marisa_patterns: vec!["{lang}.marisa".into()],
             user_marisa_patterns: vec!["{lang}.marisa".into()],
+            system_marisa_ngram_trie_patterns: vec!["database_{lang}/ngrams.trie".into()],
+            user_marisa_ngram_trie_patterns: vec!["database_{lang}/ngrams.trie".into()],
+            system_marisa_ngram_counts_patterns: vec!["database_{lang}/ngrams.counts".into()],
+            user_marisa_ngram_counts_patterns: vec!["database_{lang}/ngrams.counts".into()],
         }
     }
 
@@ -215,6 +223,40 @@ impl LanguagePaths {
         let mut files = self.resolve_system(&sys_strs);
         files.extend(self.resolve_user(&usr_strs));
         files
+    }
+
+    /// Marisa n-gram trie files (for prediction).
+    pub fn resolve_marisa_ngram_trie_files(&self) -> Vec<PathBuf> {
+        let sys: Vec<&str> = self
+            .system_marisa_ngram_trie_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let usr: Vec<&str> = self
+            .user_marisa_ngram_trie_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let sys = self.resolve_system(&sys);
+        let usr = self.resolve_user(&usr);
+        sys.into_iter().chain(usr).collect()
+    }
+
+    /// Marisa n-gram counts files (companion to the trie).
+    pub fn resolve_marisa_ngram_counts_files(&self) -> Vec<PathBuf> {
+        let sys: Vec<&str> = self
+            .system_marisa_ngram_counts_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let usr: Vec<&str> = self
+            .user_marisa_ngram_counts_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let sys = self.resolve_system(&sys);
+        let usr = self.resolve_user(&usr);
+        sys.into_iter().chain(usr).collect()
     }
 
     /// Marisa trie files.

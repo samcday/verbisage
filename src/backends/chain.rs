@@ -385,6 +385,7 @@ mod tests {
             name: name.to_string(),
             backend_type: crate::backends::BackendType::File,
             path: None,
+            ngram_path: None,
             capabilities: caps,
             delimiter: None,
             has_header: false,

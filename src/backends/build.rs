@@ -16,6 +16,12 @@ use crate::prediction::sqlite::SqlitePredictor;
 use crate::spellcheck::SqliteSpellChecker;
 
 #[cfg(feature = "hunspell")]
+use crate::dictionary::HunspellDictionaryBackend;
+#[cfg(feature = "marisa")]
+use crate::dictionary::MarisaDictionaryBackend;
+#[cfg(feature = "marisa")]
+use crate::prediction::marisa::MarisaPredictor;
+#[cfg(feature = "hunspell")]
 use crate::spellcheck::HunspellSpellChecker;
 
 use super::chain::SegmentRole;
@@ -61,12 +67,32 @@ fn build_file(
 
     let dict = if files.is_empty() {
         FileDictionaryBackend::new()
-    } else if def.delimiter.is_some() {
-        // CSV mode — load with explicit delimiter
-        FileDictionaryBackend::from_multiple_files(&files).unwrap_or_else(|e| {
-            eprintln!("warning: failed to load file backend: {}", e);
-            FileDictionaryBackend::new()
-        })
+    } else if let Some(delim) = &def.delimiter {
+        if let Some(word_index) = def.word_index {
+            // Delimited mode (CSV, TSV, etc.) with explicit column indexes.
+            let delim_byte = delim.as_bytes().first().copied().unwrap_or(b',');
+            let mut merged = FileDictionaryBackend::new();
+            for f in &files {
+                match FileDictionaryBackend::from_delimited_file(
+                    f,
+                    delim_byte,
+                    def.has_header,
+                    word_index,
+                    def.freq_index,
+                ) {
+                    Ok(other) => merged.merge(&other),
+                    Err(e) => eprintln!("warning: failed to load '{}': {}", f.display(), e),
+                }
+            }
+            merged
+        } else {
+            // Delimiter set but no word_index — treat as flat word-per-line.
+            eprintln!("warning: delimiter set but no word_index; falling back to flat mode");
+            FileDictionaryBackend::from_multiple_files(&files).unwrap_or_else(|e| {
+                eprintln!("warning: failed to load file backend: {}", e);
+                FileDictionaryBackend::new()
+            })
+        }
     } else {
         // Flat / freq mode — auto-detect whitespace-separated or line-separated
         FileDictionaryBackend::from_multiple_files(&files).unwrap_or_else(|e| {
@@ -219,6 +245,7 @@ fn build_sqlite(
 // Marisa backend (placeholder — uses FileDictionaryBackend)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "marisa")]
 fn build_marisa(
     def: &ResolvedBackendDef,
     lang: &str,
@@ -230,19 +257,147 @@ fn build_marisa(
 ) {
     let files = resolve_files(def, lang, lp);
 
-    let dict = if files.is_empty() {
-        FileDictionaryBackend::new()
+    let dict: Box<dyn DictionaryBackend> = match files.into_iter().next() {
+        Some(path) => match MarisaDictionaryBackend::from_file(&path) {
+            Ok(d) => Box::new(d),
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to load marisa file '{}': {}",
+                    path.display(),
+                    e
+                );
+                Box::new(FileDictionaryBackend::new())
+            }
+        },
+        None => {
+            eprintln!("warning: no marisa file found for '{}'", lang);
+            Box::new(FileDictionaryBackend::new())
+        }
+    };
+
+    // Build n-gram predictor if needed
+    let predictor = if def.capabilities.contains(&Capability::Ngrams) {
+        build_marisa_predictor(def, lang, lp)
     } else {
-        // Placeholder: MarisaDictionaryBackend not yet implemented.
-        // For now, load as flat file.
-        FileDictionaryBackend::from_multiple_files(&files).unwrap_or_else(|e| {
-            eprintln!("warning: failed to load marisa file: {}", e);
-            FileDictionaryBackend::new()
+        None
+    };
+
+    (dict, None, predictor)
+}
+
+#[cfg(feature = "marisa")]
+fn build_marisa_predictor(
+    def: &ResolvedBackendDef,
+    lang: &str,
+    lp: &LanguagePaths,
+) -> Option<Box<dyn Predictor>> {
+    #[allow(unused_variables)]
+    let ngram_path = def.ngram_path.as_deref();
+
+    // Resolve ngram trie file
+    let trie_file = if let Some(p) = ngram_path {
+        let expanded = p.replace("{lang}", lang);
+        let p = expand_tilde(&expanded);
+        if p.exists() {
+            Some(p)
+        } else {
+            eprintln!(
+                "warning: marisa ngram trie path '{}' not found",
+                p.display()
+            );
+            None
+        }
+    } else {
+        // Check explicit dict path's directory for companion files
+        if let Some(ref dict_path) = def.path {
+            let expanded = dict_path.replace("{lang}", lang);
+            let dir = PathBuf::from(expand_tilde(&expanded))
+                .parent()
+                .map(|p| p.to_path_buf());
+            if let Some(d) = dir {
+                let candidate = d.join("ngrams.trie");
+                if candidate.exists() {
+                    Some(candidate)
+                } else {
+                    // Fall through to LanguagePaths resolution
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+        .or_else(|| {
+            // Try LanguagePaths resolution
+            let tries = lp.resolve_marisa_ngram_trie_files();
+            tries.into_iter().next()
         })
     };
 
-    let sc: Box<dyn SpellChecker> = Box::new(DictionarySpellChecker::new(Arc::new(dict.clone())));
-    (Box::new(dict), Some(sc), None)
+    let trie_file = match trie_file {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "warning: no marisa ngram trie found for ngram prediction ('{}')",
+                lang
+            );
+            return None;
+        }
+    };
+
+    // Resolve companion counts file
+    let counts_file = if let Some(p) = ngram_path {
+        let counts_path = PathBuf::from(p.replace("{lang}", lang).replace(".trie", ".counts"));
+        if counts_path.exists() {
+            counts_path
+        } else {
+            let dir = trie_file.parent().unwrap();
+            dir.join("ngrams.counts")
+        }
+    } else {
+        let dir = trie_file.parent().unwrap();
+        let candidate = dir.join("ngrams.counts");
+        if candidate.exists() {
+            candidate
+        } else {
+            let counts = lp.resolve_marisa_ngram_counts_files();
+            counts.into_iter().next().unwrap_or_else(|| {
+                eprintln!("warning: no marisa ngram counts found for '{}'", lang);
+                candidate // will fail with a useful error below
+            })
+        }
+    };
+
+    match MarisaPredictor::from_files(&trie_file, &counts_file) {
+        Ok(p) => Some(Box::new(p) as Box<dyn Predictor>),
+        Err(e) => {
+            eprintln!(
+                "warning: failed to load marisa ngram predictor (trie={}, counts={}): {}",
+                trie_file.display(),
+                counts_file.display(),
+                e
+            );
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "marisa"))]
+fn build_marisa(
+    _def: &ResolvedBackendDef,
+    _lang: &str,
+    _lp: &LanguagePaths,
+) -> (
+    Box<dyn DictionaryBackend>,
+    Option<Box<dyn SpellChecker>>,
+    Option<Box<dyn Predictor>>,
+) {
+    let _ = _def;
+    let _ = _lang;
+    let _ = _lp;
+    eprintln!("warning: marisa feature not enabled");
+    (Box::new(FileDictionaryBackend::new()), None, None)
 }
 
 // ---------------------------------------------------------------------------
@@ -259,25 +414,71 @@ fn build_hunspell(
     Option<Box<dyn SpellChecker>>,
     Option<Box<dyn Predictor>>,
 ) {
-    let sc = match &def.hunspell_affix {
-        Some(_) => {
-            // Would need both affix and dict paths — not yet wired
-            HunspellSpellChecker::from_tag(lang).ok()
-        }
-        None => HunspellSpellChecker::from_tag(lang).ok(),
+    // Determine the .dic and .aff file paths.
+    let (aff_path, dic_path) = find_hunspell_files(def, lang);
+
+    let dict = match &dic_path {
+        Some(path) => match HunspellDictionaryBackend::from_dic_file(path) {
+            Ok(d) => Box::new(d) as Box<dyn DictionaryBackend>,
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to load hunspell .dic '{}': {}",
+                    path.display(),
+                    e
+                );
+                Box::new(FileDictionaryBackend::new()) as Box<dyn DictionaryBackend>
+            }
+        },
+        None => Box::new(FileDictionaryBackend::new()) as Box<dyn DictionaryBackend>,
     };
 
-    match sc {
-        Some(checker) => {
-            // TODO: HunspellDictionaryBackend implementing DictionaryBackend
-            let dict: Box<dyn DictionaryBackend> = Box::new(FileDictionaryBackend::new());
-            (dict, Some(Box::new(checker)), None)
-        }
-        None => {
-            eprintln!("warning: hunspell dictionary not found for '{}'", lang);
-            (Box::new(FileDictionaryBackend::new()), None, None)
+    let sc = match (aff_path, dic_path) {
+        (Some(aff), Some(dic)) => match HunspellSpellChecker::from_files(&aff, &dic) {
+            Ok(c) => Some(Box::new(c) as Box<dyn SpellChecker>),
+            Err(e) => {
+                eprintln!("warning: failed to load hunspell from files: {}", e);
+                None
+            }
+        },
+        _ => match HunspellSpellChecker::from_tag(lang) {
+            Ok(c) => Some(Box::new(c) as Box<dyn SpellChecker>),
+            Err(e) => {
+                eprintln!(
+                    "warning: hunspell dictionary not found for '{}': {}",
+                    lang, e
+                );
+                None
+            }
+        },
+    };
+
+    (dict, sc, None)
+}
+
+/// Search for Hunspell `.aff` and `.dic` files, preferring explicit paths
+/// set on the backend def, then falling back to system directories.
+#[cfg(feature = "hunspell")]
+fn find_hunspell_files(
+    _def: &ResolvedBackendDef,
+    lang: &str,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    // Check explicit path — treat path as base name (without extension).
+    // For now, always fall back to system search.
+    let dirs = [
+        "/usr/share/hunspell",
+        "/usr/share/myspell",
+        "/usr/share/myspell/dicts",
+    ];
+
+    for dir in &dirs {
+        let aff = PathBuf::from(format!("{}/{}.aff", dir, lang));
+        let dic = PathBuf::from(format!("{}/{}.dic", dir, lang));
+        if aff.exists() && dic.exists() {
+            return (Some(aff), Some(dic));
         }
     }
+
+    (None, None)
 }
 
 #[cfg(not(feature = "hunspell"))]

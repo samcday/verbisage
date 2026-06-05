@@ -10,6 +10,16 @@ pub mod file;
 pub mod paths;
 pub mod subsequence;
 
+#[cfg(feature = "hunspell")]
+pub mod hunspell;
+#[cfg(feature = "hunspell")]
+pub use hunspell::HunspellDictionaryBackend;
+
+#[cfg(feature = "marisa")]
+pub mod marisa;
+#[cfg(feature = "marisa")]
+pub use marisa::MarisaDictionaryBackend;
+
 pub use compact::CompactDictionary;
 pub use file::FileDictionaryBackend;
 pub use paths::LanguagePaths;

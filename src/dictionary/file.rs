@@ -145,6 +145,85 @@ impl FileDictionaryBackend {
         Ok(dict)
     }
 
+    /// Load from a delimited (CSV/TSV) file with configurable column indexes.
+    ///
+    /// - `delimiter`: byte to split on (e.g. `b','` for CSV, `b'\t'` for TSV).
+    /// - `has_header`: if true, skip the first line.
+    /// - `word_index`: zero-based column index for the word.
+    /// - `freq_index`: optional zero-based column index for the frequency;
+    ///   `None` means all entries get frequency 1.0.
+    pub fn from_delimited_file<P: AsRef<Path>>(
+        path: P,
+        delimiter: u8,
+        has_header: bool,
+        word_index: usize,
+        freq_index: Option<usize>,
+    ) -> Result<Self, SharedError> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+
+        let mut words = HashMap::new();
+        let mut words_sorted = Vec::new();
+        let mut prefixes = HashSet::new();
+        let mut length_buckets: HashMap<usize, Vec<String>> = HashMap::new();
+
+        for (line_no, line) in reader.lines().enumerate() {
+            let line = line?;
+            if has_header && line_no == 0 {
+                continue;
+            }
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(delimiter as char).collect();
+            let word = parts
+                .get(word_index)
+                .ok_or_else(|| {
+                    format!(
+                        "line {}: missing word column at index {}",
+                        line_no + 1,
+                        word_index
+                    )
+                })?
+                .trim()
+                .to_string();
+
+            if word.is_empty() {
+                continue;
+            }
+
+            let frequency = match freq_index {
+                Some(idx) => parts
+                    .get(idx)
+                    .and_then(|s| s.trim().parse::<f64>().ok())
+                    .unwrap_or(1.0),
+                None => 1.0,
+            };
+
+            let len = word.len();
+            words.insert(word.clone(), frequency);
+            words_sorted.push(word.clone());
+
+            let chars: Vec<char> = word.chars().collect();
+            for i in 1..=chars.len() {
+                prefixes.insert(chars[..i].iter().collect());
+            }
+
+            length_buckets.entry(len).or_default().push(word);
+        }
+
+        words_sorted.sort_unstable();
+
+        Ok(Self {
+            words,
+            words_sorted,
+            prefixes,
+            length_buckets,
+        })
+    }
+
     /// Insert or update a word.
     pub fn add_word(&mut self, word: String, frequency: f64) {
         let len = word.len();
