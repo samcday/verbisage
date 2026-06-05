@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 pub mod compact;

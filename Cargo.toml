@@ -15,7 +15,7 @@ features = ["sqlite", "hunspell"]
 default = ["sqlite", "hunspell"]
 sqlite = ["dep:rusqlite"]
 hunspell = ["dep:zspell"]
-dbus = ["dep:zbus"]
+dbus = ["dep:zbus", "dep:tokio"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -25,6 +25,7 @@ clap = { version = "4", features = ["derive", "env"] }
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 zspell = { version = "0.5", features = ["unstable-suggestions"], optional = true }
 zbus = { version = "5", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

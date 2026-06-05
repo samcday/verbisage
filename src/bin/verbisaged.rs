@@ -2,11 +2,17 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
-use verbisage::daemon::{run, DaemonHandler};
-use verbisage::dictionary::paths::{expand_tilde, LanguagePaths, PathOverride};
+use verbisage::daemon::{DaemonHandler, run};
+use verbisage::dictionary::paths::{LanguagePaths, PathOverride, expand_tilde};
 use verbisage::dictionary::{DictionaryQuery, FileDictionaryBackend};
 use verbisage::prediction::Predictor;
 use verbisage::spellcheck::{DictionarySpellChecker, SpellChecker};
+
+#[cfg(feature = "dbus")]
+use verbisage::daemon::run_dbus;
+
+#[cfg(feature = "dbus")]
+use verbisage::clients::DbusClient;
 
 #[cfg(feature = "sqlite")]
 use verbisage::dictionary::SqliteDictionaryBackend;
@@ -132,6 +138,12 @@ struct Cli {
     /// Maximum word length; used in query mode
     #[arg(long)]
     max_len: Option<usize>,
+
+    /// Use D-Bus transport (server or client) instead of stdio / direct
+    /// access.  In daemon mode this serves a D-Bus interface; in one-shot
+    /// modes it connects to a running D-Bus daemon.
+    #[arg(long)]
+    dbus: bool,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────
@@ -296,7 +308,27 @@ fn open_sqlite_backend(
 fn run_daemon(cli: &Cli) {
     let (dict, sc) = open_backend(cli);
     let handler = DaemonHandler::new(dict, sc, None as Option<Box<dyn Predictor>>);
-    run(handler);
+
+    if cli.dbus {
+        #[cfg(feature = "dbus")]
+        {
+            let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| {
+                eprintln!("failed to start tokio runtime: {}", e);
+                std::process::exit(1);
+            });
+            if let Err(e) = rt.block_on(run_dbus(handler)) {
+                eprintln!("dbus server error: {}", e);
+            }
+        }
+        #[cfg(not(feature = "dbus"))]
+        {
+            let _ = handler;
+            eprintln!("dbus feature not enabled; rebuild with --features dbus");
+            std::process::exit(1);
+        }
+    } else {
+        run(handler);
+    }
 }
 
 fn run_check(cli: &Cli) {
@@ -308,9 +340,28 @@ fn run_check(cli: &Cli) {
             eprintln!("usage: verbisaged --mode check --word <word>");
             std::process::exit(1);
         });
-    let (_, sc) = open_backend(cli);
 
-    let correct = sc.as_ref().map(|s| s.is_correct(word)).unwrap_or(false);
+    let correct = if cli.dbus {
+        #[cfg(feature = "dbus")]
+        {
+            match DbusClient::new() {
+                Ok(client) => client.is_correct(word).unwrap_or(false),
+                Err(e) => {
+                    eprintln!("dbus connection failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        #[cfg(not(feature = "dbus"))]
+        {
+            let _ = word;
+            eprintln!("dbus feature not enabled; rebuild with --features dbus");
+            std::process::exit(1);
+        }
+    } else {
+        let (_, sc) = open_backend(cli);
+        sc.as_ref().map(|s| s.is_correct(word)).unwrap_or(false)
+    };
 
     if correct {
         println!("true");
@@ -325,9 +376,28 @@ fn run_correct(cli: &Cli) {
         eprintln!("usage: verbisaged --mode correct --word <word>");
         std::process::exit(1);
     });
-    let (_, sc) = open_backend(cli);
 
-    let suggestions = sc.as_ref().map(|s| s.suggest(word)).unwrap_or_default();
+    let suggestions: Vec<String> = if cli.dbus {
+        #[cfg(feature = "dbus")]
+        {
+            match DbusClient::new() {
+                Ok(client) => client.suggest(word, 10).unwrap_or_default(),
+                Err(e) => {
+                    eprintln!("dbus connection failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        #[cfg(not(feature = "dbus"))]
+        {
+            let _ = word;
+            eprintln!("dbus feature not enabled; rebuild with --features dbus");
+            std::process::exit(1);
+        }
+    } else {
+        let (_, sc) = open_backend(cli);
+        sc.as_ref().map(|s| s.suggest(word)).unwrap_or_default()
+    };
 
     for s in &suggestions {
         println!("{}", s);

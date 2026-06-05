@@ -15,3 +15,6 @@ pub use spellcheck::SpellChecker;
 
 #[cfg(feature = "sqlite")]
 pub use dictionary::SqliteDictionaryBackend;
+
+#[cfg(feature = "dbus")]
+pub use clients::DbusClient;
