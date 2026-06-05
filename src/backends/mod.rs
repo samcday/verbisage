@@ -243,49 +243,65 @@ pub struct BackendDef {
     #[serde(rename = "type")]
     pub backend_type: BackendType,
 
-    /// Explicit file path (`{lang}` expanded).  Bypasses LanguagePaths pattern scan.
-    #[serde(default)]
+    /// Explicit file path (CLI-only override, not serialized to config).
+    #[serde(default, skip_serializing)]
     pub path: Option<String>,
 
-    /// Explicit path to n-gram data (marisa trie/companion counts).
-    /// If not set, derived from `path` parent directory or LanguagePaths patterns.
-    #[serde(default)]
+    /// Explicit n-gram path (CLI-only override, not serialized to config).
+    #[serde(default, skip_serializing)]
     pub ngram_path: Option<String>,
+
+    // ── Path resolution ──────────────────────────────────────────────────
+    /// System data directory for this backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_dir: Option<String>,
+
+    /// User data directory for this backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_dir: Option<String>,
+
+    /// System file patterns for this backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_patterns: Option<Vec<String>>,
+
+    /// User file patterns for this backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_patterns: Option<Vec<String>>,
 
     // ── Format / preset ──────────────────────────────────────────────────
     /// Format preset name (e.g. "flat", "presage", "custom").
     /// Interpreted differently for each BackendType.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
 
     // ── File-backend fields ──────────────────────────────────────────────
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delimiter: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub has_header: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub word_index: Option<usize>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freq_index: Option<usize>,
 
     // ── Sqlite-backend fields ────────────────────────────────────────────
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub table: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub word_col: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freq_col: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub table_ngrams: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_cols: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_col: Option<String>,
 
     // ── Capability overrides ─────────────────────────────────────────────
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enable_unigrams: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enable_ngrams: Option<bool>,
 }
 
@@ -701,6 +717,10 @@ fn implicit_backend_def(name: &str) -> Option<BackendDef> {
             format: Some("flat".into()),
             path: None,
             ngram_path: None,
+            system_dir: None,
+            user_dir: None,
+            system_patterns: None,
+            user_patterns: None,
             delimiter: None,
             has_header: None,
             word_index: None,
@@ -719,6 +739,10 @@ fn implicit_backend_def(name: &str) -> Option<BackendDef> {
             format: Some("presage_words".into()),
             path: None,
             ngram_path: None,
+            system_dir: None,
+            user_dir: None,
+            system_patterns: None,
+            user_patterns: None,
             delimiter: None,
             has_header: None,
             word_index: None,
@@ -737,6 +761,10 @@ fn implicit_backend_def(name: &str) -> Option<BackendDef> {
             format: None,
             path: None,
             ngram_path: None,
+            system_dir: None,
+            user_dir: None,
+            system_patterns: None,
+            user_patterns: None,
             delimiter: None,
             has_header: None,
             word_index: None,

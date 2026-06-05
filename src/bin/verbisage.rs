@@ -14,10 +14,25 @@ use verbisage::clients::DbusClient;
 
 /// Resolve built-in backend type names (e.g. "file", "sqlite") in a chain
 /// string to named backends. For each built-in type not already defined in
-/// `cfg.backends`, a `default_<type>` entry is created and the chain is
-/// rewritten to reference it.
-fn resolve_backend_chain(chain: &str, cfg: &mut verbisage::config::Config) -> String {
+/// `cfg.backends`, a `default_<type>` entry is created with path information
+/// from CLI overrides or build-time defaults, and the chain is rewritten to
+/// reference it.
+fn resolve_backend_chain(
+    chain: &str,
+    cfg: &mut verbisage::config::Config,
+    shared: &SharedArgs,
+) -> String {
     let segments: Vec<&str> = chain.split('+').collect();
+    let system_dir = shared
+        .system_data_dir
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| verbisage::dictionary::paths::SYSTEM_DATA_DIR.to_string());
+    let user_dir = shared
+        .user_data_dir
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| verbisage::dictionary::paths::USER_DATA_DIR_REL.to_string());
     let resolved: Vec<String> = segments
         .into_iter()
         .map(|seg| {
@@ -36,6 +51,10 @@ fn resolve_backend_chain(chain: &str, cfg: &mut verbisage::config::Config) -> St
                             backend_type: bt,
                             path: None,
                             ngram_path: None,
+                            system_dir: Some(system_dir.clone()),
+                            user_dir: Some(user_dir.clone()),
+                            system_patterns: None,
+                            user_patterns: None,
                             format: None,
                             delimiter: None,
                             has_header: None,
@@ -448,7 +467,7 @@ fn merge_config(
         .clone()
         .or_else(|| cfg.backend.clone())
         .unwrap_or_else(|| "file".into());
-    cfg.backend = Some(resolve_backend_chain(&chain, &mut cfg));
+    cfg.backend = Some(resolve_backend_chain(&chain, &mut cfg, shared));
 
     // Language: CLI > config > default
     cfg.language_default = shared
@@ -456,28 +475,6 @@ fn merge_config(
         .clone()
         .or_else(|| cfg.language_default.clone())
         .or(Some("en_US".into()));
-
-    // Paths: CLI overrides > config
-    if shared.system_data_dir.is_some() || shared.user_data_dir.is_some() {
-        let mut paths = cfg.paths.take().unwrap_or_default();
-        if let Some(dir) = &shared.system_data_dir {
-            paths.system_dir = Some(
-                expand_tilde(dir.to_str().unwrap_or(""))
-                    .to_str()
-                    .unwrap_or("")
-                    .to_string(),
-            );
-        }
-        if let Some(dir) = &shared.user_data_dir {
-            paths.user_dir = Some(
-                expand_tilde(dir.to_str().unwrap_or(""))
-                    .to_str()
-                    .unwrap_or("")
-                    .to_string(),
-            );
-        }
-        cfg.paths = Some(paths);
-    }
 
     // SQLite: CLI overrides > config
     if shared.table.is_some() || shared.word_col.is_some() || shared.freq_col.is_some() {

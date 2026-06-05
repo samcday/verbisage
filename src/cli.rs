@@ -141,38 +141,12 @@ impl SharedArgs {
 
         // ── system_data_dir ──────────────────────────────────────────────
         if self.system_data_dir.is_none() {
-            self.system_data_dir = cfg
-                .and_then(|c| c.paths.as_ref())
-                .and_then(|p| p.system_dir.as_ref())
-                .map(|s| expand_tilde(s));
+            self.system_data_dir = Some(expand_tilde(crate::dictionary::paths::SYSTEM_DATA_DIR));
         }
 
         // ── user_data_dir ────────────────────────────────────────────────
         if self.user_data_dir.is_none() {
-            self.user_data_dir = cfg
-                .and_then(|c| c.paths.as_ref())
-                .and_then(|p| p.user_dir.as_ref())
-                .map(|s| expand_tilde(s));
-        }
-
-        // ── pattern overrides from config ─────────────────────────────────
-        if let Some(pc) = cfg.and_then(|c| c.paths.as_ref()) {
-            if let Some(lp) = &pc.system {
-                if let Some(d) = &lp.dict {
-                    self.patterns.system_dict = Some(d.clone());
-                }
-                if let Some(s) = &lp.sqlite {
-                    self.patterns.system_sqlite = Some(s.clone());
-                }
-            }
-            if let Some(lp) = &pc.user {
-                if let Some(d) = &lp.dict {
-                    self.patterns.user_dict = Some(d.clone());
-                }
-                if let Some(s) = &lp.sqlite {
-                    self.patterns.user_sqlite = Some(s.clone());
-                }
-            }
+            self.user_data_dir = Some(expand_tilde(crate::dictionary::paths::USER_DATA_DIR_REL));
         }
 
         // ── tilde expansion for all path fields ──────────────────────────

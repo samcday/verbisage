@@ -5,23 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::backends::BackendDef;
 
-/// Per-layer pattern overrides for dictionary files.
-#[derive(Debug, Default, Deserialize, Serialize, Clone)]
-#[serde(default)]
-pub struct LayerPatterns {
-    pub dict: Option<Vec<String>>,
-    pub sqlite: Option<Vec<String>>,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize, Clone)]
-#[serde(default)]
-pub struct PathConfig {
-    pub system_dir: Option<String>,
-    pub user_dir: Option<String>,
-    pub system: Option<LayerPatterns>,
-    pub user: Option<LayerPatterns>,
-}
-
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct SqliteConfig {
@@ -52,8 +35,6 @@ pub struct Config {
     pub backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language_default: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub paths: Option<PathConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqlite: Option<SqliteConfig>,
     /// Named backend definitions (`[backends.<name>]` sections).
