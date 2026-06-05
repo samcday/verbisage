@@ -1,8 +1,7 @@
 use std::error::Error;
 use std::path::Path;
-use std::sync::Mutex;
 
-use rusqlite::{Connection, OpenFlags};
+use crate::backends::SharedSqliteConnection;
 
 use super::{DictionaryBackend, DictionaryQuery, DictionaryResult, SharedQueryCache};
 
@@ -23,11 +22,12 @@ type SharedError = Box<dyn Error + Send + Sync>;
 ///
 /// # Thread safety
 ///
-/// The inner [`rusqlite::Connection`] is wrapped in a [`Mutex`] so that the
-/// backend implements [`Sync`].  Clone opens a fresh `:memory:` database
-/// and is *not* connected to the original file.
+/// The inner [`rusqlite::Connection`] is wrapped in a [`SharedSqliteConnection`]
+/// so that the backend implements [`Sync`].  The connection can be shared
+/// with a [`SqlitePredictor`](crate::prediction::SqlitePredictor) when both
+/// unigrams and n-grams come from the same database file.
 pub struct SqliteDictionaryBackend {
-    conn: Mutex<Connection>,
+    conn: SharedSqliteConnection,
     table_name: String,
     word_column: String,
     frequency_column: String,
@@ -36,10 +36,6 @@ pub struct SqliteDictionaryBackend {
 
 impl SqliteDictionaryBackend {
     /// Open a SQLite database at `path` read-write.
-    ///
-    /// The table is expected to already exist with the correct schema.
-    /// No indexes are created — call [`ensure_table`](Self::ensure_table)
-    /// explicitly (e.g. from [`add_word`](Self::add_word)) if needed.
     pub fn from_sqlite<P: AsRef<Path>>(
         path: P,
         table_name: &str,
@@ -47,7 +43,7 @@ impl SqliteDictionaryBackend {
         frequency_column: &str,
     ) -> Result<Self, SharedError> {
         Ok(Self {
-            conn: Mutex::new(Connection::open(path)?),
+            conn: SharedSqliteConnection::open(path.as_ref())?,
             table_name: table_name.to_string(),
             word_column: word_column.to_string(),
             frequency_column: frequency_column.to_string(),
@@ -56,9 +52,6 @@ impl SqliteDictionaryBackend {
     }
 
     /// Open a SQLite database **read-only** (system dictionaries).
-    ///
-    /// Does not create any files or indexes.  Returns an error if the file
-    /// does not exist.
     pub fn from_sqlite_readonly<P: AsRef<Path>>(
         path: P,
         table_name: &str,
@@ -66,10 +59,7 @@ impl SqliteDictionaryBackend {
         frequency_column: &str,
     ) -> Result<Self, SharedError> {
         Ok(Self {
-            conn: Mutex::new(Connection::open_with_flags(
-                path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )?),
+            conn: SharedSqliteConnection::open_readonly(path.as_ref())?,
             table_name: table_name.to_string(),
             word_column: word_column.to_string(),
             frequency_column: frequency_column.to_string(),
@@ -77,19 +67,34 @@ impl SqliteDictionaryBackend {
         })
     }
 
+    /// Wrap a shared connection (allows sharing with a predictor).
+    pub fn from_shared(
+        conn: SharedSqliteConnection,
+        table_name: &str,
+        word_column: &str,
+        frequency_column: &str,
+    ) -> Self {
+        Self {
+            conn,
+            table_name: table_name.to_string(),
+            word_column: word_column.to_string(),
+            frequency_column: frequency_column.to_string(),
+            cache: SharedQueryCache::new(),
+        }
+    }
+
     /// Check whether the expected table exists in the database.
     pub fn table_exists(&self) -> bool {
         let sql = "SELECT name FROM sqlite_master WHERE type='table' AND name=?1";
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.prepare(sql)
             .and_then(|mut stmt| stmt.exists([&self.table_name]))
             .unwrap_or(false)
     }
 
     /// Ensure the table and indexes exist (idempotent).
-    /// Safe to call even when the table already exists.
     fn ensure_table(&self) {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let sql = format!(
             "CREATE TABLE IF NOT EXISTS {} ({} TEXT NOT NULL, {} REAL NOT NULL)",
             self.table_name, self.word_column, self.frequency_column,
@@ -117,15 +122,13 @@ impl SqliteDictionaryBackend {
     }
 
     /// Insert or update a word's frequency.
-    ///
-    /// Creates the table and indexes on first call (lazy initialization).
     pub fn add_word(&self, word: &str, frequency: f64) {
         self.ensure_table();
         let sql = format!(
             "INSERT OR REPLACE INTO {} ({}, {}) VALUES (?1, ?2)",
             self.table_name, self.word_column, self.frequency_column,
         );
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         if let Err(e) = conn.execute(&sql, [word, &frequency.to_string()]) {
             eprintln!("warning: sqlite add_word failed — {}", e);
         }
@@ -134,7 +137,7 @@ impl SqliteDictionaryBackend {
     /// Create an in-memory database (`:memory:`).
     pub fn new() -> Self {
         Self {
-            conn: Mutex::new(Connection::open(":memory:").unwrap()),
+            conn: SharedSqliteConnection::in_memory(),
             table_name: "words".to_string(),
             word_column: "word".to_string(),
             frequency_column: "frequency".to_string(),
@@ -156,7 +159,7 @@ impl SqliteDictionaryBackend {
             "SELECT {} FROM {} WHERE {} = ?1 LIMIT 1",
             self.frequency_column, self.table_name, self.word_column
         );
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         if let Ok(mut stmt) = conn.prepare(&sql) {
             if let Ok(mut rows) = stmt.query_map([word], |row| match row.get::<_, f64>(0) {
                 Ok(f) => Ok(f),
@@ -175,7 +178,7 @@ impl SqliteDictionaryBackend {
 
     pub fn len(&self) -> usize {
         let sql = format!("SELECT COUNT(*) FROM {}", self.table_name);
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         if let Ok(mut stmt) = conn.prepare(&sql) {
             if let Ok(mut rows) = stmt.query_map([], |row| row.get::<_, i64>(0)) {
                 if let Some(result) = rows.next() {
@@ -234,7 +237,7 @@ impl DictionaryBackend for SqliteDictionaryBackend {
             );
 
             let mut all_results = Vec::new();
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock();
             match conn.prepare(&sql) {
                 Ok(mut stmt) => {
                     if let Ok(rows) = stmt.query_map([], |row| {
@@ -281,7 +284,7 @@ impl DictionaryBackend for SqliteDictionaryBackend {
             "SELECT 1 FROM {} WHERE {} = ?1 LIMIT 1",
             self.table_name, self.word_column
         );
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.prepare(&sql)
             .and_then(|mut stmt| stmt.exists([word]))
             .unwrap_or(false)
@@ -289,13 +292,10 @@ impl DictionaryBackend for SqliteDictionaryBackend {
 }
 
 impl Clone for SqliteDictionaryBackend {
-    /// Returns a new backend pointing at a fresh `:memory:` database.
-    ///
-    /// **Important:** this does *not* open a second connection to the
-    /// original file.  The clone is fully independent and empty.
+    /// Returns a new backend sharing the same underlying connection.
     fn clone(&self) -> Self {
         Self {
-            conn: Mutex::new(Connection::open(":memory:").unwrap()),
+            conn: self.conn.clone(),
             table_name: self.table_name.clone(),
             word_column: self.word_column.clone(),
             frequency_column: self.frequency_column.clone(),
@@ -311,6 +311,7 @@ impl Clone for SqliteDictionaryBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
     use tempfile::tempdir;
 
     #[test]
@@ -407,5 +408,24 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results.iter().any(|r| r.word == "hello"));
         assert!(results.iter().any(|r| r.word == "help"));
+    }
+
+    #[test]
+    fn shared_connection() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("shared.db");
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute("CREATE TABLE words (w TEXT, f REAL)", [])
+                .unwrap();
+            conn.execute("INSERT INTO words VALUES ('hello', 1.0)", [])
+                .unwrap();
+        }
+
+        let shared = SharedSqliteConnection::open(&db_path).unwrap();
+        let be = SqliteDictionaryBackend::from_shared(shared, "words", "w", "f");
+        assert!(be.contains("hello"));
+        assert_eq!(be.frequency("hello"), 1.0);
     }
 }

@@ -1,5 +1,10 @@
 pub mod chain;
 
+#[cfg(feature = "sqlite")]
+pub mod shared_sqlite;
+#[cfg(feature = "sqlite")]
+pub use shared_sqlite::SharedSqliteConnection;
+
 use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
