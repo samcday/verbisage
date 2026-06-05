@@ -2,7 +2,7 @@ use clap::{Parser, ValueEnum};
 
 use verbisage::cli::{SharedArgs, open_backend};
 use verbisage::debug;
-use verbisage::dictionary::DictionaryQuery;
+use verbisage::dictionary::{DictionaryQuery, DictionaryResult};
 
 #[cfg(feature = "dbus")]
 use verbisage::clients::DbusClient;
@@ -119,7 +119,13 @@ fn run_check(cli: &Cli) {
         }
     } else {
         let (_, sc) = open_backend(&cli.shared, lang);
-        sc.as_ref().map(|s| s.is_correct(word)).unwrap_or(false)
+        match &sc {
+            Some(s) => s.is_correct(word),
+            None => {
+                eprintln!("warning: no dictionary loaded for '{}'", lang);
+                false
+            }
+        }
     };
 
     if correct {
@@ -162,7 +168,13 @@ fn run_correct(cli: &Cli) {
         }
     } else {
         let (_, sc) = open_backend(&cli.shared, lang);
-        sc.as_ref().map(|s| s.suggest(word)).unwrap_or_default()
+        match &sc {
+            Some(s) => s.suggest(word),
+            None => {
+                eprintln!("warning: no dictionary loaded for '{}'", lang);
+                Vec::new()
+            }
+        }
     };
 
     for s in &suggestions {
@@ -173,9 +185,50 @@ fn run_correct(cli: &Cli) {
     }
 }
 
-fn run_predict(_cli: &Cli) {
-    eprintln!("predict mode requires a Predictor backend (not yet wired)");
-    std::process::exit(1);
+fn run_predict(cli: &Cli) {
+    let context: Vec<String> = cli
+        .context
+        .as_deref()
+        .map(|s| s.split_whitespace().map(String::from).collect())
+        .unwrap_or_default();
+
+    let max = 10;
+    let lang = cli.shared.language.as_deref().unwrap_or("en_US");
+
+    let predictions: Vec<(String, f64)> = if cli.shared.dbus {
+        #[cfg(feature = "dbus")]
+        {
+            match DbusClient::new() {
+                Ok(client) => match client.predict(context, max, lang) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("dbus call failed: {}", e);
+                        std::process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("dbus connection failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        #[cfg(not(feature = "dbus"))]
+        {
+            let _ = (context, max, lang);
+            eprintln!("dbus feature not enabled; rebuild with --features dbus");
+            std::process::exit(1);
+        }
+    } else {
+        eprintln!("warning: predict mode needs a Predictor backend (see --dbus)");
+        Vec::new()
+    };
+
+    for (word, confidence) in &predictions {
+        println!("{}  {}", word, confidence);
+    }
+    if predictions.is_empty() {
+        std::process::exit(1);
+    }
 }
 
 fn run_query(cli: &Cli) {
@@ -232,8 +285,12 @@ fn run_query(cli: &Cli) {
             })
             .collect();
 
-        let (dict, _) = open_backend(&cli.shared, lang);
-        dict.query_prefixes(&queries)
+        let (dict, sc) = open_backend(&cli.shared, lang);
+        let results: Vec<DictionaryResult> = dict.query_prefixes(&queries);
+        if results.is_empty() && sc.is_none() {
+            eprintln!("warning: no dictionary loaded for '{}'", lang);
+        }
+        results
             .into_iter()
             .map(|r| (r.word, r.confidence))
             .collect()
