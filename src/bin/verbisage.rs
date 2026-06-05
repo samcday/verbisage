@@ -336,8 +336,8 @@ fn run_predict(
                     .collect()
             }
             None => {
-                eprintln!("warning: predict mode needs a Predictor backend (see --mode dbus)");
-                Vec::new()
+                eprintln!("error: no predictor backend available for the given chain");
+                std::process::exit(1)
             }
         }
     };
@@ -466,8 +466,8 @@ fn run_ngram_bump(
                 }
             }
             None => {
-                eprintln!("warning: ngram-bump requires a Predictor backend");
-                std::process::exit(1);
+                eprintln!("error: no predictor backend available for the given chain");
+                std::process::exit(1)
             }
         }
     }
