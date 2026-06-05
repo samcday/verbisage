@@ -9,7 +9,7 @@ use super::protocol::DaemonRequest;
 /// and writes one JSON object per line to stdout.  Malformed lines produce
 /// an error response with `id: null`.
 pub fn run(handler: DaemonHandler) {
-    crate::veprintln!("[daemon] stdio event loop started");
+    eprintln!("[daemon] stdio event loop started");
     let stdin = io::stdin().lock();
     let stdout = io::stdout();
     let mut writer = BufWriter::new(stdout.lock());

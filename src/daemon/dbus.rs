@@ -143,11 +143,13 @@ impl VerbisageDbus {
 /// Register on the session bus and serve forever.
 pub async fn run(handler: DaemonHandler) -> zbus::Result<()> {
     let dbus_obj = VerbisageDbus { handler };
+    crate::veprintln!("[daemon] connecting to dbus...");
     let _conn = zbus::connection::Builder::session()?
         .name("org.verbisage.Dictionary")?
         .serve_at("/org/verbisage/Dictionary", dbus_obj)?
         .build()
         .await?;
+    eprintln!("[daemon] connected to dbus");
     std::future::pending::<()>().await;
     Ok(())
 }
