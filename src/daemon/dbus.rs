@@ -20,12 +20,12 @@ impl VerbisageDbus {
 
 #[interface(name = "org.verbisage.Dictionary1")]
 impl VerbisageDbus {
-    async fn is_correct(&self, word: &str) -> bool {
-        self.handler.is_correct(word)
+    async fn is_correct(&self, word: &str, lang: &str) -> bool {
+        self.handler.is_correct(word, lang)
     }
 
-    async fn suggest(&self, word: &str, max: u32) -> Vec<String> {
-        self.handler.suggest(word, max as usize)
+    async fn suggest(&self, word: &str, max: u32, lang: &str) -> Vec<String> {
+        self.handler.suggest(word, max as usize, lang)
     }
 
     async fn query(
@@ -34,6 +34,7 @@ impl VerbisageDbus {
         suffix: &str,
         min_len: u32,
         max_len: u32,
+        lang: &str,
     ) -> Vec<(String, f64)> {
         let query = DictionaryQuery {
             prefix: if prefix.is_empty() {
@@ -58,23 +59,23 @@ impl VerbisageDbus {
             },
         };
         self.handler
-            .query(&query)
+            .query(&query, lang)
             .into_iter()
             .map(|r| (r.word, r.confidence))
             .collect()
     }
 
-    async fn predict(&self, context: Vec<String>, max: u32) -> Vec<(String, f64)> {
+    async fn predict(&self, context: Vec<String>, max: u32, lang: &str) -> Vec<(String, f64)> {
         let ctx: Vec<&str> = context.iter().map(|s| s.as_str()).collect();
         self.handler
-            .predict(&ctx, max as usize)
+            .predict(&ctx, max as usize, lang)
             .into_iter()
             .map(|p| (p.word, p.confidence))
             .collect()
     }
 
-    async fn frequency(&self, word: &str) -> f64 {
-        self.handler.frequency(word)
+    async fn frequency(&self, word: &str, lang: &str) -> f64 {
+        self.handler.frequency(word, lang)
     }
 }
 

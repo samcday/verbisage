@@ -11,7 +11,7 @@ use zbus::blocking::Connection;
 /// use verbisage::clients::DbusClient;
 ///
 /// let client = DbusClient::new().unwrap();
-/// assert!(client.is_correct("hello").unwrap());
+/// assert!(client.is_correct("hello", "en_US").unwrap());
 /// ```
 pub struct DbusClient {
     conn: Connection,
@@ -37,63 +37,74 @@ impl DbusClient {
         self.dest.as_deref()
     }
 
-    pub fn is_correct(&self, word: &str) -> zbus::Result<bool> {
+    /// Check whether `word` is correctly spelled for the given `lang`.
+    pub fn is_correct(&self, word: &str, lang: &str) -> zbus::Result<bool> {
         let msg = self.conn.call_method(
             self.dest(),
             "/org/verbisage/Dictionary",
             Some("org.verbisage.Dictionary1"),
             "IsCorrect",
-            &(word,),
+            &(word, lang),
         )?;
         msg.body().deserialize()
     }
 
-    pub fn suggest(&self, word: &str, max: u32) -> zbus::Result<Vec<String>> {
+    /// Request spelling suggestions for `word` in the given `lang`.
+    pub fn suggest(&self, word: &str, max: u32, lang: &str) -> zbus::Result<Vec<String>> {
         let msg = self.conn.call_method(
             self.dest(),
             "/org/verbisage/Dictionary",
             Some("org.verbisage.Dictionary1"),
             "Suggest",
-            &(word, max),
+            &(word, max, lang),
         )?;
         msg.body().deserialize()
     }
 
+    /// Query the dictionary with prefix/suffix/length constraints for `lang`.
     pub fn query(
         &self,
         prefix: &str,
         suffix: &str,
         min_len: u32,
         max_len: u32,
+        lang: &str,
     ) -> zbus::Result<Vec<(String, f64)>> {
         let msg = self.conn.call_method(
             self.dest(),
             "/org/verbisage/Dictionary",
             Some("org.verbisage.Dictionary1"),
             "Query",
-            &(prefix, suffix, min_len, max_len),
+            &(prefix, suffix, min_len, max_len, lang),
         )?;
         msg.body().deserialize()
     }
 
-    pub fn predict(&self, context: Vec<String>, max: u32) -> zbus::Result<Vec<(String, f64)>> {
+    /// Predict next word(s) from `context` for the given `lang`.
+    pub fn predict(
+        &self,
+        context: Vec<String>,
+        max: u32,
+        lang: &str,
+    ) -> zbus::Result<Vec<(String, f64)>> {
         let msg = self.conn.call_method(
             self.dest(),
             "/org/verbisage/Dictionary",
             Some("org.verbisage.Dictionary1"),
             "Predict",
-            &(context, max),
+            &(context, max, lang),
         )?;
         msg.body().deserialize()
     }
 
-    pub fn frequency(&self, word: &str) -> zbus::Result<f64> {
+    /// Look up the frequency of `word` in `lang`.
+    pub fn frequency(&self, word: &str, lang: &str) -> zbus::Result<f64> {
         let msg = self.conn.call_method(
             self.dest(),
             "/org/verbisage/Dictionary",
             Some("org.verbisage.Dictionary1"),
             "Frequency",
-            &(word,),
+            &(word, lang),
         )?;
         msg.body().deserialize()
     }
@@ -139,7 +150,7 @@ mod tests {
         let dict_clone = file_dict.clone();
         let sc: Box<dyn SpellChecker> =
             Box::new(DictionarySpellChecker::new(std::sync::Arc::new(file_dict)));
-        let handler = DaemonHandler::new(Box::new(dict_clone), Some(sc), None);
+        let handler = DaemonHandler::new(Box::new(dict_clone), Some(sc), None, "en_US".into());
         (handler, dir)
     }
 
@@ -171,22 +182,22 @@ mod tests {
         let client_conn = Builder::unix_stream(s2).p2p().build().unwrap();
         let client = DbusClient::with_connection(client_conn);
 
-        assert!(client.is_correct("hello").unwrap());
-        assert!(!client.is_correct("xyzzy").unwrap());
+        assert!(client.is_correct("hello", "en_US").unwrap());
+        assert!(!client.is_correct("xyzzy", "en_US").unwrap());
 
-        let suggestions = client.suggest("helo", 5).unwrap();
+        let suggestions = client.suggest("helo", 5, "en_US").unwrap();
         assert!(!suggestions.is_empty());
         assert!(suggestions.contains(&"hello".to_string()));
 
-        let freq = client.frequency("hello").unwrap();
+        let freq = client.frequency("hello", "en_US").unwrap();
         assert!(freq > 0.0);
-        assert_eq!(client.frequency("nonexistent").unwrap(), 0.0);
+        assert_eq!(client.frequency("nonexistent", "en_US").unwrap(), 0.0);
 
-        let results = client.query("hel", "", 0, 0).unwrap();
+        let results = client.query("hel", "", 0, 0, "en_US").unwrap();
         assert!(!results.is_empty());
         assert!(results.iter().any(|(w, _)| w == "hello"));
 
-        let results = client.query("hel", "o", 0, 0).unwrap();
+        let results = client.query("hel", "o", 0, 0, "en_US").unwrap();
         assert!(!results.is_empty());
 
         drop(client);

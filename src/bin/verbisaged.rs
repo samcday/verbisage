@@ -307,7 +307,12 @@ fn open_sqlite_backend(
 
 fn run_daemon(cli: &Cli) {
     let (dict, sc) = open_backend(cli);
-    let handler = DaemonHandler::new(dict, sc, None as Option<Box<dyn Predictor>>);
+    let handler = DaemonHandler::new(
+        dict,
+        sc,
+        None as Option<Box<dyn Predictor>>,
+        cli.language.clone(),
+    );
 
     if cli.dbus {
         #[cfg(feature = "dbus")]
@@ -345,7 +350,7 @@ fn run_check(cli: &Cli) {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
-                Ok(client) => client.is_correct(word).unwrap_or(false),
+                Ok(client) => client.is_correct(word, &cli.language).unwrap_or(false),
                 Err(e) => {
                     eprintln!("dbus connection failed: {}", e);
                     std::process::exit(1);
@@ -381,7 +386,7 @@ fn run_correct(cli: &Cli) {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
-                Ok(client) => client.suggest(word, 10).unwrap_or_default(),
+                Ok(client) => client.suggest(word, 10, &cli.language).unwrap_or_default(),
                 Err(e) => {
                     eprintln!("dbus connection failed: {}", e);
                     std::process::exit(1);

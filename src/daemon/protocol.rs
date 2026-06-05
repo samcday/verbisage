@@ -7,6 +7,9 @@ pub struct DaemonRequest {
     pub id: Option<u64>,
     pub method: String,
     pub params: Value,
+    /// Language override — takes precedence over the daemon's configured default.
+    #[serde(default)]
+    pub lang: Option<String>,
 }
 
 /// A single response written to stdout.
