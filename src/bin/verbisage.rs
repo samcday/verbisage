@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use clap::{Parser, ValueEnum};
 
+use verbisage::backends::BackendDef;
 use verbisage::cli::{SharedArgs, open_backend};
 use verbisage::config::{default_config_path, load_config};
 use verbisage::debug;
@@ -77,6 +80,7 @@ fn main() {
 
     // Merge config into CLI and apply defaults.
     let shared = cli.shared.clone().apply_defaults(config.as_ref());
+    let named_backends = config.as_ref().and_then(|c| c.backends.as_ref());
 
     let mode = cli.mode.clone().unwrap_or_else(|| {
         if cli.word.is_some() || cli.context.is_some() {
@@ -88,16 +92,16 @@ fn main() {
     });
 
     match mode {
-        Mode::Check => run_check(&cli, &shared),
-        Mode::Correct => run_correct(&cli, &shared),
-        Mode::Predict => run_predict(&cli, &shared),
-        Mode::Query => run_query(&cli, &shared),
+        Mode::Check => run_check(&cli, &shared, named_backends),
+        Mode::Correct => run_correct(&cli, &shared, named_backends),
+        Mode::Predict => run_predict(&cli, &shared, named_backends),
+        Mode::Query => run_query(&cli, &shared, named_backends),
     }
 }
 
 // ── Mode dispatchers ───────────────────────────────────────────────────────
 
-fn run_check(cli: &Cli, shared: &SharedArgs) {
+fn run_check(cli: &Cli, shared: &SharedArgs, named_backends: Option<&HashMap<String, BackendDef>>) {
     let word = cli
         .word
         .as_deref()
@@ -132,7 +136,7 @@ fn run_check(cli: &Cli, shared: &SharedArgs) {
             std::process::exit(1);
         }
     } else {
-        let (_, sc) = open_backend(shared, lang);
+        let (_, sc) = open_backend(shared, lang, named_backends);
         match &sc {
             Some(s) => s.is_correct(word),
             None => {
@@ -150,7 +154,11 @@ fn run_check(cli: &Cli, shared: &SharedArgs) {
     }
 }
 
-fn run_correct(cli: &Cli, shared: &SharedArgs) {
+fn run_correct(
+    cli: &Cli,
+    shared: &SharedArgs,
+    named_backends: Option<&HashMap<String, BackendDef>>,
+) {
     let word = cli.word.as_deref().unwrap_or_else(|| {
         eprintln!("usage: verbisage correct --word <word>");
         std::process::exit(1);
@@ -181,7 +189,7 @@ fn run_correct(cli: &Cli, shared: &SharedArgs) {
             std::process::exit(1);
         }
     } else {
-        let (_, sc) = open_backend(shared, lang);
+        let (_, sc) = open_backend(shared, lang, named_backends);
         match &sc {
             Some(s) => s.suggest(word),
             None => {
@@ -199,7 +207,11 @@ fn run_correct(cli: &Cli, shared: &SharedArgs) {
     }
 }
 
-fn run_predict(cli: &Cli, shared: &SharedArgs) {
+fn run_predict(
+    cli: &Cli,
+    shared: &SharedArgs,
+    _named_backends: Option<&HashMap<String, BackendDef>>,
+) {
     let context: Vec<String> = cli
         .context
         .as_deref()
@@ -245,7 +257,7 @@ fn run_predict(cli: &Cli, shared: &SharedArgs) {
     }
 }
 
-fn run_query(cli: &Cli, shared: &SharedArgs) {
+fn run_query(cli: &Cli, shared: &SharedArgs, named_backends: Option<&HashMap<String, BackendDef>>) {
     let min = cli.min_len.unwrap_or(0);
     let max = cli.max_len.unwrap_or(0);
     let lang = shared.lang();
@@ -299,7 +311,7 @@ fn run_query(cli: &Cli, shared: &SharedArgs) {
             })
             .collect();
 
-        let (dict, sc) = open_backend(shared, lang);
+        let (dict, sc) = open_backend(shared, lang, named_backends);
         let results: Vec<DictionaryResult> = dict.query_prefixes(&queries);
         if results.is_empty() && sc.is_none() {
             eprintln!("warning: no dictionary loaded for '{}'", lang);

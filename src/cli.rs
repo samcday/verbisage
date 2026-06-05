@@ -2,18 +2,11 @@ use std::path::PathBuf;
 
 use clap::Args;
 
+use crate::backends::resolve_chain_with_backcompat;
 use crate::config::Config;
-use crate::daemon::BackendKind;
+use crate::dictionary::DictionaryBackend;
 use crate::dictionary::paths::{LanguagePaths, PathOverride, expand_tilde};
-use crate::dictionary::{DictionaryBackend, FileDictionaryBackend};
-use crate::spellcheck::{DictionarySpellChecker, SpellChecker};
-
-#[cfg(feature = "sqlite")]
-use crate::dictionary::SqliteDictionaryBackend;
-#[cfg(feature = "hunspell")]
-use crate::spellcheck::HunspellSpellChecker;
-#[cfg(feature = "sqlite")]
-use crate::spellcheck::SqliteSpellChecker;
+use crate::spellcheck::SpellChecker;
 
 /// Pattern overrides carried from config file (not CLI args).
 #[derive(Clone, Default)]
@@ -27,9 +20,9 @@ pub struct PatternOverrides {
 /// Shared CLI arguments used by both daemon and one-shot binaries.
 #[derive(Args, Clone)]
 pub struct SharedArgs {
-    /// Dictionary backend
+    /// Backend chain (e.g. "file", "sqlite", "dict+lm", "A+B+C")
     #[arg(long, short, env = "VERBISAGE_BACKEND")]
-    pub backend: Option<BackendKind>,
+    pub backend: Option<String>,
 
     /// Language tag (e.g. en_US) — used for directory lookup and hunspell.
     #[arg(long, env = "VERBISAGE_LANGUAGE")]
@@ -100,15 +93,8 @@ impl SharedArgs {
         if self.backend.is_none() {
             self.backend = cfg
                 .and_then(|c| c.backend.as_deref())
-                .and_then(|s| match s {
-                    "file" => Some(BackendKind::File),
-                    #[cfg(feature = "sqlite")]
-                    "sqlite" => Some(BackendKind::Sqlite),
-                    #[cfg(feature = "hunspell")]
-                    "hunspell" => Some(BackendKind::Hunspell),
-                    _ => None,
-                })
-                .or(Some(BackendKind::File));
+                .map(|s| s.to_string())
+                .or(Some("file".into()));
         }
 
         // ── language / language_default ──────────────────────────────────
@@ -179,7 +165,6 @@ impl SharedArgs {
         }
 
         // ── tilde expansion for all path fields ──────────────────────────
-        // Apply unconditionally so CLI-provided paths are also expanded.
         if let Some(dir) = &mut self.system_data_dir {
             *dir = expand_tilde(dir.to_str().unwrap_or(""));
         }
@@ -210,130 +195,24 @@ impl SharedArgs {
 pub fn open_backend(
     args: &SharedArgs,
     lang: &str,
+    named_backends: Option<&std::collections::HashMap<String, crate::backends::BackendDef>>,
 ) -> (Box<dyn DictionaryBackend>, Option<Box<dyn SpellChecker>>) {
-    let backend = args.backend.as_ref().unwrap_or(&BackendKind::File);
-    match backend {
-        BackendKind::File => open_file_backend(args, lang),
+    let chain = args.backend.as_deref().unwrap_or("file");
 
-        #[cfg(feature = "sqlite")]
-        BackendKind::Sqlite => open_sqlite_backend(args, lang),
-
-        #[cfg(feature = "hunspell")]
-        BackendKind::Hunspell => {
-            let checker: Box<dyn SpellChecker> = match (&args.affix, &args.dict) {
-                (Some(aff), Some(dic)) => Box::new(
-                    HunspellSpellChecker::from_files(aff, dic).unwrap_or_else(|e| {
-                        eprintln!("failed to load hunspell .aff/.dic: {}", e);
-                        std::process::exit(1);
-                    }),
-                ),
-                _ => Box::new(HunspellSpellChecker::from_tag(lang).unwrap_or_else(|e| {
-                    eprintln!("failed to load hunspell dictionary '{}': {}", lang, e);
-                    std::process::exit(1);
-                })),
-            };
-            (Box::new(FileDictionaryBackend::new()), Some(checker))
-        }
-    }
-}
-
-fn open_file_backend(
-    args: &SharedArgs,
-    lang: &str,
-) -> (Box<dyn DictionaryBackend>, Option<Box<dyn SpellChecker>>) {
-    let mut lp = LanguagePaths::new(lang);
-    if let Some(dir) = &args.system_data_dir {
-        lp = lp.with_system_dir(expand_tilde(dir.to_str().unwrap_or("")));
-    }
-    if let Some(dir) = &args.user_data_dir {
-        lp = lp.with_user_dir(expand_tilde(dir.to_str().unwrap_or("")));
-    }
-    lp.system_file_override = PathOverride::from_cli(args.system_dict.as_deref());
-    lp.user_file_override = PathOverride::from_cli(args.user_dict.as_deref());
-    lp.set_patterns(
-        args.patterns.system_dict.as_deref(),
-        args.patterns.user_dict.as_deref(),
-        args.patterns.system_sqlite.as_deref(),
-        args.patterns.user_sqlite.as_deref(),
-    );
-
-    let files = lp.resolve_dict_files();
-
-    if files.is_empty() {
-        return (Box::new(FileDictionaryBackend::new()), None);
-    }
-
-    let dict = FileDictionaryBackend::from_multiple_files(&files).unwrap_or_else(|e| {
-        eprintln!("failed to load dictionary files: {}", e);
-        std::process::exit(1);
-    });
-
-    let sc: Box<dyn SpellChecker> = Box::new(DictionarySpellChecker::new(std::sync::Arc::new(
-        dict.clone(),
-    )));
-    (Box::new(dict), Some(sc))
-}
-
-#[cfg(feature = "sqlite")]
-fn open_sqlite_backend(
-    args: &SharedArgs,
-    lang: &str,
-) -> (Box<dyn DictionaryBackend>, Option<Box<dyn SpellChecker>>) {
-    let mut lp = LanguagePaths::new(lang);
-    if let Some(dir) = &args.system_data_dir {
-        lp = lp.with_system_dir(expand_tilde(dir.to_str().unwrap_or("")));
-    }
-    if let Some(dir) = &args.user_data_dir {
-        lp = lp.with_user_dir(expand_tilde(dir.to_str().unwrap_or("")));
-    }
-    lp.system_file_override = PathOverride::from_cli(args.system_dict.as_deref());
-    lp.user_file_override = PathOverride::from_cli(args.user_dict.as_deref());
-    lp.set_patterns(
-        args.patterns.system_dict.as_deref(),
-        args.patterns.user_dict.as_deref(),
-        args.patterns.system_sqlite.as_deref(),
-        args.patterns.user_sqlite.as_deref(),
-    );
-
-    let table = args.table.as_deref().unwrap_or("words");
-    let word_col = args.word_col.as_deref().unwrap_or("word");
-    let freq_col = args.freq_col.as_deref().unwrap_or("frequency");
-
-    let dict = lp
-        .user_sqlite_file()
-        .and_then(|path| {
-            SqliteDictionaryBackend::from_sqlite(&path, table, word_col, freq_col)
-                .map_err(|e| {
-                    eprintln!(
-                        "warning: failed to open user sqlite db '{}': {}",
-                        path.display(),
-                        e
-                    )
-                })
-                .ok()
-        })
-        .or_else(|| {
-            lp.system_sqlite_file().and_then(|path| {
-                SqliteDictionaryBackend::from_sqlite_readonly(&path, table, word_col, freq_col)
-                    .map_err(|e| {
-                        eprintln!(
-                            "warning: failed to open system sqlite db '{}': {}",
-                            path.display(),
-                            e
-                        )
-                    })
-                    .ok()
-            })
+    let (assignment, warnings) = resolve_chain_with_backcompat(chain, named_backends)
+        .unwrap_or_else(|e| {
+            eprintln!("error: failed to resolve backend chain '{}': {}", chain, e);
+            std::process::exit(1);
         });
 
-    match dict {
-        Some(d) => {
-            let sc: Box<dyn SpellChecker> =
-                Box::new(SqliteSpellChecker::new(std::sync::Arc::new(d.clone())));
-            (Box::new(d), Some(sc))
-        }
-        None => (Box::new(FileDictionaryBackend::new()), None),
+    for w in &warnings {
+        eprintln!("warning: {}", w);
     }
+
+    let lp = build_language_paths(args, lang);
+    let composed = crate::backends::build::compose_chain(&assignment, lang, &lp);
+
+    (composed.dictionary, composed.spellchecker)
 }
 
 // ── Backend config helper (used by both daemon and one-shot) ───────────────
@@ -341,7 +220,11 @@ fn open_sqlite_backend(
 /// Build a `LanguagePaths` seeded with CLI-provided dirs and overrides (no
 /// specific language — the caller sets that later).
 pub fn base_language_paths(args: &SharedArgs) -> LanguagePaths {
-    let mut lp = LanguagePaths::new("placeholder");
+    build_language_paths(args, "placeholder")
+}
+
+fn build_language_paths(args: &SharedArgs, lang: &str) -> LanguagePaths {
+    let mut lp = LanguagePaths::new(lang);
     if let Some(dir) = &args.system_data_dir {
         lp = lp.with_system_dir(expand_tilde(dir.to_str().unwrap_or("")));
     }

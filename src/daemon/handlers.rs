@@ -3,14 +3,15 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
+use crate::backends::resolve_chain_with_backcompat;
 use crate::dictionary::paths::LanguagePaths;
 use crate::dictionary::{
     DictionaryBackend, DictionaryQuery, DictionaryResult, FileDictionaryBackend,
 };
 use crate::prediction::{Prediction, Predictor};
-use crate::spellcheck::{DictionarySpellChecker, SpellChecker};
+use crate::spellcheck::SpellChecker;
 
-use super::config::{BackendKind, DaemonConfig};
+use super::config::DaemonConfig;
 use super::protocol::{
     DaemonRequest, DaemonResponse, FrequencyParams, IsCorrectParams, PredictParams, QueryParams,
     SuggestParams,
@@ -55,7 +56,6 @@ impl DaemonHandler {
     }
 
     /// Create from config with an empty cache (used by daemon).
-    /// Backends are loaded lazily on first request per language.
     pub fn with_config(config: DaemonConfig) -> Self {
         let default_lang = config.default_lang.clone();
         Self {
@@ -90,212 +90,51 @@ impl DaemonHandler {
     }
 
     fn build_backend(&self, lang: &str) -> CachedBackend {
-        match self.config.backend {
-            BackendKind::File => Self::build_file_backend(lang, &self.config),
-            #[cfg(feature = "sqlite")]
-            BackendKind::Sqlite => Self::build_sqlite_backend(lang, &self.config),
-            #[cfg(feature = "hunspell")]
-            BackendKind::Hunspell => Self::build_hunspell_backend(lang, &self.config),
-        }
-    }
-
-    fn build_file_backend(lang: &str, config: &DaemonConfig) -> CachedBackend {
-        let lp = Self::lang_paths(lang, config);
-        let files = lp.resolve_dict_files();
-
-        if files.is_empty() {
-            eprintln!(
-                "warning: no dictionary files found for '{}' (dirs: system={}, user={})",
-                lang,
-                lp.system_dir.display(),
-                lp.user_dir.display(),
-            );
-            return CachedBackend {
-                loaded: false,
-                dictionary: Box::new(FileDictionaryBackend::new()),
-                spellchecker: None,
-                predictor: None,
-            };
-        }
-
-        let dict = match FileDictionaryBackend::from_multiple_files(&files) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!(
-                    "warning: failed to load dictionary files for '{}': {}",
-                    lang, e,
-                );
-                return CachedBackend {
-                    loaded: false,
-                    dictionary: Box::new(FileDictionaryBackend::new()),
-                    spellchecker: None,
-                    predictor: None,
-                };
-            }
-        };
-
-        let sc: Box<dyn SpellChecker> = Box::new(DictionarySpellChecker::new(std::sync::Arc::new(
-            dict.clone(),
-        )));
-        CachedBackend {
-            loaded: true,
-            dictionary: Box::new(dict),
-            spellchecker: Some(sc),
-            predictor: None,
-        }
-    }
-
-    #[cfg(feature = "sqlite")]
-    fn build_sqlite_backend(lang: &str, config: &DaemonConfig) -> CachedBackend {
-        use crate::spellcheck::SqliteSpellChecker;
-
-        let lp = Self::lang_paths(lang, config);
-
-        // Prefer user DB (writable) over system DB (read-only).
-        // For every file that opens successfully we verify the expected table
-        // actually exists — a valid but wrong‑schema file is treated as absent.
-        let dict = lp
-            .user_sqlite_file()
-            .and_then(|path| Self::try_open_sqlite(path, &config, lang, true))
-            .or_else(|| {
-                lp.system_sqlite_file()
-                    .and_then(|path| Self::try_open_sqlite(path, &config, lang, false))
-            });
-
-        match dict {
-            Some(d) => {
-                let sc: Box<dyn SpellChecker> =
-                    Box::new(SqliteSpellChecker::new(std::sync::Arc::new(d.clone())));
-                CachedBackend {
-                    loaded: true,
-                    dictionary: Box::new(d),
-                    spellchecker: Some(sc),
-                    predictor: None,
-                }
-            }
-            None => {
-                eprintln!(
-                    "warning: no sqlite database found for '{}' (dirs: system={}, user={})",
-                    lang,
-                    lp.system_dir.display(),
-                    lp.user_dir.display(),
-                );
-                CachedBackend {
-                    loaded: false,
-                    dictionary: Box::new(FileDictionaryBackend::new()),
-                    spellchecker: None,
-                    predictor: None,
-                }
-            }
-        }
-    }
-
-    #[cfg(feature = "hunspell")]
-    fn build_hunspell_backend(lang: &str, config: &DaemonConfig) -> CachedBackend {
-        use crate::spellcheck::HunspellSpellChecker;
-
-        let sc = match (&config.hunspell_affix, &config.hunspell_dict) {
-            (Some(aff), Some(dic)) => match HunspellSpellChecker::from_files(aff, dic) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    eprintln!(
-                        "warning: failed to load hunspell files for '{}': {}",
-                        lang, e,
-                    );
-                    None
-                }
-            },
-            _ => match HunspellSpellChecker::from_tag(lang) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    eprintln!(
-                        "warning: failed to load hunspell dictionary for '{}': {}",
-                        lang, e,
-                    );
-                    None
-                }
-            },
-        };
-
-        match sc {
-            Some(checker) => CachedBackend {
-                loaded: true,
-                dictionary: Box::new(FileDictionaryBackend::new()),
-                spellchecker: Some(Box::new(checker)),
-                predictor: None,
-            },
-            None => CachedBackend {
-                loaded: false,
-                dictionary: Box::new(FileDictionaryBackend::new()),
-                spellchecker: None,
-                predictor: None,
-            },
-        }
-    }
-
-    /// Try to open a SQLite backend at `path`, verifying the expected table
-    /// actually exists.  Returns `None` (with a warning on stderr) when the
-    /// file can't be opened or the table is missing.
-    #[cfg(feature = "sqlite")]
-    fn try_open_sqlite(
-        path: std::path::PathBuf,
-        config: &DaemonConfig,
-        lang: &str,
-        writable: bool,
-    ) -> Option<crate::dictionary::SqliteDictionaryBackend> {
-        use crate::dictionary::SqliteDictionaryBackend;
-
-        let result = if writable {
-            SqliteDictionaryBackend::from_sqlite(
-                &path,
-                &config.sqlite_table,
-                &config.sqlite_word_col,
-                &config.sqlite_freq_col,
-            )
+        let named_backends = if self.config.named_backends.is_empty() {
+            None
         } else {
-            SqliteDictionaryBackend::from_sqlite_readonly(
-                &path,
-                &config.sqlite_table,
-                &config.sqlite_word_col,
-                &config.sqlite_freq_col,
-            )
+            Some(&self.config.named_backends)
         };
 
-        match result {
-            Ok(d) if d.table_exists() => Some(d),
-            Ok(_) => {
-                eprintln!(
-                    "warning: {} sqlite db for '{}' exists but has no '{}' table: {}",
-                    if writable { "user" } else { "system" },
-                    lang,
-                    config.sqlite_table,
-                    path.display(),
-                );
-                None
-            }
-            Err(e) => {
-                eprintln!(
-                    "warning: failed to open {} sqlite db for '{}' ({}): {}",
-                    if writable { "user" } else { "system" },
-                    lang,
-                    path.display(),
-                    e,
-                );
-                None
-            }
+        let (assignment, warnings) =
+            match resolve_chain_with_backcompat(&self.config.backend_chain, named_backends) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("warning: failed to resolve backend chain: {}", e);
+                    return CachedBackend {
+                        loaded: false,
+                        dictionary: Box::new(FileDictionaryBackend::new()),
+                        spellchecker: None,
+                        predictor: None,
+                    };
+                }
+            };
+
+        for w in &warnings {
+            eprintln!("warning: {}", w);
+        }
+
+        let lp = self.lang_paths(lang);
+        let composed = crate::backends::build::compose_chain(&assignment, lang, &lp);
+
+        CachedBackend {
+            loaded: composed.loaded,
+            dictionary: composed.dictionary,
+            spellchecker: composed.spellchecker,
+            predictor: composed.predictor,
         }
     }
 
-    fn lang_paths(lang: &str, config: &DaemonConfig) -> LanguagePaths {
+    fn lang_paths(&self, lang: &str) -> LanguagePaths {
         let mut lp = LanguagePaths::new(lang);
-        lp.system_dir = config.language_paths.system_dir.clone();
-        lp.user_dir = config.language_paths.user_dir.clone();
-        lp.system_file_override = config.language_paths.system_file_override.clone();
-        lp.user_file_override = config.language_paths.user_file_override.clone();
-        lp.system_dict_patterns = config.language_paths.system_dict_patterns.clone();
-        lp.user_dict_patterns = config.language_paths.user_dict_patterns.clone();
-        lp.system_sqlite_patterns = config.language_paths.system_sqlite_patterns.clone();
-        lp.user_sqlite_patterns = config.language_paths.user_sqlite_patterns.clone();
+        lp.system_dir = self.config.language_paths.system_dir.clone();
+        lp.user_dir = self.config.language_paths.user_dir.clone();
+        lp.system_file_override = self.config.language_paths.system_file_override.clone();
+        lp.user_file_override = self.config.language_paths.user_file_override.clone();
+        lp.system_dict_patterns = self.config.language_paths.system_dict_patterns.clone();
+        lp.user_dict_patterns = self.config.language_paths.user_dict_patterns.clone();
+        lp.system_sqlite_patterns = self.config.language_paths.system_sqlite_patterns.clone();
+        lp.user_sqlite_patterns = self.config.language_paths.user_sqlite_patterns.clone();
         lp
     }
 

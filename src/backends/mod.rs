@@ -628,3 +628,85 @@ pub fn resolve_all_backends(
     }
     Ok(resolved)
 }
+
+/// Resolve a chain string into a `RoleAssignment`, generating implicit
+/// backward-compatible backend definitions for old-style names ("file",
+/// "sqlite", "hunspell") when no matching `[backends.<name>]` section exists.
+pub fn resolve_chain_with_backcompat(
+    chain: &str,
+    named_backends: Option<&HashMap<String, BackendDef>>,
+) -> Result<(chain::RoleAssignment, Vec<chain::ChainWarning>), String> {
+    let mut raw_defs: HashMap<String, BackendDef> = match named_backends {
+        Some(m) => m.clone(),
+        None => HashMap::new(),
+    };
+
+    // If chain is a single old-style name, generate an implicit def
+    let implicit = implicit_backend_def(chain);
+    if let Some(def) = implicit {
+        raw_defs.entry(chain.to_string()).or_insert(def);
+    }
+
+    let defs = resolve_all_backends(&raw_defs).map_err(|e| e.to_string())?;
+
+    chain::assign_roles(chain, &defs)
+}
+
+/// Generate an implicit `BackendDef` for an old-style backend name, or `None`
+/// if the name is not a recognized shorthand.
+fn implicit_backend_def(name: &str) -> Option<BackendDef> {
+    match name {
+        "file" => Some(BackendDef {
+            backend_type: BackendType::File,
+            format: Some("flat".into()),
+            path: None,
+            delimiter: None,
+            has_header: None,
+            word_index: None,
+            freq_index: None,
+            table: None,
+            word_col: None,
+            freq_col: None,
+            table_ngrams: None,
+            context_cols: None,
+            next_col: None,
+            enable_unigrams: None,
+            enable_ngrams: None,
+        }),
+        "sqlite" => Some(BackendDef {
+            backend_type: BackendType::Sqlite,
+            format: Some("presage_words".into()),
+            path: None,
+            delimiter: None,
+            has_header: None,
+            word_index: None,
+            freq_index: None,
+            table: None,
+            word_col: None,
+            freq_col: None,
+            table_ngrams: None,
+            context_cols: None,
+            next_col: None,
+            enable_unigrams: None,
+            enable_ngrams: None,
+        }),
+        "hunspell" => Some(BackendDef {
+            backend_type: BackendType::Hunspell,
+            format: None,
+            path: None,
+            delimiter: None,
+            has_header: None,
+            word_index: None,
+            freq_index: None,
+            table: None,
+            word_col: None,
+            freq_col: None,
+            table_ngrams: None,
+            context_cols: None,
+            next_col: None,
+            enable_unigrams: None,
+            enable_ngrams: None,
+        }),
+        _ => None,
+    }
+}

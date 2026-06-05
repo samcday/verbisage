@@ -1,45 +1,23 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
 
-use clap::ValueEnum;
-
+use crate::backends::BackendDef;
 use crate::cli::SharedArgs;
 use crate::dictionary::paths::LanguagePaths;
 
-#[derive(ValueEnum, Clone, Debug)]
-pub enum BackendKind {
-    File,
-    #[cfg(feature = "sqlite")]
-    Sqlite,
-    #[cfg(feature = "hunspell")]
-    Hunspell,
-}
-
 pub struct DaemonConfig {
-    pub backend: BackendKind,
+    pub backend_chain: String,
+    pub named_backends: HashMap<String, BackendDef>,
     pub language_paths: LanguagePaths,
     pub default_lang: String,
-    pub sqlite_table: String,
-    pub sqlite_word_col: String,
-    pub sqlite_freq_col: String,
-    pub hunspell_affix: Option<PathBuf>,
-    pub hunspell_dict: Option<PathBuf>,
-    pub eager_system_dict: Option<String>,
-    pub eager_user_dict: Option<String>,
 }
 
 impl DaemonConfig {
     pub fn default_for(lang: &str) -> Self {
         Self {
-            backend: BackendKind::File,
+            backend_chain: "file".into(),
+            named_backends: HashMap::new(),
             language_paths: LanguagePaths::new(lang),
             default_lang: lang.to_string(),
-            sqlite_table: String::new(),
-            sqlite_word_col: String::new(),
-            sqlite_freq_col: String::new(),
-            hunspell_affix: None,
-            hunspell_dict: None,
-            eager_system_dict: None,
-            eager_user_dict: None,
         }
     }
 
@@ -47,16 +25,10 @@ impl DaemonConfig {
         let default_lang = args.lang().to_string();
         let lp = crate::cli::base_language_paths(args);
         Self {
-            backend: args.backend.clone().unwrap_or(BackendKind::File),
+            backend_chain: args.backend.clone().unwrap_or_else(|| "file".into()),
+            named_backends: HashMap::new(),
             language_paths: lp,
             default_lang,
-            sqlite_table: args.table.clone().unwrap_or_else(|| "words".into()),
-            sqlite_word_col: args.word_col.clone().unwrap_or_else(|| "word".into()),
-            sqlite_freq_col: args.freq_col.clone().unwrap_or_else(|| "frequency".into()),
-            hunspell_affix: args.affix.clone(),
-            hunspell_dict: args.dict.clone(),
-            eager_system_dict: args.system_dict.clone(),
-            eager_user_dict: args.user_dict.clone(),
         }
     }
 }

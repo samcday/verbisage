@@ -6,7 +6,7 @@ pub mod stdio;
 #[cfg(feature = "dbus")]
 pub mod dbus;
 
-pub use config::{BackendKind, DaemonConfig};
+pub use config::DaemonConfig;
 pub use handlers::DaemonHandler;
 pub use protocol::{DaemonRequest, DaemonResponse};
 pub use stdio::run;

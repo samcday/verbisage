@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::Deserialize;
+
+use crate::backends::BackendDef;
 
 /// Per-layer pattern overrides for dictionary files.
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -37,6 +40,9 @@ pub struct Config {
     pub paths: Option<PathConfig>,
     #[serde(default)]
     pub sqlite: Option<SqliteConfig>,
+    /// Named backend definitions (`[backends.<name>]` sections).
+    #[serde(default)]
+    pub backends: Option<HashMap<String, BackendDef>>,
 }
 
 pub fn default_config_path() -> PathBuf {
