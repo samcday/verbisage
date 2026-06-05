@@ -21,10 +21,12 @@ impl VerbisageDbus {
 #[interface(name = "org.verbisage.Dictionary1")]
 impl VerbisageDbus {
     async fn is_correct(&self, word: &str, lang: &str) -> bool {
+        crate::veprintln!("[dbus-server] IsCorrect({}, {})", word, lang);
         self.handler.is_correct(word, lang)
     }
 
     async fn suggest(&self, word: &str, max: u32, lang: &str) -> Vec<String> {
+        crate::veprintln!("[dbus-server] Suggest({}, {}, {})", word, max, lang);
         self.handler.suggest(word, max as usize, lang)
     }
 
@@ -36,6 +38,14 @@ impl VerbisageDbus {
         max_len: u32,
         lang: &str,
     ) -> Vec<(String, f64)> {
+        crate::veprintln!(
+            "[dbus-server] Query({}, {}, {}, {}, {})",
+            prefix,
+            suffix,
+            min_len,
+            max_len,
+            lang
+        );
         let query = DictionaryQuery {
             prefix: if prefix.is_empty() {
                 None
@@ -66,6 +76,7 @@ impl VerbisageDbus {
     }
 
     async fn predict(&self, context: Vec<String>, max: u32, lang: &str) -> Vec<(String, f64)> {
+        crate::veprintln!("[dbus-server] Predict({:?}, {}, {})", context, max, lang);
         let ctx: Vec<&str> = context.iter().map(|s| s.as_str()).collect();
         self.handler
             .predict(&ctx, max as usize, lang)
@@ -75,6 +86,7 @@ impl VerbisageDbus {
     }
 
     async fn frequency(&self, word: &str, lang: &str) -> f64 {
+        crate::veprintln!("[dbus-server] Frequency({}, {})", word, lang);
         self.handler.frequency(word, lang)
     }
 }

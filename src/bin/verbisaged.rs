@@ -2,6 +2,7 @@ use clap::Parser;
 
 use verbisage::cli::SharedArgs;
 use verbisage::daemon::{DaemonConfig, DaemonHandler, run};
+use verbisage::debug;
 
 #[cfg(feature = "dbus")]
 use verbisage::daemon::run_dbus;
@@ -19,6 +20,7 @@ struct DaemonCli {
 
 fn main() {
     let cli = DaemonCli::parse();
+    debug::set_verbose(cli.shared.verbose);
     let config = DaemonConfig::from_cli(&cli.shared);
     let handler = DaemonHandler::with_config(config);
 

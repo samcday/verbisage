@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod clients;
 pub mod daemon;
+pub mod debug;
 pub mod dictionary;
 pub mod prediction;
 pub mod spellcheck;

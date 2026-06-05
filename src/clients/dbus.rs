@@ -21,7 +21,9 @@ pub struct DbusClient {
 impl DbusClient {
     /// Connect to the session bus and bind to `org.verbisage.Dictionary`.
     pub fn new() -> Result<Self, zbus::Error> {
+        crate::veprintln!("[dbus] connecting to session bus ...");
         let conn = Connection::session()?;
+        crate::veprintln!("[dbus] connected");
         Ok(Self {
             conn,
             dest: Some("org.verbisage.Dictionary".into()),
@@ -37,27 +39,35 @@ impl DbusClient {
         self.dest.as_deref()
     }
 
-    /// Check whether `word` is correctly spelled for the given `lang`.
-    pub fn is_correct(&self, word: &str, lang: &str) -> zbus::Result<bool> {
-        let msg = self.conn.call_method(
-            self.dest(),
+    fn call<B: serde::Serialize + zbus::zvariant::Type>(
+        &self,
+        method: &str,
+        dest: Option<&str>,
+        body: &B,
+    ) -> zbus::Result<zbus::Message> {
+        crate::veprintln!("[dbus] -> {} dest={:?}", method, dest);
+        let r = self.conn.call_method(
+            dest,
             "/org/verbisage/Dictionary",
             Some("org.verbisage.Dictionary1"),
-            "IsCorrect",
-            &(word, lang),
-        )?;
+            method,
+            body,
+        );
+        if r.is_ok() {
+            crate::veprintln!("[dbus] <- {} ok", method);
+        }
+        r
+    }
+
+    /// Check whether `word` is correctly spelled for the given `lang`.
+    pub fn is_correct(&self, word: &str, lang: &str) -> zbus::Result<bool> {
+        let msg = self.call("IsCorrect", self.dest(), &(word, lang))?;
         msg.body().deserialize()
     }
 
     /// Request spelling suggestions for `word` in the given `lang`.
     pub fn suggest(&self, word: &str, max: u32, lang: &str) -> zbus::Result<Vec<String>> {
-        let msg = self.conn.call_method(
-            self.dest(),
-            "/org/verbisage/Dictionary",
-            Some("org.verbisage.Dictionary1"),
-            "Suggest",
-            &(word, max, lang),
-        )?;
+        let msg = self.call("Suggest", self.dest(), &(word, max, lang))?;
         msg.body().deserialize()
     }
 
@@ -70,11 +80,9 @@ impl DbusClient {
         max_len: u32,
         lang: &str,
     ) -> zbus::Result<Vec<(String, f64)>> {
-        let msg = self.conn.call_method(
-            self.dest(),
-            "/org/verbisage/Dictionary",
-            Some("org.verbisage.Dictionary1"),
+        let msg = self.call(
             "Query",
+            self.dest(),
             &(prefix, suffix, min_len, max_len, lang),
         )?;
         msg.body().deserialize()
@@ -87,25 +95,13 @@ impl DbusClient {
         max: u32,
         lang: &str,
     ) -> zbus::Result<Vec<(String, f64)>> {
-        let msg = self.conn.call_method(
-            self.dest(),
-            "/org/verbisage/Dictionary",
-            Some("org.verbisage.Dictionary1"),
-            "Predict",
-            &(context, max, lang),
-        )?;
+        let msg = self.call("Predict", self.dest(), &(context, max, lang))?;
         msg.body().deserialize()
     }
 
     /// Look up the frequency of `word` in `lang`.
     pub fn frequency(&self, word: &str, lang: &str) -> zbus::Result<f64> {
-        let msg = self.conn.call_method(
-            self.dest(),
-            "/org/verbisage/Dictionary",
-            Some("org.verbisage.Dictionary1"),
-            "Frequency",
-            &(word, lang),
-        )?;
+        let msg = self.call("Frequency", self.dest(), &(word, lang))?;
         msg.body().deserialize()
     }
 }

@@ -263,6 +263,7 @@ impl DaemonHandler {
     pub fn handle(&self, req: DaemonRequest) -> DaemonResponse {
         let id = req.id;
         let lang = self.resolve_lang(req.lang.as_deref());
+        crate::veprintln!("[handler] <- {}(lang={})", req.method, lang);
 
         match req.method.as_str() {
             "is_correct" => {

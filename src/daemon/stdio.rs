@@ -9,6 +9,7 @@ use super::protocol::DaemonRequest;
 /// and writes one JSON object per line to stdout.  Malformed lines produce
 /// an error response with `id: null`.
 pub fn run(handler: DaemonHandler) {
+    crate::veprintln!("[daemon] stdio event loop started");
     let stdin = io::stdin().lock();
     let stdout = io::stdout();
     let mut writer = BufWriter::new(stdout.lock());
@@ -40,6 +41,7 @@ pub fn run(handler: DaemonHandler) {
         };
 
         let resp = handler.handle(req);
+        crate::veprintln!("[daemon] -> {}", serde_json::to_string(&resp).unwrap());
         let serialized = serde_json::to_string(&resp).unwrap();
         if let Err(e) = writeln!(writer, "{}", serialized) {
             eprintln!("[verbisaged] write error: {}", e);

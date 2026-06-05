@@ -1,6 +1,7 @@
 use clap::{Parser, ValueEnum};
 
 use verbisage::cli::{SharedArgs, open_backend};
+use verbisage::debug;
 use verbisage::dictionary::DictionaryQuery;
 
 #[cfg(feature = "dbus")]
@@ -61,6 +62,7 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
+    debug::set_verbose(cli.shared.verbose);
 
     let mode = cli.mode.clone().unwrap_or_else(|| {
         if cli.word.is_some() || cli.context.is_some() {

@@ -68,6 +68,10 @@ pub struct SharedArgs {
     /// Use D-Bus transport (server in daemon mode, client in one-shot modes).
     #[arg(long)]
     pub dbus: bool,
+
+    /// Enable verbose debug output to stderr.
+    #[arg(long)]
+    pub verbose: bool,
 }
 
 // ── Eager backend construction (used by one-shot modes) ────────────────────
