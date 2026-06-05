@@ -36,3 +36,7 @@ crate-type = ["rlib", "cdylib"]
 [[bin]]
 name = "verbisaged"
 path = "src/bin/verbisaged.rs"
+
+[[bin]]
+name = "verbisage"
+path = "src/bin/verbisage.rs"

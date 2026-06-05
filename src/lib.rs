@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod clients;
 pub mod daemon;
 pub mod dictionary;
