@@ -12,6 +12,12 @@ pub struct VerbisageDbus {
     handler: DaemonHandler,
 }
 
+impl VerbisageDbus {
+    pub fn new(handler: DaemonHandler) -> Self {
+        Self { handler }
+    }
+}
+
 #[interface(name = "org.verbisage.Dictionary1")]
 impl VerbisageDbus {
     async fn is_correct(&self, word: &str) -> bool {
