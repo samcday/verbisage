@@ -67,10 +67,11 @@ struct Cli {
     #[arg(long, short)]
     path: Option<PathBuf>,
 
-    /// Language tag (e.g. en_US) – used for both the file dictionary
-    /// directory lookup and the hunspell backend.
-    #[arg(long, default_value = "en_US", env = "VERBISAGE_LANGUAGE")]
-    language: String,
+    /// Language tag (e.g. en_US) – used for directory lookup and hunspell.
+    /// In daemon mode, when absent (and no --path given), the daemon starts
+    /// empty and the per-request `lang` parameter is expected.
+    #[arg(long, env = "VERBISAGE_LANGUAGE")]
+    language: Option<String>,
 
     /// System data directory (language-specific files are looked up here)
     #[arg(long)]
@@ -172,15 +173,16 @@ fn main() {
 
 fn open_backend(
     cli: &Cli,
+    lang: &str,
 ) -> (
     Box<dyn verbisage::dictionary::DictionaryBackend>,
     Option<Box<dyn SpellChecker>>,
 ) {
     match &cli.backend {
-        BackendKind::File => open_file_backend(cli),
+        BackendKind::File => open_file_backend(cli, lang),
 
         #[cfg(feature = "sqlite")]
-        BackendKind::Sqlite => open_sqlite_backend(cli),
+        BackendKind::Sqlite => open_sqlite_backend(cli, lang),
 
         #[cfg(feature = "hunspell")]
         BackendKind::Hunspell => {
@@ -191,15 +193,10 @@ fn open_backend(
                         std::process::exit(1);
                     }),
                 ),
-                _ => Box::new(
-                    HunspellSpellChecker::from_tag(&cli.language).unwrap_or_else(|e| {
-                        eprintln!(
-                            "failed to load hunspell dictionary '{}': {}",
-                            cli.language, e
-                        );
-                        std::process::exit(1);
-                    }),
-                ),
+                _ => Box::new(HunspellSpellChecker::from_tag(lang).unwrap_or_else(|e| {
+                    eprintln!("failed to load hunspell dictionary '{}': {}", lang, e);
+                    std::process::exit(1);
+                })),
             };
             (Box::new(FileDictionaryBackend::new()), Some(checker))
         }
@@ -209,16 +206,17 @@ fn open_backend(
 /// Open the file backend, resolving paths via LanguagePaths.
 fn open_file_backend(
     cli: &Cli,
+    lang: &str,
 ) -> (
     Box<dyn verbisage::dictionary::DictionaryBackend>,
     Option<Box<dyn SpellChecker>>,
 ) {
     let files: Vec<PathBuf> = if let Some(path) = &cli.path {
-        // Explicit --path given: use it directly (backward compat).
+        // Explicit --path given: use it directly.
         vec![path.clone()]
     } else {
         // Build LanguagePaths from the CLI options.
-        let mut lp = LanguagePaths::new(&cli.language);
+        let mut lp = LanguagePaths::new(lang);
         if let Some(dir) = &cli.system_data_dir {
             lp = lp.with_system_dir(expand_tilde(dir.to_str().unwrap_or("")));
         }
@@ -228,16 +226,12 @@ fn open_file_backend(
         lp.system_file_override = PathOverride::from_cli(cli.system_dict.as_deref());
         lp.user_file_override = PathOverride::from_cli(cli.user_dict.as_deref());
 
-        let found = lp.resolve_dict_files();
-        if found.is_empty() {
-            eprintln!("no dictionary files found for language '{}'", cli.language);
-            eprintln!("  looked in:");
-            eprintln!("    system: {}", lp.system_dir.display());
-            eprintln!("    user:   {}", lp.user_dir.display());
-            std::process::exit(1);
-        }
-        found
+        lp.resolve_dict_files()
     };
+
+    if files.is_empty() {
+        return (Box::new(FileDictionaryBackend::new()), None);
+    }
 
     let dict = FileDictionaryBackend::from_multiple_files(&files).unwrap_or_else(|e| {
         eprintln!("failed to load dictionary files: {}", e);
@@ -254,6 +248,7 @@ fn open_file_backend(
 #[cfg(feature = "sqlite")]
 fn open_sqlite_backend(
     cli: &Cli,
+    lang: &str,
 ) -> (
     Box<dyn verbisage::dictionary::DictionaryBackend>,
     Option<Box<dyn SpellChecker>>,
@@ -261,7 +256,7 @@ fn open_sqlite_backend(
     let db_path = if let Some(path) = &cli.path {
         path.clone()
     } else {
-        let mut lp = LanguagePaths::new(&cli.language);
+        let mut lp = LanguagePaths::new(lang);
         if let Some(dir) = &cli.system_data_dir {
             lp = lp.with_system_dir(expand_tilde(dir.to_str().unwrap_or("")));
         }
@@ -271,19 +266,9 @@ fn open_sqlite_backend(
         lp.system_file_override = PathOverride::from_cli(cli.system_dict.as_deref());
         lp.user_file_override = PathOverride::from_cli(cli.user_dict.as_deref());
 
-        let files = lp.resolve_sqlite_files();
-        match files.first() {
+        match lp.resolve_sqlite_files().first() {
             Some(p) => p.clone(),
-            None => {
-                eprintln!("no sqlite database found for language '{}'", cli.language);
-                eprintln!(
-                    "  looked for database_{}.db / lm_{}.db in:",
-                    cli.language, cli.language
-                );
-                eprintln!("    system: {}", lp.system_dir.display());
-                eprintln!("    user:   {}", lp.user_dir.display());
-                std::process::exit(1);
-            }
+            None => return (Box::new(FileDictionaryBackend::new()), None),
         }
     };
 
@@ -306,12 +291,13 @@ fn open_sqlite_backend(
 // ── Mode dispatchers ──────────────────────────────────────────────────────
 
 fn run_daemon(cli: &Cli) {
-    let (dict, sc) = open_backend(cli);
+    let lang = cli.language.as_deref().unwrap_or("en_US");
+    let (dict, sc) = open_backend(cli, lang);
     let handler = DaemonHandler::new(
         dict,
         sc,
         None as Option<Box<dyn Predictor>>,
-        cli.language.clone(),
+        lang.to_string(),
     );
 
     if cli.dbus {
@@ -346,11 +332,12 @@ fn run_check(cli: &Cli) {
             std::process::exit(1);
         });
 
+    let lang = cli.language.as_deref().unwrap_or("en_US");
     let correct = if cli.dbus {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
-                Ok(client) => client.is_correct(word, &cli.language).unwrap_or(false),
+                Ok(client) => client.is_correct(word, lang).unwrap_or(false),
                 Err(e) => {
                     eprintln!("dbus connection failed: {}", e);
                     std::process::exit(1);
@@ -364,7 +351,7 @@ fn run_check(cli: &Cli) {
             std::process::exit(1);
         }
     } else {
-        let (_, sc) = open_backend(cli);
+        let (_, sc) = open_backend(cli, lang);
         sc.as_ref().map(|s| s.is_correct(word)).unwrap_or(false)
     };
 
@@ -382,11 +369,12 @@ fn run_correct(cli: &Cli) {
         std::process::exit(1);
     });
 
+    let lang = cli.language.as_deref().unwrap_or("en_US");
     let suggestions: Vec<String> = if cli.dbus {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
-                Ok(client) => client.suggest(word, 10, &cli.language).unwrap_or_default(),
+                Ok(client) => client.suggest(word, 10, lang).unwrap_or_default(),
                 Err(e) => {
                     eprintln!("dbus connection failed: {}", e);
                     std::process::exit(1);
@@ -400,7 +388,7 @@ fn run_correct(cli: &Cli) {
             std::process::exit(1);
         }
     } else {
-        let (_, sc) = open_backend(cli);
+        let (_, sc) = open_backend(cli, lang);
         sc.as_ref().map(|s| s.suggest(word)).unwrap_or_default()
     };
 
@@ -446,7 +434,8 @@ fn run_query(cli: &Cli) {
         })
         .collect();
 
-    let (dict, _) = open_backend(cli);
+    let lang = cli.language.as_deref().unwrap_or("en_US");
+    let (dict, _) = open_backend(cli, lang);
     let results = dict.query_prefixes(&queries);
 
     for r in &results {
