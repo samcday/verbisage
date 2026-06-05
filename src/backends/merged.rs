@@ -1,15 +1,16 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use crate::dictionary::{DictionaryBackend, DictionaryQuery, DictionaryResult};
 use crate::prediction::{Prediction, Predictor};
 
-/// A merged dictionary that queries multiple `DictionaryBackend` instances
-/// and combines their results.
+/// Presage-style merged dictionary.
 ///
-/// - `query_prefixes`: union from all inner backends, deduped by word,
-///   first-source confidence wins.
-/// - `contains`: true if any inner backend has the word.
-/// - `get_frequency`: first non-zero from inner backends (order: dict then freq).
+/// Queries all inner backends independently, then merges results in memory:
+///
+/// - `query_prefixes`: union from all backends, deduped by word,
+///   confidence values summed (capped at 1.0).
+/// - `contains`: true if ANY backend contains the word.
+/// - `get_frequency`: sum of frequencies from all backends.
 pub struct MergedDictionary {
     backends: Vec<Box<dyn DictionaryBackend>>,
 }
@@ -22,16 +23,26 @@ impl MergedDictionary {
 
 impl DictionaryBackend for MergedDictionary {
     fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
-        let mut seen = HashSet::new();
-        let mut results = Vec::new();
+        // Collect all results, then merge by word with confidence accumulation.
+        let mut acc: HashMap<String, f64> = HashMap::new();
 
         for backend in &self.backends {
             for r in backend.query_prefixes(queries) {
-                if seen.insert(r.word.clone()) {
-                    results.push(r);
-                }
+                let entry = acc.entry(r.word).or_insert(0.0);
+                // Treat -1.0 (no frequency info) as 0 for accumulation.
+                let conf = if r.confidence > 0.0 {
+                    r.confidence
+                } else {
+                    0.0
+                };
+                *entry = (*entry + conf).min(1.0);
             }
         }
+
+        let mut results: Vec<DictionaryResult> = acc
+            .into_iter()
+            .map(|(word, confidence)| DictionaryResult { word, confidence })
+            .collect();
 
         results.sort_by(|a, b| {
             b.confidence
@@ -48,13 +59,11 @@ impl DictionaryBackend for MergedDictionary {
     }
 
     fn get_frequency(&self, word: &str) -> f64 {
+        let mut sum = 0.0;
         for backend in &self.backends {
-            let freq = backend.get_frequency(word);
-            if freq > 0.0 {
-                return freq;
-            }
+            sum += backend.get_frequency(word);
         }
-        0.0
+        sum
     }
 
     fn is_writable(&self) -> bool {
@@ -76,10 +85,11 @@ impl DictionaryBackend for MergedDictionary {
     }
 }
 
-/// A merged predictor that queries multiple `Predictor` instances.
+/// Presage-style merged predictor.
 ///
-/// Results are merged by word (first-source wins), then sorted by confidence
-/// descending.
+/// Each inner predictor queries independently, then results are merged:
+/// suggestions with the same word have their probabilities summed (capped
+/// at 1.0), matching the MeritocracyCombiner::filter() pattern from Presage.
 pub struct MergedPredictor {
     predictors: Vec<Box<dyn Predictor>>,
 }
@@ -92,16 +102,20 @@ impl MergedPredictor {
 
 impl Predictor for MergedPredictor {
     fn predict_next(&self, context: &[&str], max_suggestions: usize) -> Vec<Prediction> {
-        let mut seen = HashSet::new();
-        let mut results = Vec::new();
+        // Collect all predictions, then merge by word with probability accumulation.
+        let mut acc: HashMap<String, f64> = HashMap::new();
 
         for pred in &self.predictors {
             for p in pred.predict_next(context, max_suggestions) {
-                if seen.insert(p.word.clone()) {
-                    results.push(p);
-                }
+                let entry = acc.entry(p.word).or_insert(0.0);
+                *entry = (*entry + p.confidence).min(1.0);
             }
         }
+
+        let mut results: Vec<Prediction> = acc
+            .into_iter()
+            .map(|(word, confidence)| Prediction { word, confidence })
+            .collect();
 
         results.sort_by(|a, b| {
             b.confidence
@@ -158,8 +172,8 @@ mod tests {
     }
 
     #[test]
-    fn merged_dedupes() {
-        let a = make_dict(&[("hello", 1.0)]);
+    fn merged_confidence_accumulates() {
+        let a = make_dict(&[("hello", 0.3)]);
         let b = make_dict(&[("hello", 0.5)]);
         let merged = MergedDictionary::new(vec![a, b]);
         let results = merged.query_prefixes(&[DictionaryQuery {
@@ -169,15 +183,32 @@ mod tests {
             max_length: None,
         }]);
         assert_eq!(results.len(), 1);
-        // First source confidence wins
+        // Confidence accumulates: 0.3 + 0.5 = 0.8
+        assert_eq!(results[0].confidence, 0.8);
+    }
+
+    #[test]
+    fn merged_confidence_caps_at_one() {
+        let a = make_dict(&[("hello", 0.8)]);
+        let b = make_dict(&[("hello", 0.6)]);
+        let merged = MergedDictionary::new(vec![a, b]);
+        let results = merged.query_prefixes(&[DictionaryQuery {
+            prefix: Some("hel".into()),
+            suffix: None,
+            min_length: None,
+            max_length: None,
+        }]);
+        assert_eq!(results.len(), 1);
+        // 0.8 + 0.6 = 1.4, capped at 1.0
         assert_eq!(results[0].confidence, 1.0);
     }
 
     #[test]
-    fn merged_frequency_first_nonzero() {
-        let a = make_dict(&[("hello", 0.0)]);
-        let b = make_dict(&[("hello", 0.8)]);
+    fn merged_frequency_sums() {
+        let a = make_dict(&[("hello", 0.3)]);
+        let b = make_dict(&[("hello", 0.5)]);
         let merged = MergedDictionary::new(vec![a, b]);
+        // Frequencies sum across all backends
         assert_eq!(merged.get_frequency("hello"), 0.8);
     }
 }
