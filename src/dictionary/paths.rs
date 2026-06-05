@@ -160,9 +160,9 @@ impl LanguagePaths {
 
     /// Convenience: word-list dictionary files (file backend).
     ///
-    /// Looks for `<lang>.dic`, `<lang>.freq`, and `<lang>.wordlist` in
-    /// both system and user directories.  User files are returned after
-    /// system files so their frequencies take precedence.
+    /// For each pattern, first tries the full language tag (e.g. `en_US`),
+    /// then falls back to the base language (e.g. `en`).  Files are checked
+    /// in system-then-user order so user frequencies take precedence.
     pub fn resolve_dict_files(&self) -> Vec<PathBuf> {
         let patterns = &["{lang}.dic", "{lang}.freq", "{lang}.wordlist"];
         let mut files = self.resolve_system(patterns);
@@ -172,8 +172,8 @@ impl LanguagePaths {
 
     /// SQLite dictionary files (sqlite backend).
     ///
-    /// System: `database_{lang}.db`  (read‑only reference)
-    /// User:   `lm_{lang}.db`       (trainable language model)
+    /// System: `database_{lang}.db` — falls back to `database_en.db`
+    /// User:   `lm_{lang}.db`       — falls back to `lm_en.db`
     pub fn resolve_sqlite_files(&self) -> Vec<PathBuf> {
         let sys = self.resolve_system(&["database_{lang}.db"]);
         let usr = self.resolve_user(&["lm_{lang}.db"]);
@@ -181,17 +181,46 @@ impl LanguagePaths {
     }
 }
 
-// ── internal helper ───────────────────────────────────────────────────────
+// ── internal helpers ──────────────────────────────────────────────────────
 
-fn find_files(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    for pattern in patterns {
-        let filename = pattern.replace("{lang}", language);
-        let f = dir.join(&filename);
-        if f.exists() {
-            files.push(f);
+/// Generate language tags to try, from most to least specific.
+///
+/// For `en_US`: `["en_US", "en"]`
+/// For `de`:    `["de"]`
+/// For `pt_BR`: `["pt_BR", "pt"]`
+fn language_fallbacks(tag: &str) -> Vec<String> {
+    let mut tags = Vec::with_capacity(2);
+    tags.push(tag.to_string());
+    if let Some(underscore) = tag.find('_') {
+        let base = &tag[..underscore];
+        if !base.is_empty() {
+            tags.push(base.to_string());
         }
     }
+    tags
+}
+
+/// Search `dir` for files matching any `pattern`, trying each language
+/// fallback in order.  Returns the first match per pattern (most specific
+/// language wins).
+fn find_files(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
+    let fallbacks = language_fallbacks(language);
+    let mut files = Vec::new();
+
+    for pattern in patterns {
+        let mut matched = false;
+        for lang in &fallbacks {
+            let filename = pattern.replace("{lang}", lang);
+            let f = dir.join(&filename);
+            if f.exists() {
+                files.push(f);
+                matched = true;
+                break;
+            }
+        }
+        let _ = matched;
+    }
+
     files
 }
 
@@ -247,5 +276,23 @@ mod tests {
             "database_{lang}.db".replace("{lang}", "en_US")
         );
         assert_eq!("lm_de.db", "lm_{lang}.db".replace("{lang}", "de"));
+    }
+
+    #[test]
+    fn language_fallbacks_full_tag() {
+        let tags = language_fallbacks("en_US");
+        assert_eq!(tags, vec!["en_US", "en"]);
+    }
+
+    #[test]
+    fn language_fallbacks_base_only() {
+        let tags = language_fallbacks("de");
+        assert_eq!(tags, vec!["de"]);
+    }
+
+    #[test]
+    fn language_fallbacks_triple() {
+        let tags = language_fallbacks("pt_BR");
+        assert_eq!(tags, vec!["pt_BR", "pt"]);
     }
 }
