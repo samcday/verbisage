@@ -5,6 +5,7 @@ use verbisage::config::{default_config_path, load_config};
 use verbisage::daemon::{DaemonConfig, DaemonHandler, run};
 use verbisage::debug;
 use verbisage::dictionary::paths::expand_tilde;
+use verbisage::veprintln;
 
 #[cfg(feature = "dbus")]
 use verbisage::daemon::run_dbus;
@@ -35,9 +36,50 @@ fn main() {
 
     let shared = cli.shared.apply_defaults(config.as_ref());
     let cfg = DaemonConfig::from_cli(&shared);
+
+    veprintln!("config file: {}", config_path.as_ref().unwrap().display());
+    veprintln!("backend: {:?}", cfg.backend);
+    veprintln!("default language: {}", cfg.default_lang);
+    if let Some(d) = &cfg.eager_system_dict {
+        veprintln!("system dict override: {}", d);
+    }
+    if let Some(d) = &cfg.eager_user_dict {
+        veprintln!("user dict override: {}", d);
+    }
+    if let Some(path) = &cfg.hunspell_affix {
+        veprintln!("hunspell .aff: {}", path.display());
+    }
+    if let Some(path) = &cfg.hunspell_dict {
+        veprintln!("hunspell .dic: {}", path.display());
+    }
+    veprintln!(
+        "data dirs — system: {}, user: {}",
+        cfg.language_paths.system_dir.display(),
+        cfg.language_paths.user_dir.display(),
+    );
+    veprintln!(
+        "dict patterns — system: {:?}, user: {:?}",
+        cfg.language_paths.system_dict_patterns,
+        cfg.language_paths.user_dict_patterns,
+    );
+    veprintln!(
+        "sqlite patterns — system: {:?}, user: {:?}",
+        cfg.language_paths.system_sqlite_patterns,
+        cfg.language_paths.user_sqlite_patterns,
+    );
+
+    #[cfg(feature = "sqlite")]
+    veprintln!(
+        "sqlite table/cols: {}/{}/{}",
+        cfg.sqlite_table,
+        cfg.sqlite_word_col,
+        cfg.sqlite_freq_col,
+    );
+
     let handler = DaemonHandler::with_config(cfg);
 
     if shared.dbus {
+        veprintln!("transport: dbus (session bus)");
         #[cfg(feature = "dbus")]
         {
             let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| {
@@ -55,6 +97,7 @@ fn main() {
             std::process::exit(1);
         }
     } else {
+        veprintln!("transport: stdio");
         run(handler);
     }
 }
