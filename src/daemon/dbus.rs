@@ -1,5 +1,5 @@
-use zbus::interface;
 use zbus::fdo::Error as FdoError;
+use zbus::interface;
 
 use crate::dictionary::DictionaryQuery;
 
@@ -48,7 +48,9 @@ impl VerbisageDbus {
     #[zbus(out_args("result"))]
     async fn suggest(&self, word: &str, max: u32, lang: &str) -> Result<Vec<String>, FdoError> {
         crate::veprintln!("[dbus-server] Suggest({}, {}, {})", word, max, lang);
-        self.handler.suggest(word, max as usize, lang).map_err(log_and_err)
+        self.handler
+            .suggest(word, max as usize, lang)
+            .map_err(log_and_err)
     }
 
     /// Search the dictionary for words matching prefix and/or suffix
@@ -127,7 +129,12 @@ impl VerbisageDbus {
     /// @param lang     Language tag.
     /// @return         Array of (word, confidence) predictions.
     #[zbus(out_args("result"))]
-    async fn predict(&self, context: Vec<String>, max: u32, lang: &str) -> Result<Vec<(String, f64)>, FdoError> {
+    async fn predict(
+        &self,
+        context: Vec<String>,
+        max: u32,
+        lang: &str,
+    ) -> Result<Vec<(String, f64)>, FdoError> {
         crate::veprintln!("[dbus-server] Predict({:?}, {}, {})", context, max, lang);
         let ctx: Vec<&str> = context.iter().map(|s| s.as_str()).collect();
         self.handler

@@ -345,7 +345,12 @@ impl DaemonHandler {
         Ok(backend.dictionary.query_prefixes(queries))
     }
 
-    pub fn predict(&self, context: &[&str], max: usize, lang: &str) -> Result<Vec<Prediction>, String> {
+    pub fn predict(
+        &self,
+        context: &[&str],
+        max: usize,
+        lang: &str,
+    ) -> Result<Vec<Prediction>, String> {
         let backend = self.get_or_load_backend(lang);
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
