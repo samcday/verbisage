@@ -27,6 +27,30 @@ pub enum BackendType {
     Hunspell,
 }
 
+impl BackendType {
+    /// Parse a backend type name (e.g. "file", "sqlite") into `BackendType`.
+    /// Returns `None` if the name doesn't match a built-in type.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "file" => Some(Self::File),
+            "sqlite" => Some(Self::Sqlite),
+            "marisa" => Some(Self::Marisa),
+            "hunspell" => Some(Self::Hunspell),
+            _ => None,
+        }
+    }
+
+    /// The serde name for this backend type.
+    pub fn as_name(&self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Sqlite => "sqlite",
+            Self::Marisa => "marisa",
+            Self::Hunspell => "hunspell",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Capabilities
 // ---------------------------------------------------------------------------

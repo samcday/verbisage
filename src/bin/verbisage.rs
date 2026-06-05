@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use clap::{Parser, Subcommand};
 
-use verbisage::backends::BackendDef;
+use verbisage::backends::{BackendDef, BackendType};
 use verbisage::cli::{ClientMode, SharedArgs, open_backend};
 use verbisage::config::{default_config_path, load_config};
 use verbisage::debug;
@@ -11,6 +11,56 @@ use verbisage::dictionary::{DictionaryQuery, DictionaryResult};
 
 #[cfg(feature = "dbus")]
 use verbisage::clients::DbusClient;
+
+/// Resolve built-in backend type names (e.g. "file", "sqlite") in a chain
+/// string to named backends. For each built-in type not already defined in
+/// `cfg.backends`, a `default_<type>` entry is created and the chain is
+/// rewritten to reference it.
+fn resolve_backend_chain(chain: &str, cfg: &mut verbisage::config::Config) -> String {
+    let segments: Vec<&str> = chain.split('+').collect();
+    let resolved: Vec<String> = segments
+        .into_iter()
+        .map(|seg| {
+            let seg = seg.trim();
+            if let Some(bt) = BackendType::from_name(seg) {
+                let name = format!("default_{}", bt.as_name());
+                if cfg
+                    .backends
+                    .as_ref()
+                    .map_or(true, |m| !m.contains_key(&name))
+                {
+                    let mut backends = cfg.backends.take().unwrap_or_default();
+                    backends.insert(
+                        name.clone(),
+                        BackendDef {
+                            backend_type: bt,
+                            path: None,
+                            ngram_path: None,
+                            format: None,
+                            delimiter: None,
+                            has_header: None,
+                            word_index: None,
+                            freq_index: None,
+                            table: None,
+                            word_col: None,
+                            freq_col: None,
+                            table_ngrams: None,
+                            context_cols: None,
+                            next_col: None,
+                            enable_unigrams: None,
+                            enable_ngrams: None,
+                        },
+                    );
+                    cfg.backends = Some(backends);
+                }
+                name
+            } else {
+                seg.to_string()
+            }
+        })
+        .collect();
+    resolved.join("+")
+}
 
 // ── Shared args ────────────────────────────────────────────────────────────
 
@@ -392,12 +442,13 @@ fn merge_config(
 ) -> verbisage::config::Config {
     let mut cfg = file_config.cloned().unwrap_or_default();
 
-    // Backend chain: CLI > config > default
-    cfg.backend = shared
+    // Backend chain: CLI > config > default, then resolve built-in types to named backends
+    let chain = shared
         .backend
         .clone()
         .or_else(|| cfg.backend.clone())
-        .or(Some("file".into()));
+        .unwrap_or_else(|| "file".into());
+    cfg.backend = Some(resolve_backend_chain(&chain, &mut cfg));
 
     // Language: CLI > config > default
     cfg.language_default = shared
