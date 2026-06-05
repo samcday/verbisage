@@ -112,6 +112,36 @@ pub struct FrequencyParams {
     pub word: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct WordAddParams {
+    pub word: String,
+    #[serde(default = "default_frequency")]
+    pub frequency: f64,
+    #[serde(default = "default_true")]
+    pub allow_existing: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NgramBumpParams {
+    pub ngram: Vec<String>,
+    #[serde(default = "default_delta")]
+    pub delta: f64,
+    #[serde(default = "default_true")]
+    pub save_unknown: bool,
+}
+
 fn default_max() -> usize {
     10
+}
+
+fn default_frequency() -> f64 {
+    1.0
+}
+
+fn default_delta() -> f64 {
+    1.0
+}
+
+fn default_true() -> bool {
+    true
 }

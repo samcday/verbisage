@@ -522,4 +522,135 @@ mod tests {
         assert_eq!(results[0], ("are".to_string(), 50));
         assert_eq!(results[1], ("is".to_string(), 30));
     }
+
+    #[test]
+    fn increase_ngram_freq_unigram_save_unknown() {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE ngrams (context_1 TEXT, next_word TEXT NOT NULL, frequency REAL NOT NULL);
+             INSERT INTO ngrams VALUES (NULL, 'der', 1000);",
+        )
+        .unwrap();
+        let shared = SharedSqliteConnection::new(conn);
+        let backend = SqliteNgramBackend::new(
+            shared,
+            "ngrams",
+            &["context_1".to_string()],
+            "next_word",
+            "frequency",
+            2,
+            true,
+        );
+        assert!(backend.is_writable());
+        backend
+            .increase_ngram_frequency(&["der"], 5.0, false)
+            .unwrap();
+        assert_eq!(backend.ngram_count(&["der"]), 1005);
+
+        backend
+            .increase_ngram_frequency(&["newword"], 10.0, true)
+            .unwrap();
+        assert_eq!(backend.ngram_count(&["newword"]), 10);
+    }
+
+    #[test]
+    fn increase_ngram_freq_bigram_save_unknown() {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE ngrams (context_1 TEXT, next_word TEXT NOT NULL, frequency REAL NOT NULL);
+             INSERT INTO ngrams VALUES ('how', 'are', 50);",
+        )
+        .unwrap();
+        let shared = SharedSqliteConnection::new(conn);
+        let backend = SqliteNgramBackend::new(
+            shared,
+            "ngrams",
+            &["context_1".to_string()],
+            "next_word",
+            "frequency",
+            2,
+            true,
+        );
+        backend
+            .increase_ngram_frequency(&["how", "are"], 3.0, false)
+            .unwrap();
+        assert_eq!(backend.ngram_count(&["how", "are"]), 53);
+
+        backend
+            .increase_ngram_frequency(&["how", "is"], 20.0, true)
+            .unwrap();
+        assert_eq!(backend.ngram_count(&["how", "is"]), 20);
+    }
+
+    #[test]
+    fn increase_ngram_freq_readonly_rejected() {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE ngrams (context_1 TEXT, next_word TEXT NOT NULL, frequency REAL NOT NULL);",
+        )
+        .unwrap();
+        let shared = SharedSqliteConnection::new(conn);
+        let backend = SqliteNgramBackend::new(
+            shared,
+            "ngrams",
+            &["context_1".to_string()],
+            "next_word",
+            "frequency",
+            2,
+            false,
+        );
+        assert!(!backend.is_writable());
+        let err = backend.increase_ngram_frequency(&["test"], 1.0, true);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn increase_ngram_freq_save_unknown_false_rejected() {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE ngrams (context_1 TEXT, next_word TEXT NOT NULL, frequency REAL NOT NULL);",
+        )
+        .unwrap();
+        let shared = SharedSqliteConnection::new(conn);
+        let backend = SqliteNgramBackend::new(
+            shared,
+            "ngrams",
+            &["context_1".to_string()],
+            "next_word",
+            "frequency",
+            2,
+            true,
+        );
+        let err = backend.increase_ngram_frequency(&["nonexistent"], 1.0, false);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn increase_ngram_freq_via_predictor_trait() {
+        use crate::prediction::Predictor;
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE ngrams (context_1 TEXT, next_word TEXT NOT NULL, frequency REAL NOT NULL);
+             INSERT INTO ngrams VALUES (NULL, 'hello', 10.0);",
+        )
+        .unwrap();
+        let shared = SharedSqliteConnection::new(conn);
+        let backend = SqliteNgramBackend::new(
+            shared,
+            "ngrams",
+            &["context_1".to_string()],
+            "next_word",
+            "frequency",
+            2,
+            true,
+        );
+        let predictor = crate::prediction::smoothed::SmoothedPredictor::new(Box::new(backend))
+            .with_deltas(vec![0.4, 0.4, 0.2]);
+
+        assert_eq!(predictor.ngram_count(&["hello"]), 10);
+        predictor
+            .increase_ngram_frequency(&["hello"], 5.0, false)
+            .unwrap();
+        assert_eq!(predictor.ngram_count(&["hello"]), 15);
+    }
 }

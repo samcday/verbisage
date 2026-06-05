@@ -405,7 +405,7 @@ impl DictionaryBackend for FileDictionaryBackend {
             return Err(format!("word '{}' already exists", word).into());
         }
 
-        insert_word(&mut inner, word.to_string(), frequency);
+        insert_word(&mut inner, key, frequency);
         Ok(())
     }
 }

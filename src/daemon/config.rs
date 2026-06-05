@@ -23,7 +23,8 @@ impl DaemonConfig {
 
     pub fn from_cli(args: &SharedArgs) -> Self {
         let default_lang = args.lang().to_string();
-        let lp = crate::cli::base_language_paths(args);
+        let mut lp = crate::cli::base_language_paths(args);
+        lp.language = default_lang.clone();
         Self {
             backend_chain: args.backend.clone().unwrap_or_else(|| "file".into()),
             named_backends: HashMap::new(),

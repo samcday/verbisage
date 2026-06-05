@@ -13,8 +13,8 @@ use crate::spellcheck::SpellChecker;
 
 use super::config::DaemonConfig;
 use super::protocol::{
-    DaemonRequest, DaemonResponse, FrequencyParams, IsCorrectParams, PredictParams, QueryParams,
-    SuggestParams,
+    DaemonRequest, DaemonResponse, FrequencyParams, IsCorrectParams, NgramBumpParams,
+    PredictParams, QueryParams, SuggestParams, WordAddParams,
 };
 
 struct CachedBackend {
@@ -208,6 +208,44 @@ impl DaemonHandler {
         Ok(backend.dictionary.get_frequency(word))
     }
 
+    pub fn add_word(
+        &self,
+        word: &str,
+        frequency: f64,
+        allow_existing: bool,
+        lang: &str,
+    ) -> Result<(), String> {
+        let backend = self.get_or_load_backend(lang);
+        if !backend.loaded {
+            return Err(format!("no dictionary loaded for '{}'", lang));
+        }
+        backend
+            .dictionary
+            .add_word(word, frequency, allow_existing)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn increase_ngram_frequency(
+        &self,
+        ngram: &[String],
+        delta: f64,
+        save_unknown: bool,
+        lang: &str,
+    ) -> Result<(), String> {
+        let backend = self.get_or_load_backend(lang);
+        if !backend.loaded {
+            return Err(format!("no dictionary loaded for '{}'", lang));
+        }
+        match &backend.predictor {
+            Some(pred) => {
+                let refs: Vec<&str> = ngram.iter().map(|s| s.as_str()).collect();
+                pred.increase_ngram_frequency(&refs, delta, save_unknown)
+                    .map_err(|e| e.to_string())
+            }
+            None => Err("no predictor loaded for n-gram frequency updates".into()),
+        }
+    }
+
     // ── JSON-protocol dispatch ────────────────────────────────────────────
 
     pub fn handle(&self, req: DaemonRequest) -> DaemonResponse {
@@ -285,7 +323,139 @@ impl DaemonHandler {
                 }
             }
 
+            "word_add" => {
+                let params: WordAddParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => return DaemonResponse::error(id, format!("bad params: {}", e)),
+                };
+                match self.add_word(&params.word, params.frequency, params.allow_existing, lang) {
+                    Ok(()) => DaemonResponse::success(id, json!(true)),
+                    Err(e) => DaemonResponse::error(id, e),
+                }
+            }
+
+            "ngram_bump" => {
+                let params: NgramBumpParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => return DaemonResponse::error(id, format!("bad params: {}", e)),
+                };
+                match self.increase_ngram_frequency(
+                    &params.ngram,
+                    params.delta,
+                    params.save_unknown,
+                    lang,
+                ) {
+                    Ok(()) => DaemonResponse::success(id, json!(true)),
+                    Err(e) => DaemonResponse::error(id, e),
+                }
+            }
+
             _ => DaemonResponse::error(id, format!("unknown method: {}", req.method)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dictionary::FileDictionaryBackend;
+    use crate::prediction::smoothed::SmoothedPredictor;
+    use crate::prediction::sqlite::SqliteNgramBackend;
+    use crate::spellcheck::{DictionarySpellChecker, SpellChecker};
+    use serde_json::json;
+
+    #[test]
+    fn handler_add_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let dict_path = dir.path().join("words.txt");
+        {
+            let mut f = std::fs::File::create(&dict_path).unwrap();
+            use std::io::Write;
+            writeln!(f, "hello").unwrap();
+        }
+        let file_dict =
+            Arc::new(FileDictionaryBackend::from_multiple_files(&[dict_path], true).unwrap());
+        let dict_for_handler = file_dict.clone();
+        let sc: Box<dyn SpellChecker> = Box::new(DictionarySpellChecker::new(file_dict));
+        let handler =
+            DaemonHandler::new(Box::new(dict_for_handler), Some(sc), None, "en_US".into());
+
+        assert!(handler.is_correct("hello", "en_US").unwrap());
+        assert!(!handler.is_correct("newword", "en_US").unwrap());
+        handler.add_word("newword", 1.0, false, "en_US").unwrap();
+        assert!(handler.is_correct("newword", "en_US").unwrap());
+    }
+
+    #[test]
+    fn handler_ngram_bump() {
+        let conn = rusqlite::Connection::open(":memory:").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE ngrams (context_1 TEXT, next_word TEXT NOT NULL, frequency REAL NOT NULL);
+             INSERT INTO ngrams VALUES (NULL, 'hello', 10.0);",
+        )
+        .unwrap();
+        let shared = crate::backends::SharedSqliteConnection::new(conn);
+        let ngram_backend = SqliteNgramBackend::new(
+            shared,
+            "ngrams",
+            &["context_1".to_string()],
+            "next_word",
+            "frequency",
+            2,
+            true,
+        );
+        let predictor: Box<dyn crate::prediction::Predictor> = Box::new(
+            SmoothedPredictor::new(Box::new(ngram_backend)).with_deltas(vec![0.4, 0.4, 0.2]),
+        );
+
+        let dict = FileDictionaryBackend::new();
+        let handler = DaemonHandler::new(Box::new(dict), None, Some(predictor), "en_US".into());
+
+        let ngram = vec!["hello".to_string()];
+        handler
+            .increase_ngram_frequency(&ngram, 5.0, false, "en_US")
+            .unwrap();
+    }
+
+    #[test]
+    fn handler_dispatch_word_add() {
+        let dir = tempfile::tempdir().unwrap();
+        let dict_path = dir.path().join("words.txt");
+        {
+            let mut f = std::fs::File::create(&dict_path).unwrap();
+            use std::io::Write;
+            writeln!(f, "hello").unwrap();
+        }
+        let file_dict = FileDictionaryBackend::from_multiple_files(&[dict_path], true).unwrap();
+        let dict_clone = file_dict.clone();
+        let sc: Box<dyn SpellChecker> =
+            Box::new(DictionarySpellChecker::new(std::sync::Arc::new(file_dict)));
+        let handler = DaemonHandler::new(Box::new(dict_clone), Some(sc), None, "en_US".into());
+
+        let req = DaemonRequest {
+            id: Some(1),
+            method: "word_add".to_string(),
+            params: json!({"word": "newword", "frequency": 1.0, "allow_existing": false}),
+            lang: None,
+        };
+        let resp = handler.handle(req);
+        assert!(resp.error.is_none());
+        assert!(resp.result.unwrap()["id"].is_null());
+    }
+
+    #[test]
+    fn handler_dispatch_ngram_bump_no_predictor() {
+        let dict = FileDictionaryBackend::new();
+        let handler = DaemonHandler::new(Box::new(dict), None, None, "en_US".into());
+
+        let req = DaemonRequest {
+            id: Some(1),
+            method: "ngram_bump".to_string(),
+            params: json!({"ngram": ["hello"], "delta": 1.0, "save_unknown": true}),
+            lang: None,
+        };
+        let resp = handler.handle(req);
+        assert!(resp.error.is_some());
+        assert!(resp.error.as_ref().unwrap().contains("no predictor"));
     }
 }

@@ -597,6 +597,29 @@ impl SqliteDictionaryBackend {
         );
         let values = format!("({}, ?, ?)", context_placeholders.join(", "));
 
+        let conn = self.conn.lock();
+
+        if !allow_existing {
+            // Rebuild with actual column names for context checks
+            let exists_checks: Vec<String> = self
+                .ngram_context_columns
+                .iter()
+                .map(|col| format!("{} IS NULL", col))
+                .collect();
+            let exists_sql = format!(
+                "SELECT 1 FROM {} WHERE {} = ? AND {}",
+                self.table_name,
+                self.ngram_next_word_column,
+                exists_checks.join(" AND ")
+            );
+            let exists: bool = conn
+                .query_row(&exists_sql, [word], |row| row.get(0))
+                .unwrap_or(false);
+            if exists {
+                return Err(format!("word '{}' already exists", word).into());
+            }
+        }
+
         let sql = if allow_existing {
             format!(
                 "INSERT OR REPLACE INTO {} {} VALUES {}",
@@ -609,19 +632,9 @@ impl SqliteDictionaryBackend {
             )
         };
 
-        let conn = self.conn.lock();
-        let result = conn.execute(&sql, [word, &frequency.to_string()]);
-
-        if !allow_existing {
-            if let Err(ref e) = result {
-                let err_str = e.to_string();
-                if err_str.contains("UNIQUE") || err_str.contains("unique") {
-                    return Err(format!("word '{}' already exists", word).into());
-                }
-            }
-        }
-
-        result.map(|_| ()).map_err(Into::into)
+        conn.execute(&sql, [word, &frequency.to_string()])
+            .map(|_| ())
+            .map_err(Into::into)
     }
 }
 
@@ -848,6 +861,35 @@ mod tests {
         let err = be.add_word("hello", 20.0, false);
         assert!(err.is_err());
 
+        be.add_word("hello", 20.0, true).unwrap();
+        assert_eq!(be.frequency("hello"), 20.0);
+    }
+
+    #[test]
+    fn add_word_ngram_unigram_mode() {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE ngrams (context_1 TEXT, context_2 TEXT, next_word TEXT NOT NULL, frequency REAL NOT NULL, UNIQUE(next_word));
+             INSERT INTO ngrams VALUES (NULL, NULL, 'hello', 10.0);",
+        )
+        .unwrap();
+        let shared = SharedSqliteConnection::new(conn);
+        let be = SqliteDictionaryBackend::from_ngram_unigrams(
+            shared,
+            "ngrams",
+            &["context_1".to_string(), "context_2".to_string()],
+            "next_word",
+            "frequency",
+            true,
+        );
+
+        assert!(be.is_writable());
+        be.add_word("world", 5.0, false).unwrap();
+        assert!(be.contains("world"));
+        assert_eq!(be.frequency("world"), 5.0);
+        assert!(be.contains("hello"));
+        let err = be.add_word("hello", 20.0, false);
+        assert!(err.is_err());
         be.add_word("hello", 20.0, true).unwrap();
         assert_eq!(be.frequency("hello"), 20.0);
     }

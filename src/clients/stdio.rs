@@ -175,6 +175,35 @@ impl StdioClient {
         serde_json::from_value(v).map_err(ClientError::Json)
     }
 
+    /// Add `word` to the dictionary with the given `frequency`.
+    pub fn add_word(
+        &mut self,
+        word: &str,
+        frequency: f64,
+        allow_existing: bool,
+    ) -> Result<bool, ClientError> {
+        let v = self.send_request(
+            "word_add",
+            json!({"word": word, "frequency": frequency, "allow_existing": allow_existing}),
+        )?;
+        serde_json::from_value(v).map_err(ClientError::Json)
+    }
+
+    /// Increase the frequency of an n-gram by `delta`.
+    pub fn bump_ngram(
+        &mut self,
+        ngram: &[&str],
+        delta: f64,
+        save_unknown: bool,
+    ) -> Result<bool, ClientError> {
+        let ngram_vec: Vec<String> = ngram.iter().map(|s| s.to_string()).collect();
+        let v = self.send_request(
+            "ngram_bump",
+            json!({"ngram": ngram_vec, "delta": delta, "save_unknown": save_unknown}),
+        )?;
+        serde_json::from_value(v).map_err(ClientError::Json)
+    }
+
     // ── internal ────────────────────────────────────────────────────────
 
     fn send_request(&mut self, method: &str, params: Value) -> Result<Value, ClientError> {
@@ -374,6 +403,36 @@ mod tests {
 
         let _ = child.kill();
         let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Test word_add method through stdio client.
+    #[test]
+    fn stdio_client_word_add() {
+        let dir = std::env::temp_dir().join("verbisage_test_wordadd");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dict_file = dir.join("en_US.dic");
+        {
+            let mut f = std::fs::File::create(&dict_file).unwrap();
+            writeln!(f, "hello").unwrap();
+        }
+
+        let mut client = StdioClient::spawn(&[
+            "--backend",
+            "file",
+            "--language",
+            "en_US",
+            "--user-data-dir",
+            &dir.to_string_lossy(),
+        ])
+        .unwrap();
+
+        assert!(client.is_correct("hello").unwrap());
+        assert!(!client.is_correct("newword").unwrap());
+
+        client.add_word("newword", 1.0, false).unwrap();
+        assert!(client.is_correct("newword").unwrap());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

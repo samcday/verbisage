@@ -105,6 +105,38 @@ impl DbusClient {
         let msg = self.call("Frequency", self.dest(), &(word, lang))?;
         msg.body().deserialize()
     }
+
+    /// Add `word` to the dictionary for `lang` with the given `frequency`.
+    pub fn add_word(
+        &self,
+        word: &str,
+        frequency: f64,
+        allow_existing: bool,
+        lang: &str,
+    ) -> zbus::Result<bool> {
+        let msg = self.call(
+            "AddWord",
+            self.dest(),
+            &(word, frequency, allow_existing, lang),
+        )?;
+        msg.body().deserialize()
+    }
+
+    /// Increase the frequency of an n-gram by `delta` for `lang`.
+    pub fn bump_ngram(
+        &self,
+        ngram: Vec<String>,
+        delta: f64,
+        save_unknown: bool,
+        lang: &str,
+    ) -> zbus::Result<bool> {
+        let msg = self.call(
+            "BumpNgram",
+            self.dest(),
+            &(ngram, delta, save_unknown, lang),
+        )?;
+        msg.body().deserialize()
+    }
 }
 
 impl Default for DbusClient {

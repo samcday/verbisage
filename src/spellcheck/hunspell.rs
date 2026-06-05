@@ -83,7 +83,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires hunspell-en-us system package"]
     fn test_load_by_tag() {
         let checker = HunspellSpellChecker::from_tag("en_US").unwrap();
         assert!(checker.is_correct("hello"));

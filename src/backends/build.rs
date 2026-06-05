@@ -65,7 +65,22 @@ fn build_file(
 ) {
     let files = resolve_files(def, lang, lp);
 
-    let dict = if files.is_empty() {
+    let user_dir = lp.user_dir.as_os_str().to_str().unwrap_or("").to_string();
+    let user_files: Vec<_> = if user_dir.is_empty() {
+        Vec::new()
+    } else {
+        files
+            .iter()
+            .filter(|f| {
+                f.to_str()
+                    .map(|p| p.starts_with(&user_dir))
+                    .unwrap_or(false)
+            })
+            .collect()
+    };
+    let writable = user_files.len() == files.len() && !files.is_empty();
+
+    let dict: FileDictionaryBackend = if files.is_empty() {
         FileDictionaryBackend::new()
     } else if let Some(delim) = &def.delimiter {
         if let Some(word_index) = def.word_index {
@@ -79,7 +94,7 @@ fn build_file(
                     def.has_header,
                     word_index,
                     def.freq_index,
-                    false,
+                    writable,
                 ) {
                     Ok(other) => merged.merge(&other),
                     Err(e) => eprintln!("warning: failed to load '{}': {}", f.display(), e),
@@ -89,21 +104,23 @@ fn build_file(
         } else {
             // Delimiter set but no word_index — treat as flat word-per-line.
             eprintln!("warning: delimiter set but no word_index; falling back to flat mode");
-            FileDictionaryBackend::from_multiple_files(&files, false).unwrap_or_else(|e| {
+            FileDictionaryBackend::from_multiple_files(&files, writable).unwrap_or_else(|e| {
                 eprintln!("warning: failed to load file backend: {}", e);
                 FileDictionaryBackend::new()
             })
         }
     } else {
         // Flat / freq mode — auto-detect whitespace-separated or line-separated
-        FileDictionaryBackend::from_multiple_files(&files, false).unwrap_or_else(|e| {
+        FileDictionaryBackend::from_multiple_files(&files, writable).unwrap_or_else(|e| {
             eprintln!("warning: failed to load file backend: {}", e);
             FileDictionaryBackend::new()
         })
     };
 
-    let sc: Box<dyn SpellChecker> = Box::new(DictionarySpellChecker::new(Arc::new(dict.clone())));
-    (Box::new(dict), Some(sc), None)
+    let dict_arc: Arc<FileDictionaryBackend> = Arc::new(dict);
+    let sc: Box<dyn SpellChecker> = Box::new(DictionarySpellChecker::new(dict_arc.clone()));
+    let dict_box: Box<dyn DictionaryBackend> = Box::new(dict_arc);
+    (dict_box, Some(sc), None)
 }
 
 // ---------------------------------------------------------------------------

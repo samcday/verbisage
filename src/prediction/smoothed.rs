@@ -54,6 +54,11 @@ impl SmoothedPredictor {
         self
     }
 
+    /// Exact count for a given n-gram.
+    pub fn ngram_count(&self, ngram: &[&str]) -> u64 {
+        self.backend.ngram_count(ngram)
+    }
+
     /// Phase 1: gather candidates by backing off from highest order.
     fn gather_candidates(&self, context: &[&str], max_suggestions: usize) -> Vec<String> {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -154,6 +159,16 @@ impl Predictor for SmoothedPredictor {
             .take(max_suggestions)
             .map(|(word, confidence)| Prediction { word, confidence })
             .collect()
+    }
+
+    fn increase_ngram_frequency(
+        &self,
+        ngram: &[&str],
+        delta: f64,
+        save_unknown: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.backend
+            .increase_ngram_frequency(ngram, delta, save_unknown)
     }
 }
 

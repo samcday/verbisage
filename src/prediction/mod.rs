@@ -29,4 +29,21 @@ pub struct Prediction {
 pub trait Predictor: Send + Sync {
     /// Return up to `max_suggestions` likely continuations for `context`.
     fn predict_next(&self, context: &[&str], max_suggestions: usize) -> Vec<Prediction>;
+
+    /// Increase the frequency of an n-gram by `delta`.
+    ///
+    /// `ngram` is the full sequence including context and next word
+    /// (e.g., `["hello", "world"]` for bigram "hello world").
+    /// For unigrams, `ngram` is `["world"]`.
+    ///
+    /// `save_unknown`: if true, create the n-gram with frequency = `delta`
+    /// when it doesn't exist; if false, return Err for unknown n-grams.
+    fn increase_ngram_frequency(
+        &self,
+        _ngram: &[&str],
+        _delta: f64,
+        _save_unknown: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Err("not supported".into())
+    }
 }

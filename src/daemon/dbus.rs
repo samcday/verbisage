@@ -159,6 +159,60 @@ impl VerbisageDbus {
         crate::veprintln!("[dbus-server] Frequency({}, {})", word, lang);
         self.handler.frequency(word, lang).map_err(log_and_err)
     }
+
+    /// Add a word to the dictionary for the given language.
+    ///
+    /// @param word          Word to add.
+    /// @param frequency     Frequency score for the word.
+    /// @param allow_existing If true, overwrite when the word already exists.
+    /// @param lang          Language tag.
+    #[zbus(out_args("result"))]
+    async fn add_word(
+        &self,
+        word: &str,
+        frequency: f64,
+        allow_existing: bool,
+        lang: &str,
+    ) -> Result<bool, FdoError> {
+        crate::veprintln!(
+            "[dbus-server] AddWord({}, {}, {}, {})",
+            word,
+            frequency,
+            allow_existing,
+            lang
+        );
+        self.handler
+            .add_word(word, frequency, allow_existing, lang)
+            .map(|_| true)
+            .map_err(log_and_err)
+    }
+
+    /// Increase the frequency of an n-gram for the given language.
+    ///
+    /// @param ngram        Full n-gram sequence (context + next word).
+    /// @param delta        Amount to increase the frequency by.
+    /// @param save_unknown If true, create the n-gram if it doesn't exist.
+    /// @param lang         Language tag.
+    #[zbus(out_args("result"))]
+    async fn bump_ngram(
+        &self,
+        ngram: Vec<String>,
+        delta: f64,
+        save_unknown: bool,
+        lang: &str,
+    ) -> Result<bool, FdoError> {
+        crate::veprintln!(
+            "[dbus-server] BumpNgram({:?}, {}, {}, {})",
+            ngram,
+            delta,
+            save_unknown,
+            lang
+        );
+        self.handler
+            .increase_ngram_frequency(&ngram, delta, save_unknown, lang)
+            .map(|_| true)
+            .map_err(log_and_err)
+    }
 }
 
 /// Register on the session bus and serve forever.

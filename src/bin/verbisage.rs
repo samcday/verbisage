@@ -21,6 +21,8 @@ enum Mode {
     Correct,
     Predict,
     Query,
+    WordAdd,
+    NgramBump,
 }
 
 // ── CLI definition ─────────────────────────────────────────────────────────
@@ -61,6 +63,22 @@ struct Cli {
     /// Maximum word length; used in query mode
     #[arg(long)]
     max_len: Option<usize>,
+
+    /// Frequency for word-add mode
+    #[arg(long, default_value_t = 1.0)]
+    frequency: f64,
+
+    /// Whether to allow overwriting existing words (word-add mode)
+    #[arg(long, default_value_t = true)]
+    allow_existing: bool,
+
+    /// Delta for ngram-bump mode
+    #[arg(long, default_value_t = 1.0)]
+    delta: f64,
+
+    /// Whether to save unknown n-grams (ngram-bump mode)
+    #[arg(long, default_value_t = true)]
+    save_unknown: bool,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────
@@ -108,6 +126,8 @@ fn main() {
         Mode::Correct => run_correct(&cli, &shared, named_backends, client_mode),
         Mode::Predict => run_predict(&cli, &shared, named_backends, client_mode),
         Mode::Query => run_query(&cli, &shared, named_backends, client_mode),
+        Mode::WordAdd => run_word_add(&cli, &shared, named_backends, client_mode),
+        Mode::NgramBump => run_ngram_bump(&cli, &shared, client_mode),
     }
 }
 
@@ -350,6 +370,97 @@ fn run_query(
         println!("{}  {}", word, confidence);
     }
     if results.is_empty() {
+        std::process::exit(1);
+    }
+}
+
+fn run_word_add(
+    cli: &Cli,
+    shared: &SharedArgs,
+    named_backends: Option<&HashMap<String, BackendDef>>,
+    client_mode: ClientMode,
+) {
+    let word = cli.word.as_deref().unwrap_or_else(|| {
+        eprintln!("usage: verbisage word-add --word <word>");
+        std::process::exit(1);
+    });
+
+    let lang = shared.lang();
+
+    if client_mode == ClientMode::Dbus {
+        #[cfg(feature = "dbus")]
+        {
+            match DbusClient::new() {
+                Ok(client) => {
+                    match client.add_word(word, cli.frequency, cli.allow_existing, lang) {
+                        Ok(_) => println!("true"),
+                        Err(e) => {
+                            eprintln!("dbus call failed: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("dbus connection failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        #[cfg(not(feature = "dbus"))]
+        {
+            let _ = (word, lang);
+            eprintln!("dbus feature not enabled; rebuild with --features dbus");
+            std::process::exit(1);
+        }
+    } else {
+        let (dict, _sc) = open_backend(shared, lang, named_backends);
+        match dict.add_word(word, cli.frequency, cli.allow_existing) {
+            Ok(()) => println!("true"),
+            Err(e) => {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn run_ngram_bump(cli: &Cli, shared: &SharedArgs, client_mode: ClientMode) {
+    let ngram: Vec<String> = cli
+        .context
+        .as_deref()
+        .map(|s| s.split_whitespace().map(String::from).collect())
+        .unwrap_or_else(|| {
+            eprintln!("usage: verbisage ngram-bump --context \"w1 w2 w3\"");
+            std::process::exit(1);
+        });
+
+    let lang = shared.lang();
+
+    if client_mode == ClientMode::Dbus {
+        #[cfg(feature = "dbus")]
+        {
+            match DbusClient::new() {
+                Ok(client) => match client.bump_ngram(ngram, cli.delta, cli.save_unknown, lang) {
+                    Ok(_) => println!("true"),
+                    Err(e) => {
+                        eprintln!("dbus call failed: {}", e);
+                        std::process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("dbus connection failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        #[cfg(not(feature = "dbus"))]
+        {
+            let _ = (ngram, lang);
+            eprintln!("dbus feature not enabled; rebuild with --features dbus");
+            std::process::exit(1);
+        }
+    } else {
+        eprintln!("warning: ngram-bump requires dbus mode for predictor access");
         std::process::exit(1);
     }
 }

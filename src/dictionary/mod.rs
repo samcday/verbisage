@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{
-    Mutex,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -96,6 +96,33 @@ pub trait DictionaryBackend: Send + Sync {
         _allow_existing: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err("not supported".into())
+    }
+}
+
+impl<T: DictionaryBackend> DictionaryBackend for Arc<T> {
+    fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
+        (**self).query_prefixes(queries)
+    }
+
+    fn get_frequency(&self, word: &str) -> f64 {
+        (**self).get_frequency(word)
+    }
+
+    fn contains(&self, word: &str) -> bool {
+        (**self).contains(word)
+    }
+
+    fn is_writable(&self) -> bool {
+        (**self).is_writable()
+    }
+
+    fn add_word(
+        &self,
+        word: &str,
+        frequency: f64,
+        allow_existing: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        (**self).add_word(word, frequency, allow_existing)
     }
 }
 
