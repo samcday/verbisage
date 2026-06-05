@@ -17,6 +17,7 @@ use super::protocol::{
 };
 
 struct CachedBackend {
+    loaded: bool,
     dictionary: Box<dyn DictionaryBackend>,
     spellchecker: Option<Box<dyn SpellChecker>>,
     predictor: Option<Box<dyn Predictor>>,
@@ -40,6 +41,7 @@ impl DaemonHandler {
         cache.insert(
             default_lang.clone(),
             Arc::new(CachedBackend {
+                loaded: true,
                 dictionary,
                 spellchecker,
                 predictor,
@@ -109,6 +111,7 @@ impl DaemonHandler {
                 lp.user_dir.display(),
             );
             return CachedBackend {
+                loaded: false,
                 dictionary: Box::new(FileDictionaryBackend::new()),
                 spellchecker: None,
                 predictor: None,
@@ -123,6 +126,7 @@ impl DaemonHandler {
                     lang, e,
                 );
                 return CachedBackend {
+                    loaded: false,
                     dictionary: Box::new(FileDictionaryBackend::new()),
                     spellchecker: None,
                     predictor: None,
@@ -134,6 +138,7 @@ impl DaemonHandler {
             dict.clone(),
         )));
         CachedBackend {
+            loaded: true,
             dictionary: Box::new(dict),
             spellchecker: Some(sc),
             predictor: None,
@@ -142,49 +147,19 @@ impl DaemonHandler {
 
     #[cfg(feature = "sqlite")]
     fn build_sqlite_backend(lang: &str, config: &DaemonConfig) -> CachedBackend {
-        use crate::dictionary::SqliteDictionaryBackend;
         use crate::spellcheck::SqliteSpellChecker;
 
         let lp = Self::lang_paths(lang, config);
 
         // Prefer user DB (writable) over system DB (read-only).
+        // For every file that opens successfully we verify the expected table
+        // actually exists — a valid but wrong‑schema file is treated as absent.
         let dict = lp
             .user_sqlite_file()
-            .and_then(|path| {
-                SqliteDictionaryBackend::from_sqlite(
-                    &path,
-                    &config.sqlite_table,
-                    &config.sqlite_word_col,
-                    &config.sqlite_freq_col,
-                )
-                .map_err(|e| {
-                    eprintln!(
-                        "warning: failed to open user sqlite db for '{}' ({}): {}",
-                        lang,
-                        path.display(),
-                        e,
-                    )
-                })
-                .ok()
-            })
+            .and_then(|path| Self::try_open_sqlite(path, &config, lang, true))
             .or_else(|| {
-                lp.system_sqlite_file().and_then(|path| {
-                    SqliteDictionaryBackend::from_sqlite_readonly(
-                        &path,
-                        &config.sqlite_table,
-                        &config.sqlite_word_col,
-                        &config.sqlite_freq_col,
-                    )
-                    .map_err(|e| {
-                        eprintln!(
-                            "warning: failed to open system sqlite db for '{}' ({}): {}",
-                            lang,
-                            path.display(),
-                            e,
-                        )
-                    })
-                    .ok()
-                })
+                lp.system_sqlite_file()
+                    .and_then(|path| Self::try_open_sqlite(path, &config, lang, false))
             });
 
         match dict {
@@ -192,6 +167,7 @@ impl DaemonHandler {
                 let sc: Box<dyn SpellChecker> =
                     Box::new(SqliteSpellChecker::new(std::sync::Arc::new(d.clone())));
                 CachedBackend {
+                    loaded: true,
                     dictionary: Box::new(d),
                     spellchecker: Some(sc),
                     predictor: None,
@@ -205,6 +181,7 @@ impl DaemonHandler {
                     lp.user_dir.display(),
                 );
                 CachedBackend {
+                    loaded: false,
                     dictionary: Box::new(FileDictionaryBackend::new()),
                     spellchecker: None,
                     predictor: None,
@@ -242,15 +219,70 @@ impl DaemonHandler {
 
         match sc {
             Some(checker) => CachedBackend {
+                loaded: true,
                 dictionary: Box::new(FileDictionaryBackend::new()),
                 spellchecker: Some(Box::new(checker)),
                 predictor: None,
             },
             None => CachedBackend {
+                loaded: false,
                 dictionary: Box::new(FileDictionaryBackend::new()),
                 spellchecker: None,
                 predictor: None,
             },
+        }
+    }
+
+    /// Try to open a SQLite backend at `path`, verifying the expected table
+    /// actually exists.  Returns `None` (with a warning on stderr) when the
+    /// file can't be opened or the table is missing.
+    #[cfg(feature = "sqlite")]
+    fn try_open_sqlite(
+        path: std::path::PathBuf,
+        config: &DaemonConfig,
+        lang: &str,
+        writable: bool,
+    ) -> Option<crate::dictionary::SqliteDictionaryBackend> {
+        use crate::dictionary::SqliteDictionaryBackend;
+
+        let result = if writable {
+            SqliteDictionaryBackend::from_sqlite(
+                &path,
+                &config.sqlite_table,
+                &config.sqlite_word_col,
+                &config.sqlite_freq_col,
+            )
+        } else {
+            SqliteDictionaryBackend::from_sqlite_readonly(
+                &path,
+                &config.sqlite_table,
+                &config.sqlite_word_col,
+                &config.sqlite_freq_col,
+            )
+        };
+
+        match result {
+            Ok(d) if d.table_exists() => Some(d),
+            Ok(_) => {
+                eprintln!(
+                    "warning: {} sqlite db for '{}' exists but has no '{}' table: {}",
+                    if writable { "user" } else { "system" },
+                    lang,
+                    config.sqlite_table,
+                    path.display(),
+                );
+                None
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to open {} sqlite db for '{}' ({}): {}",
+                    if writable { "user" } else { "system" },
+                    lang,
+                    path.display(),
+                    e,
+                );
+                None
+            }
         }
     }
 
@@ -269,16 +301,22 @@ impl DaemonHandler {
 
     // ── Typed API ─────────────────────────────────────────────────────────
 
-    pub fn is_correct(&self, word: &str, lang: &str) -> bool {
+    pub fn is_correct(&self, word: &str, lang: &str) -> Result<bool, String> {
         let backend = self.get_or_load_backend(lang);
-        match &backend.spellchecker {
+        if !backend.loaded {
+            return Err(format!("no dictionary loaded for '{}'", lang));
+        }
+        Ok(match &backend.spellchecker {
             Some(sc) => sc.is_correct(word),
             None => backend.dictionary.contains(word),
-        }
+        })
     }
 
-    pub fn suggest(&self, word: &str, max: usize, lang: &str) -> Vec<String> {
+    pub fn suggest(&self, word: &str, max: usize, lang: &str) -> Result<Vec<String>, String> {
         let backend = self.get_or_load_backend(lang);
+        if !backend.loaded {
+            return Err(format!("no dictionary loaded for '{}'", lang));
+        }
         let mut suggestions = match &backend.spellchecker {
             Some(sc) => sc.suggest(word),
             None => {
@@ -292,25 +330,38 @@ impl DaemonHandler {
             }
         };
         suggestions.truncate(max);
-        suggestions
+        Ok(suggestions)
     }
 
-    pub fn query(&self, queries: &[DictionaryQuery], lang: &str) -> Vec<DictionaryResult> {
+    pub fn query(
+        &self,
+        queries: &[DictionaryQuery],
+        lang: &str,
+    ) -> Result<Vec<DictionaryResult>, String> {
         let backend = self.get_or_load_backend(lang);
-        backend.dictionary.query_prefixes(queries)
+        if !backend.loaded {
+            return Err(format!("no dictionary loaded for '{}'", lang));
+        }
+        Ok(backend.dictionary.query_prefixes(queries))
     }
 
-    pub fn predict(&self, context: &[&str], max: usize, lang: &str) -> Vec<Prediction> {
+    pub fn predict(&self, context: &[&str], max: usize, lang: &str) -> Result<Vec<Prediction>, String> {
         let backend = self.get_or_load_backend(lang);
+        if !backend.loaded {
+            return Err(format!("no dictionary loaded for '{}'", lang));
+        }
         match &backend.predictor {
-            Some(pred) => pred.predict_next(context, max),
-            None => Vec::new(),
+            Some(pred) => Ok(pred.predict_next(context, max)),
+            None => Ok(Vec::new()),
         }
     }
 
-    pub fn frequency(&self, word: &str, lang: &str) -> f64 {
+    pub fn frequency(&self, word: &str, lang: &str) -> Result<f64, String> {
         let backend = self.get_or_load_backend(lang);
-        backend.dictionary.get_frequency(word)
+        if !backend.loaded {
+            return Err(format!("no dictionary loaded for '{}'", lang));
+        }
+        Ok(backend.dictionary.get_frequency(word))
     }
 
     // ── JSON-protocol dispatch ────────────────────────────────────────────
@@ -326,7 +377,10 @@ impl DaemonHandler {
                     Ok(p) => p,
                     Err(e) => return DaemonResponse::error(id, format!("bad params: {}", e)),
                 };
-                DaemonResponse::success(id, json!(self.is_correct(&params.word, lang)))
+                match self.is_correct(&params.word, lang) {
+                    Ok(v) => DaemonResponse::success(id, json!(v)),
+                    Err(e) => DaemonResponse::error(id, e),
+                }
             }
 
             "suggest" => {
@@ -334,7 +388,10 @@ impl DaemonHandler {
                     Ok(p) => p,
                     Err(e) => return DaemonResponse::error(id, format!("bad params: {}", e)),
                 };
-                DaemonResponse::success(id, json!(self.suggest(&params.word, params.max, lang)))
+                match self.suggest(&params.word, params.max, lang) {
+                    Ok(v) => DaemonResponse::success(id, json!(v)),
+                    Err(e) => DaemonResponse::error(id, e),
+                }
             }
 
             "query" => {
@@ -343,12 +400,16 @@ impl DaemonHandler {
                     Err(e) => return DaemonResponse::error(id, format!("bad params: {}", e)),
                 };
                 let queries: Vec<DictionaryQuery> = params.into_queries();
-                let results = self.query(&queries, lang);
-                let items: Vec<serde_json::Value> = results
-                    .into_iter()
-                    .map(|r| json!({"word": r.word, "confidence": r.confidence}))
-                    .collect();
-                DaemonResponse::success(id, json!(items))
+                match self.query(&queries, lang) {
+                    Ok(results) => {
+                        let items: Vec<serde_json::Value> = results
+                            .into_iter()
+                            .map(|r| json!({"word": r.word, "confidence": r.confidence}))
+                            .collect();
+                        DaemonResponse::success(id, json!(items))
+                    }
+                    Err(e) => DaemonResponse::error(id, e),
+                }
             }
 
             "predict" => {
@@ -357,12 +418,16 @@ impl DaemonHandler {
                     Err(e) => return DaemonResponse::error(id, format!("bad params: {}", e)),
                 };
                 let context: Vec<&str> = params.context.iter().map(|s| s.as_str()).collect();
-                let predictions = self.predict(&context, params.max, lang);
-                let items: Vec<serde_json::Value> = predictions
-                    .into_iter()
-                    .map(|p| json!({"word": p.word, "confidence": p.confidence}))
-                    .collect();
-                DaemonResponse::success(id, json!(items))
+                match self.predict(&context, params.max, lang) {
+                    Ok(predictions) => {
+                        let items: Vec<serde_json::Value> = predictions
+                            .into_iter()
+                            .map(|p| json!({"word": p.word, "confidence": p.confidence}))
+                            .collect();
+                        DaemonResponse::success(id, json!(items))
+                    }
+                    Err(e) => DaemonResponse::error(id, e),
+                }
             }
 
             "frequency" => {
@@ -370,7 +435,10 @@ impl DaemonHandler {
                     Ok(p) => p,
                     Err(e) => return DaemonResponse::error(id, format!("bad params: {}", e)),
                 };
-                DaemonResponse::success(id, json!(self.frequency(&params.word, lang)))
+                match self.frequency(&params.word, lang) {
+                    Ok(v) => DaemonResponse::success(id, json!(v)),
+                    Err(e) => DaemonResponse::error(id, e),
+                }
             }
 
             _ => DaemonResponse::error(id, format!("unknown method: {}", req.method)),

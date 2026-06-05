@@ -1,4 +1,5 @@
 use zbus::interface;
+use zbus::fdo::Error as FdoError;
 
 use crate::dictionary::DictionaryQuery;
 
@@ -18,6 +19,11 @@ impl VerbisageDbus {
     }
 }
 
+fn log_and_err(msg: String) -> FdoError {
+    eprintln!("[dbus-server] error: {}", msg);
+    FdoError::Failed(msg)
+}
+
 #[interface(name = "org.verbisage.Dictionary1", introspection_docs = true)]
 impl VerbisageDbus {
     /// Check whether a single word is recognised by the dictionary for the
@@ -27,9 +33,9 @@ impl VerbisageDbus {
     /// @param lang  BCP-47 / POSIX language tag (e.g. "en_US").
     /// @return      `true` if @word is recognised, `false` otherwise.
     #[zbus(out_args("result"))]
-    async fn is_correct(&self, word: &str, lang: &str) -> bool {
+    async fn is_correct(&self, word: &str, lang: &str) -> Result<bool, FdoError> {
         crate::veprintln!("[dbus-server] IsCorrect({}, {})", word, lang);
-        self.handler.is_correct(word, lang)
+        self.handler.is_correct(word, lang).map_err(log_and_err)
     }
 
     /// Return spelling suggestions (corrections) for a given word in the
@@ -40,9 +46,9 @@ impl VerbisageDbus {
     /// @param lang  Language tag.
     /// @return      Ordered list of spelling suggestions (may be empty).
     #[zbus(out_args("result"))]
-    async fn suggest(&self, word: &str, max: u32, lang: &str) -> Vec<String> {
+    async fn suggest(&self, word: &str, max: u32, lang: &str) -> Result<Vec<String>, FdoError> {
         crate::veprintln!("[dbus-server] Suggest({}, {}, {})", word, max, lang);
-        self.handler.suggest(word, max as usize, lang)
+        self.handler.suggest(word, max as usize, lang).map_err(log_and_err)
     }
 
     /// Search the dictionary for words matching prefix and/or suffix
@@ -64,7 +70,7 @@ impl VerbisageDbus {
         min_len: u32,
         max_len: u32,
         lang: &str,
-    ) -> Vec<(String, f64)> {
+    ) -> Result<Vec<(String, f64)>, FdoError> {
         crate::veprintln!(
             "[dbus-server] Query({:?}, {:?}, {}, {}, {})",
             prefixes,
@@ -104,27 +110,35 @@ impl VerbisageDbus {
             .collect();
         self.handler
             .query(&queries, lang)
-            .into_iter()
-            .map(|r| (r.word, r.confidence))
-            .collect()
+            .map(|results| {
+                results
+                    .into_iter()
+                    .map(|r| (r.word, r.confidence))
+                    .collect()
+            })
+            .map_err(log_and_err)
     }
 
     /// Predict the next word(s) given a sequence of context words.
     ///
     /// @param context  Preceding words (space-split is the caller's
-    ///                 responsibility).
+    ///                  responsibility).
     /// @param max      Maximum number of predictions to return.
     /// @param lang     Language tag.
     /// @return         Array of (word, confidence) predictions.
     #[zbus(out_args("result"))]
-    async fn predict(&self, context: Vec<String>, max: u32, lang: &str) -> Vec<(String, f64)> {
+    async fn predict(&self, context: Vec<String>, max: u32, lang: &str) -> Result<Vec<(String, f64)>, FdoError> {
         crate::veprintln!("[dbus-server] Predict({:?}, {}, {})", context, max, lang);
         let ctx: Vec<&str> = context.iter().map(|s| s.as_str()).collect();
         self.handler
             .predict(&ctx, max as usize, lang)
-            .into_iter()
-            .map(|p| (p.word, p.confidence))
-            .collect()
+            .map(|predictions| {
+                predictions
+                    .into_iter()
+                    .map(|p| (p.word, p.confidence))
+                    .collect()
+            })
+            .map_err(log_and_err)
     }
 
     /// Return the frequency / rank of a word in the dictionary for the
@@ -134,9 +148,9 @@ impl VerbisageDbus {
     /// @param lang  Language tag.
     /// @return      Frequency score (0.0 = unknown word).
     #[zbus(out_args("result"))]
-    async fn frequency(&self, word: &str, lang: &str) -> f64 {
+    async fn frequency(&self, word: &str, lang: &str) -> Result<f64, FdoError> {
         crate::veprintln!("[dbus-server] Frequency({}, {})", word, lang);
-        self.handler.frequency(word, lang)
+        self.handler.frequency(word, lang).map_err(log_and_err)
     }
 }
 

@@ -77,6 +77,15 @@ impl SqliteDictionaryBackend {
         })
     }
 
+    /// Check whether the expected table exists in the database.
+    pub fn table_exists(&self) -> bool {
+        let sql = "SELECT name FROM sqlite_master WHERE type='table' AND name=?1";
+        let conn = self.conn.lock().unwrap();
+        conn.prepare(sql)
+            .and_then(|mut stmt| stmt.exists([&self.table_name]))
+            .unwrap_or(false)
+    }
+
     /// Ensure the table and indexes exist (idempotent).
     /// Safe to call even when the table already exists.
     fn ensure_table(&self) {
