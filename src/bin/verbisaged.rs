@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, ValueEnum};
 
 use verbisage::daemon::{run, DaemonHandler};
+use verbisage::dictionary::paths::{expand_tilde, LanguagePaths, PathOverride};
 use verbisage::dictionary::{DictionaryQuery, FileDictionaryBackend};
 use verbisage::prediction::Predictor;
 use verbisage::spellcheck::{DictionarySpellChecker, SpellChecker};
@@ -27,16 +28,11 @@ enum BackendKind {
 
 #[derive(ValueEnum, Clone, Default)]
 enum Mode {
-    /// Line-delimited JSON protocol on stdin/stdout (full API)
     #[default]
     Daemon,
-    /// Check whether a word is in the dictionary (exit 0 = yes, 1 = no)
     Check,
-    /// Print spelling suggestions, one per line
     Correct,
-    /// Predict the next word given a space-separated context
     Predict,
-    /// Query the dictionary with prefix / suffix / length constraints
     Query,
 }
 
@@ -58,10 +54,35 @@ struct Cli {
     mode: Option<Mode>,
 
     // ── Backend options ──────────────────────────────────────────────────
-    /// Path to dictionary data (word-list file, sqlite db, …); used with
-    /// --backend file | sqlite
-    #[arg(long, short, default_value = "/usr/share/dict/words")]
-    path: PathBuf,
+    /// Path to dictionary data (word-list file, sqlite db, …).
+    ///
+    /// For the file backend, when this is *not* given, the language-based
+    /// lookup via --system-data-dir / --user-data-dir is used instead.
+    #[arg(long, short)]
+    path: Option<PathBuf>,
+
+    /// Language tag (e.g. en_US) – used for both the file dictionary
+    /// directory lookup and the hunspell backend.
+    #[arg(long, default_value = "en_US", env = "VERBISAGE_LANGUAGE")]
+    language: String,
+
+    /// System data directory (language-specific files are looked up here)
+    #[arg(long)]
+    system_data_dir: Option<PathBuf>,
+
+    /// User data directory (language-specific files are looked up here;
+    /// ~ is expanded)
+    #[arg(long)]
+    user_data_dir: Option<PathBuf>,
+
+    /// System dictionary file override (empty string = skip this layer)
+    #[arg(long)]
+    system_dict: Option<String>,
+
+    /// User dictionary file override (empty string = skip this layer;
+    /// ~ is expanded)
+    #[arg(long)]
+    user_dict: Option<String>,
 
     /// Table name for the SQLite backend
     #[arg(long, default_value = "words")]
@@ -83,13 +104,12 @@ struct Cli {
     #[arg(long)]
     dict: Option<PathBuf>,
 
-    /// Language tag (e.g. en_US); used with --backend hunspell when
-    /// --affix/--dict are absent
+    /// Language tag for hunspell when --affix/--dict are absent
     #[arg(long, default_value = "en_US")]
     tag: String,
 
     // ── CLI-mode options ─────────────────────────────────────────────────
-    /// Word to check / correct / query against (used in check, correct, query modes)
+    /// Word to check / correct / query against
     #[arg(long)]
     word: Option<String>,
 
@@ -97,11 +117,11 @@ struct Cli {
     #[arg(long)]
     context: Option<String>,
 
-    /// Prefix filter(s); used in query mode (can be repeated)
+    /// Prefix filter(s); can be repeated
     #[arg(long)]
     prefix: Vec<String>,
 
-    /// Suffix filter(s); used in query mode (can be repeated)
+    /// Suffix filter(s); can be repeated
     #[arg(long)]
     suffix: Vec<String>,
 
@@ -120,8 +140,6 @@ fn main() {
     let cli = Cli::parse();
 
     let mode = cli.mode.clone().unwrap_or_else(|| {
-        // When no --mode is given, infer from presence of other args:
-        // if --word or --context is present, default to check; otherwise daemon.
         if cli.word.is_some() || cli.context.is_some() {
             Mode::Check
         } else {
@@ -147,21 +165,15 @@ fn open_backend(
     Option<Box<dyn SpellChecker>>,
 ) {
     match &cli.backend {
-        BackendKind::File => {
-            let dict = FileDictionaryBackend::from_word_list(&cli.path).unwrap_or_else(|e| {
-                eprintln!("failed to load word list '{}': {}", cli.path.display(), e);
-                std::process::exit(1);
-            });
-            let sc: Box<dyn SpellChecker> = Box::new(DictionarySpellChecker::new(
-                std::sync::Arc::new(dict.clone()),
-            ));
-            (Box::new(dict), Some(sc))
-        }
+        BackendKind::File => open_file_backend(cli),
 
         #[cfg(feature = "sqlite")]
         BackendKind::Sqlite => {
             let dict = SqliteDictionaryBackend::from_sqlite(
-                &cli.path,
+                &cli.path.as_deref().unwrap_or_else(|| {
+                    eprintln!("--path is required for sqlite backend");
+                    std::process::exit(1);
+                }),
                 &cli.table,
                 &cli.word_col,
                 &cli.freq_col,
@@ -169,7 +181,7 @@ fn open_backend(
             .unwrap_or_else(|e| {
                 eprintln!(
                     "failed to open sqlite database '{}': {}",
-                    cli.path.display(),
+                    cli.path.as_ref().unwrap().display(),
                     e
                 );
                 std::process::exit(1);
@@ -189,8 +201,11 @@ fn open_backend(
                     }),
                 ),
                 _ => Box::new(
-                    HunspellSpellChecker::from_tag(&cli.tag).unwrap_or_else(|e| {
-                        eprintln!("failed to load hunspell dictionary '{}': {}", cli.tag, e);
+                    HunspellSpellChecker::from_tag(&cli.language).unwrap_or_else(|e| {
+                        eprintln!(
+                            "failed to load hunspell dictionary '{}': {}",
+                            cli.language, e
+                        );
                         std::process::exit(1);
                     }),
                 ),
@@ -198,6 +213,50 @@ fn open_backend(
             (Box::new(FileDictionaryBackend::new()), Some(checker))
         }
     }
+}
+
+/// Open the file backend, resolving paths via LanguagePaths.
+fn open_file_backend(
+    cli: &Cli,
+) -> (
+    Box<dyn verbisage::dictionary::DictionaryBackend>,
+    Option<Box<dyn SpellChecker>>,
+) {
+    let files: Vec<PathBuf> = if let Some(path) = &cli.path {
+        // Explicit --path given: use it directly (backward compat).
+        vec![path.clone()]
+    } else {
+        // Build LanguagePaths from the CLI options.
+        let mut lp = LanguagePaths::new(&cli.language);
+        if let Some(dir) = &cli.system_data_dir {
+            lp = lp.with_system_dir(expand_tilde(dir.to_str().unwrap_or("")));
+        }
+        if let Some(dir) = &cli.user_data_dir {
+            lp = lp.with_user_dir(expand_tilde(dir.to_str().unwrap_or("")));
+        }
+        lp.system_file_override = PathOverride::from_cli(cli.system_dict.as_deref());
+        lp.user_file_override = PathOverride::from_cli(cli.user_dict.as_deref());
+
+        let found = lp.resolve_dict_files();
+        if found.is_empty() {
+            eprintln!("no dictionary files found for language '{}'", cli.language);
+            eprintln!("  looked in:");
+            eprintln!("    system: {}", lp.system_dir.display());
+            eprintln!("    user:   {}", lp.user_dir.display());
+            std::process::exit(1);
+        }
+        found
+    };
+
+    let dict = FileDictionaryBackend::from_multiple_files(&files).unwrap_or_else(|e| {
+        eprintln!("failed to load dictionary files: {}", e);
+        std::process::exit(1);
+    });
+
+    let sc: Box<dyn SpellChecker> = Box::new(DictionarySpellChecker::new(std::sync::Arc::new(
+        dict.clone(),
+    )));
+    (Box::new(dict), Some(sc))
 }
 
 // ── Mode dispatchers ──────────────────────────────────────────────────────
@@ -251,12 +310,7 @@ fn run_predict(cli: &Cli) {
         eprintln!("usage: verbisaged --mode predict --context <words...>");
         std::process::exit(1);
     });
-    // Predictor isn't wired through the daemon handler yet — placeholders.
-    let ctx: Vec<&str> = context.split_whitespace().collect();
-    let _ = ctx;
-
-    // TODO: instantiate a Predictor from the backend and call
-    //       predict_next().  For now emit a stub message.
+    let _ctx: Vec<&str> = context.split_whitespace().collect();
     eprintln!("predict mode requires a Predictor backend (not yet wired)");
     std::process::exit(1);
 }

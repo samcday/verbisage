@@ -125,6 +125,26 @@ impl FileDictionaryBackend {
         }
     }
 
+    /// Merge another dictionary into this one (user frequencies win on conflict).
+    pub fn merge(&mut self, other: &FileDictionaryBackend) {
+        for (word, freq) in &other.words {
+            self.add_word(word.clone(), *freq);
+        }
+    }
+
+    /// Load and merge multiple frequency files into a single dictionary.
+    ///
+    /// Files are processed in order; later files override earlier ones for
+    /// frequency when the same word appears in multiple sources.
+    pub fn from_multiple_files<P: AsRef<Path>>(paths: &[P]) -> Result<Self, SharedError> {
+        let mut dict = Self::new();
+        for path in paths {
+            let other = Self::from_frequency_file(path)?;
+            dict.merge(&other);
+        }
+        Ok(dict)
+    }
+
     /// Insert or update a word.
     pub fn add_word(&mut self, word: String, frequency: f64) {
         let len = word.len();

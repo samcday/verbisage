@@ -7,10 +7,12 @@ use std::sync::{
 
 pub mod compact;
 pub mod file;
+pub mod paths;
 pub mod subsequence;
 
 pub use compact::CompactDictionary;
 pub use file::FileDictionaryBackend;
+pub use paths::LanguagePaths;
 
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
