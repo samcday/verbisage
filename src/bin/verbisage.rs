@@ -96,7 +96,13 @@ fn run_check(cli: &Cli) {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
-                Ok(client) => client.is_correct(word, lang).unwrap_or(false),
+                Ok(client) => match client.is_correct(word, lang) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("dbus call failed: {}", e);
+                        std::process::exit(1);
+                    }
+                },
                 Err(e) => {
                     eprintln!("dbus connection failed: {}", e);
                     std::process::exit(1);
@@ -133,7 +139,13 @@ fn run_correct(cli: &Cli) {
         #[cfg(feature = "dbus")]
         {
             match DbusClient::new() {
-                Ok(client) => client.suggest(word, 10, lang).unwrap_or_default(),
+                Ok(client) => match client.suggest(word, 10, lang) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("dbus call failed: {}", e);
+                        std::process::exit(1);
+                    }
+                },
                 Err(e) => {
                     eprintln!("dbus connection failed: {}", e);
                     std::process::exit(1);
