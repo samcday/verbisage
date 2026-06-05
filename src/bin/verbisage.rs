@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand};
 
 use verbisage::backends::BackendDef;
 use verbisage::cli::{ClientMode, SharedArgs, open_backend};
@@ -12,17 +12,83 @@ use verbisage::dictionary::{DictionaryQuery, DictionaryResult};
 #[cfg(feature = "dbus")]
 use verbisage::clients::DbusClient;
 
-// ── Enums ─────────────────────────────────────────────────────────────────
+// ── Shared args ────────────────────────────────────────────────────────────
 
-#[derive(ValueEnum, Clone, Default)]
-enum Mode {
-    #[default]
-    Check,
-    Correct,
-    Predict,
-    Query,
-    WordAdd,
-    NgramBump,
+#[derive(clap::Args, Clone)]
+struct GlobalArgs {
+    #[command(flatten)]
+    shared: SharedArgs,
+}
+
+// ── Subcommands ────────────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum Command {
+    /// Check whether a word is spelled correctly.
+    Check {
+        /// Word to check.
+        #[arg(long)]
+        word: String,
+    },
+
+    /// Suggest corrections for a misspelled word.
+    Correct {
+        /// Misspelled word to correct.
+        #[arg(long)]
+        word: String,
+    },
+
+    /// Predict the next word given a context.
+    Predict {
+        /// Context words (space-separated).
+        #[arg(long)]
+        context: Option<String>,
+        /// Maximum number of suggestions.
+        #[arg(long, default_value_t = 10)]
+        max: usize,
+    },
+
+    /// Query the dictionary by prefix/suffix.
+    Query {
+        /// Prefix filter(s); can be repeated.
+        #[arg(long)]
+        prefix: Vec<String>,
+        /// Suffix filter(s); can be repeated.
+        #[arg(long)]
+        suffix: Vec<String>,
+        /// Minimum word length.
+        #[arg(long)]
+        min_len: Option<usize>,
+        /// Maximum word length.
+        #[arg(long)]
+        max_len: Option<usize>,
+    },
+
+    /// Add a word to the user dictionary.
+    WordAdd {
+        /// Word to add.
+        #[arg(long)]
+        word: String,
+        /// Frequency value.
+        #[arg(long, default_value_t = 1.0)]
+        frequency: f64,
+        /// Allow overwriting existing words.
+        #[arg(long, default_value_t = true)]
+        allow_existing: bool,
+    },
+
+    /// Bump the n-gram frequency for a sequence of words.
+    NgramBump {
+        /// N-gram words (space-separated).
+        #[arg(long)]
+        context: String,
+        /// Frequency delta.
+        #[arg(long, default_value_t = 1.0)]
+        delta: f64,
+        /// Save unknown n-grams.
+        #[arg(long, default_value_t = true)]
+        save_unknown: bool,
+    },
 }
 
 // ── CLI definition ─────────────────────────────────────────────────────────
@@ -35,60 +101,21 @@ enum Mode {
 )]
 struct Cli {
     #[command(flatten)]
-    shared: SharedArgs,
+    global: GlobalArgs,
 
-    /// Operation mode (positional)
-    mode: Option<Mode>,
-
-    /// Word to check / correct / query against
-    #[arg(long)]
-    word: Option<String>,
-
-    /// Context words (space-separated); used in predict mode
-    #[arg(long)]
-    context: Option<String>,
-
-    /// Prefix filter(s); can be repeated
-    #[arg(long)]
-    prefix: Vec<String>,
-
-    /// Suffix filter(s); can be repeated
-    #[arg(long)]
-    suffix: Vec<String>,
-
-    /// Minimum word length; used in query mode
-    #[arg(long)]
-    min_len: Option<usize>,
-
-    /// Maximum word length; used in query mode
-    #[arg(long)]
-    max_len: Option<usize>,
-
-    /// Frequency for word-add mode
-    #[arg(long, default_value_t = 1.0)]
-    frequency: f64,
-
-    /// Whether to allow overwriting existing words (word-add mode)
-    #[arg(long, default_value_t = true)]
-    allow_existing: bool,
-
-    /// Delta for ngram-bump mode
-    #[arg(long, default_value_t = 1.0)]
-    delta: f64,
-
-    /// Whether to save unknown n-grams (ngram-bump mode)
-    #[arg(long, default_value_t = true)]
-    save_unknown: bool,
+    #[command(subcommand)]
+    command: Command,
 }
 
-// ── Entry point ───────────────────────────────────────────────────────────
+// ── Entry point ────────────────────────────────────────────────────────────
 
 fn main() {
     let cli = Cli::parse();
-    debug::set_verbose(cli.shared.verbose);
+    debug::set_verbose(cli.global.shared.verbose);
 
     // Resolve config path: CLI override, then default.
     let config_path = cli
+        .global
         .shared
         .config
         .clone()
@@ -96,21 +123,9 @@ fn main() {
         .or_else(|| Some(default_config_path()));
     let config = config_path.as_ref().and_then(load_config);
 
-    // Capture CLI --mode before apply_defaults consumes cli.shared.
-    let cli_mode = cli.shared.mode;
-
-    // Merge config into CLI and apply defaults.
-    let shared = cli.shared.clone().apply_defaults(config.as_ref());
+    let cli_mode = cli.global.shared.mode;
+    let shared = cli.global.shared.clone().apply_defaults(config.as_ref());
     let named_backends = config.as_ref().and_then(|c| c.backends.as_ref());
-
-    let operation = cli.mode.clone().unwrap_or_else(|| {
-        if cli.word.is_some() || cli.context.is_some() {
-            Mode::Check
-        } else {
-            eprintln!("usage: verbisage <check|correct|predict|query> [options]");
-            std::process::exit(1);
-        }
-    });
 
     let client_mode = SharedArgs::resolve_mode(
         cli_mode,
@@ -121,57 +136,61 @@ fn main() {
         ClientMode::Standalone,
     );
 
-    match operation {
-        Mode::Check => run_check(&cli, &shared, named_backends, client_mode),
-        Mode::Correct => run_correct(&cli, &shared, named_backends, client_mode),
-        Mode::Predict => run_predict(&cli, &shared, named_backends, client_mode),
-        Mode::Query => run_query(&cli, &shared, named_backends, client_mode),
-        Mode::WordAdd => run_word_add(&cli, &shared, named_backends, client_mode),
-        Mode::NgramBump => run_ngram_bump(&cli, &shared, client_mode),
+    match cli.command {
+        Command::Check { word } => run_check(&shared, named_backends, client_mode, &word),
+        Command::Correct { word } => run_correct(&shared, named_backends, client_mode, &word),
+        Command::Predict { context, max } => run_predict(
+            &shared,
+            named_backends,
+            client_mode,
+            context.as_deref(),
+            max,
+        ),
+        Command::Query {
+            prefix,
+            suffix,
+            min_len,
+            max_len,
+        } => run_query(
+            &shared,
+            named_backends,
+            client_mode,
+            &prefix,
+            &suffix,
+            min_len,
+            max_len,
+        ),
+        Command::WordAdd {
+            word,
+            frequency,
+            allow_existing,
+        } => run_word_add(
+            &shared,
+            named_backends,
+            client_mode,
+            &word,
+            frequency,
+            allow_existing,
+        ),
+        Command::NgramBump {
+            context,
+            delta,
+            save_unknown,
+        } => run_ngram_bump(&shared, client_mode, &context, delta, save_unknown),
     }
 }
 
 // ── Mode dispatchers ───────────────────────────────────────────────────────
 
 fn run_check(
-    cli: &Cli,
     shared: &SharedArgs,
     named_backends: Option<&HashMap<String, BackendDef>>,
     client_mode: ClientMode,
+    word: &str,
 ) {
-    let word = cli
-        .word
-        .as_deref()
-        .or(cli.context.as_deref())
-        .unwrap_or_else(|| {
-            eprintln!("usage: verbisage check --word <word>");
-            std::process::exit(1);
-        });
-
     let lang = shared.lang();
     let correct = if client_mode == ClientMode::Dbus {
-        #[cfg(feature = "dbus")]
-        {
-            match DbusClient::new() {
-                Ok(client) => match client.is_correct(word, lang) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("dbus call failed: {}", e);
-                        std::process::exit(1);
-                    }
-                },
-                Err(e) => {
-                    eprintln!("dbus connection failed: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-        #[cfg(not(feature = "dbus"))]
-        {
-            let _ = (word, lang);
-            eprintln!("dbus feature not enabled; rebuild with --features dbus");
-            std::process::exit(1);
-        }
+        dbus_is_correct(word, lang)
     } else {
         let (_, sc) = open_backend(shared, lang, named_backends);
         match &sc {
@@ -192,40 +211,14 @@ fn run_check(
 }
 
 fn run_correct(
-    cli: &Cli,
     shared: &SharedArgs,
     named_backends: Option<&HashMap<String, BackendDef>>,
     client_mode: ClientMode,
+    word: &str,
 ) {
-    let word = cli.word.as_deref().unwrap_or_else(|| {
-        eprintln!("usage: verbisage correct --word <word>");
-        std::process::exit(1);
-    });
-
     let lang = shared.lang();
     let suggestions: Vec<String> = if client_mode == ClientMode::Dbus {
-        #[cfg(feature = "dbus")]
-        {
-            match DbusClient::new() {
-                Ok(client) => match client.suggest(word, 10, lang) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("dbus call failed: {}", e);
-                        std::process::exit(1);
-                    }
-                },
-                Err(e) => {
-                    eprintln!("dbus connection failed: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-        #[cfg(not(feature = "dbus"))]
-        {
-            let _ = (word, lang);
-            eprintln!("dbus feature not enabled; rebuild with --features dbus");
-            std::process::exit(1);
-        }
+        dbus_suggest(word, 10, lang)
     } else {
         let (_, sc) = open_backend(shared, lang, named_backends);
         match &sc {
@@ -246,45 +239,21 @@ fn run_correct(
 }
 
 fn run_predict(
-    cli: &Cli,
     shared: &SharedArgs,
     _named_backends: Option<&HashMap<String, BackendDef>>,
     client_mode: ClientMode,
+    context: Option<&str>,
+    max: usize,
 ) {
-    let context: Vec<String> = cli
-        .context
-        .as_deref()
+    let context_words: Vec<String> = context
         .map(|s| s.split_whitespace().map(String::from).collect())
         .unwrap_or_default();
 
-    let max = 10;
     let lang = shared.lang();
-
     let predictions: Vec<(String, f64)> = if client_mode == ClientMode::Dbus {
-        #[cfg(feature = "dbus")]
-        {
-            match DbusClient::new() {
-                Ok(client) => match client.predict(context, max, lang) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("dbus call failed: {}", e);
-                        std::process::exit(1);
-                    }
-                },
-                Err(e) => {
-                    eprintln!("dbus connection failed: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-        #[cfg(not(feature = "dbus"))]
-        {
-            let _ = (context, max, lang);
-            eprintln!("dbus feature not enabled; rebuild with --features dbus");
-            std::process::exit(1);
-        }
+        dbus_predict(context_words, max, lang)
     } else {
-        eprintln!("warning: predict mode needs a Predictor backend (see --dbus)");
+        eprintln!("warning: predict mode needs a Predictor backend (see --mode dbus)");
         Vec::new()
     };
 
@@ -297,50 +266,41 @@ fn run_predict(
 }
 
 fn run_query(
-    cli: &Cli,
     shared: &SharedArgs,
     named_backends: Option<&HashMap<String, BackendDef>>,
     client_mode: ClientMode,
+    prefix: &[String],
+    suffix: &[String],
+    min_len: Option<usize>,
+    max_len: Option<usize>,
 ) {
-    let min = cli.min_len.unwrap_or(0);
-    let max = cli.max_len.unwrap_or(0);
     let lang = shared.lang();
 
-    let results: Vec<(String, f64)> = if client_mode == ClientMode::Dbus {
-        #[cfg(feature = "dbus")]
-        {
-            match DbusClient::new() {
-                Ok(client) => {
-                    match client.query(&cli.prefix, &cli.suffix, min as u32, max as u32, lang) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("dbus call failed: {}", e);
-                            std::process::exit(1);
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("dbus connection failed: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-        #[cfg(not(feature = "dbus"))]
-        {
-            let _ = (min, max, lang);
-            eprintln!("dbus feature not enabled; rebuild with --features dbus");
-            std::process::exit(1);
-        }
+    let results: Vec<DictionaryResult> = if client_mode == ClientMode::Dbus {
+        let dbus_results = dbus_query(
+            prefix,
+            suffix,
+            min_len.unwrap_or(0),
+            max_len.unwrap_or(0),
+            lang,
+        );
+        dbus_results
+            .into_iter()
+            .map(|(w, c)| DictionaryResult {
+                word: w,
+                confidence: c,
+            })
+            .collect()
     } else {
-        let prefixes = if cli.prefix.is_empty() {
+        let prefixes = if prefix.is_empty() {
             vec![None]
         } else {
-            cli.prefix.iter().map(|p| Some(p.clone())).collect()
+            prefix.iter().map(|p| Some(p.clone())).collect()
         };
-        let suffixes = if cli.suffix.is_empty() {
+        let suffixes = if suffix.is_empty() {
             vec![None]
         } else {
-            cli.suffix.iter().map(|s| Some(s.clone())).collect()
+            suffix.iter().map(|s| Some(s.clone())).collect()
         };
 
         let queries: Vec<DictionaryQuery> = prefixes
@@ -349,25 +309,22 @@ fn run_query(
                 suffixes.iter().map(move |s| DictionaryQuery {
                     prefix: p.clone(),
                     suffix: s.clone(),
-                    min_length: cli.min_len,
-                    max_length: cli.max_len,
+                    min_length: min_len,
+                    max_length: max_len,
                 })
             })
             .collect();
 
         let (dict, sc) = open_backend(shared, lang, named_backends);
-        let results: Vec<DictionaryResult> = dict.query_prefixes(&queries);
+        let results = dict.query_prefixes(&queries);
         if results.is_empty() && sc.is_none() {
             eprintln!("warning: no dictionary loaded for '{}'", lang);
         }
         results
-            .into_iter()
-            .map(|r| (r.word, r.confidence))
-            .collect()
     };
 
-    for (word, confidence) in &results {
-        println!("{}  {}", word, confidence);
+    for r in &results {
+        println!("{}  {}", r.word, r.confidence);
     }
     if results.is_empty() {
         std::process::exit(1);
@@ -375,46 +332,20 @@ fn run_query(
 }
 
 fn run_word_add(
-    cli: &Cli,
     shared: &SharedArgs,
     named_backends: Option<&HashMap<String, BackendDef>>,
     client_mode: ClientMode,
+    word: &str,
+    frequency: f64,
+    allow_existing: bool,
 ) {
-    let word = cli.word.as_deref().unwrap_or_else(|| {
-        eprintln!("usage: verbisage word-add --word <word>");
-        std::process::exit(1);
-    });
-
     let lang = shared.lang();
 
     if client_mode == ClientMode::Dbus {
-        #[cfg(feature = "dbus")]
-        {
-            match DbusClient::new() {
-                Ok(client) => {
-                    match client.add_word(word, cli.frequency, cli.allow_existing, lang) {
-                        Ok(_) => println!("true"),
-                        Err(e) => {
-                            eprintln!("dbus call failed: {}", e);
-                            std::process::exit(1);
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("dbus connection failed: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-        #[cfg(not(feature = "dbus"))]
-        {
-            let _ = (word, lang);
-            eprintln!("dbus feature not enabled; rebuild with --features dbus");
-            std::process::exit(1);
-        }
+        dbus_add_word(word, frequency, allow_existing, lang);
     } else {
         let (dict, _sc) = open_backend(shared, lang, named_backends);
-        match dict.add_word(word, cli.frequency, cli.allow_existing) {
+        match dict.add_word(word, frequency, allow_existing) {
             Ok(()) => println!("true"),
             Err(e) => {
                 eprintln!("error: {}", e);
@@ -424,43 +355,131 @@ fn run_word_add(
     }
 }
 
-fn run_ngram_bump(cli: &Cli, shared: &SharedArgs, client_mode: ClientMode) {
-    let ngram: Vec<String> = cli
-        .context
-        .as_deref()
-        .map(|s| s.split_whitespace().map(String::from).collect())
-        .unwrap_or_else(|| {
-            eprintln!("usage: verbisage ngram-bump --context \"w1 w2 w3\"");
-            std::process::exit(1);
-        });
-
-    let lang = shared.lang();
+fn run_ngram_bump(
+    _shared: &SharedArgs,
+    client_mode: ClientMode,
+    context: &str,
+    delta: f64,
+    save_unknown: bool,
+) {
+    let ngram: Vec<String> = context.split_whitespace().map(String::from).collect();
+    let lang = _shared.lang();
 
     if client_mode == ClientMode::Dbus {
-        #[cfg(feature = "dbus")]
-        {
-            match DbusClient::new() {
-                Ok(client) => match client.bump_ngram(ngram, cli.delta, cli.save_unknown, lang) {
-                    Ok(_) => println!("true"),
-                    Err(e) => {
-                        eprintln!("dbus call failed: {}", e);
-                        std::process::exit(1);
-                    }
-                },
-                Err(e) => {
-                    eprintln!("dbus connection failed: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-        #[cfg(not(feature = "dbus"))]
-        {
-            let _ = (ngram, lang);
-            eprintln!("dbus feature not enabled; rebuild with --features dbus");
-            std::process::exit(1);
-        }
+        dbus_bump_ngram(ngram, delta, save_unknown, lang);
     } else {
         eprintln!("warning: ngram-bump requires dbus mode for predictor access");
         std::process::exit(1);
     }
+}
+
+// ── D-Bus helpers ──────────────────────────────────────────────────────────
+
+#[cfg(feature = "dbus")]
+fn dbus_call<F, R>(f: F) -> R
+where
+    F: FnOnce(&DbusClient) -> Result<R, Box<dyn std::error::Error>>,
+{
+    match DbusClient::new() {
+        Ok(client) => match f(&client) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("dbus call failed: {}", e);
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("dbus connection failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(not(feature = "dbus"))]
+fn dbus_call<F, R>(_f: F) -> R
+where
+    F: FnOnce() -> Result<R, Box<dyn std::error::Error>>,
+{
+    eprintln!("dbus feature not enabled; rebuild with --features dbus");
+    std::process::exit(1);
+}
+
+#[cfg(feature = "dbus")]
+fn dbus_is_correct(word: &str, lang: &str) -> bool {
+    dbus_call(|client| client.is_correct(word, lang))
+}
+
+#[cfg(not(feature = "dbus"))]
+fn dbus_is_correct(_word: &str, _lang: &str) -> bool {
+    dbus_call(|| Err("dbus not enabled".into()))
+}
+
+#[cfg(feature = "dbus")]
+fn dbus_suggest(word: &str, max: usize, lang: &str) -> Vec<String> {
+    dbus_call(|client| client.suggest(word, max, lang))
+}
+
+#[cfg(not(feature = "dbus"))]
+fn dbus_suggest(_word: &str, _max: usize, _lang: &str) -> Vec<String> {
+    dbus_call(|| Err("dbus not enabled".into()))
+}
+
+#[cfg(feature = "dbus")]
+fn dbus_predict(context: Vec<String>, max: usize, lang: &str) -> Vec<(String, f64)> {
+    dbus_call(|client| client.predict(context, max, lang))
+}
+
+#[cfg(not(feature = "dbus"))]
+fn dbus_predict(_context: Vec<String>, _max: usize, _lang: &str) -> Vec<(String, f64)> {
+    dbus_call(|| Err("dbus not enabled".into()))
+}
+
+#[cfg(feature = "dbus")]
+fn dbus_query(
+    prefix: &[String],
+    suffix: &[String],
+    min_len: usize,
+    max_len: usize,
+    lang: &str,
+) -> Vec<(String, f64)> {
+    dbus_call(|client| client.query(prefix, suffix, min_len as u32, max_len as u32, lang))
+}
+
+#[cfg(not(feature = "dbus"))]
+fn dbus_query(
+    _prefix: &[String],
+    _suffix: &[String],
+    _min_len: usize,
+    _max_len: usize,
+    _lang: &str,
+) -> Vec<(String, f64)> {
+    dbus_call(|| Err("dbus not enabled".into()))
+}
+
+#[cfg(feature = "dbus")]
+fn dbus_add_word(word: &str, frequency: f64, allow_existing: bool, lang: &str) {
+    dbus_call(|client| {
+        client
+            .add_word(word, frequency, allow_existing, lang)
+            .map(|_| ())
+    })
+}
+
+#[cfg(not(feature = "dbus"))]
+fn dbus_add_word(_word: &str, _frequency: f64, _allow_existing: bool, _lang: &str) {
+    dbus_call(|| Err("dbus not enabled".into()))
+}
+
+#[cfg(feature = "dbus")]
+fn dbus_bump_ngram(ngram: Vec<String>, delta: f64, save_unknown: bool, lang: &str) {
+    dbus_call(|client| {
+        client
+            .bump_ngram(ngram, delta, save_unknown, lang)
+            .map(|_| ())
+    })
+}
+
+#[cfg(not(feature = "dbus"))]
+fn dbus_bump_ngram(_ngram: Vec<String>, _delta: f64, _save_unknown: bool, _lang: &str) {
+    dbus_call(|| Err("dbus not enabled".into()))
 }
