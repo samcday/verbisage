@@ -2,7 +2,7 @@ use clap::Parser;
 
 use verbisage::cli::SharedArgs;
 use verbisage::config::{default_config_path, load_config};
-use verbisage::daemon::{DaemonConfig, DaemonHandler, run};
+use verbisage::daemon::{BackendKind, DaemonConfig, DaemonHandler, run};
 use verbisage::debug;
 use verbisage::dictionary::paths::expand_tilde;
 use verbisage::veprintln;
@@ -57,24 +57,31 @@ fn main() {
         cfg.language_paths.system_dir.display(),
         cfg.language_paths.user_dir.display(),
     );
-    veprintln!(
-        "dict patterns — system: {:?}, user: {:?}",
-        cfg.language_paths.system_dict_patterns,
-        cfg.language_paths.user_dict_patterns,
-    );
-    veprintln!(
-        "sqlite patterns — system: {:?}, user: {:?}",
-        cfg.language_paths.system_sqlite_patterns,
-        cfg.language_paths.user_sqlite_patterns,
-    );
-
-    #[cfg(feature = "sqlite")]
-    veprintln!(
-        "sqlite table/cols: {}/{}/{}",
-        cfg.sqlite_table,
-        cfg.sqlite_word_col,
-        cfg.sqlite_freq_col,
-    );
+    match cfg.backend {
+        BackendKind::File => {
+            veprintln!(
+                "dict patterns — system: {:?}, user: {:?}",
+                cfg.language_paths.system_dict_patterns,
+                cfg.language_paths.user_dict_patterns,
+            );
+        }
+        #[cfg(feature = "sqlite")]
+        BackendKind::Sqlite => {
+            veprintln!(
+                "sqlite patterns — system: {:?}, user: {:?}",
+                cfg.language_paths.system_sqlite_patterns,
+                cfg.language_paths.user_sqlite_patterns,
+            );
+            veprintln!(
+                "sqlite table/cols: {}/{}/{}",
+                cfg.sqlite_table,
+                cfg.sqlite_word_col,
+                cfg.sqlite_freq_col,
+            );
+        }
+        #[cfg(feature = "hunspell")]
+        BackendKind::Hunspell => {}
+    }
 
     let handler = DaemonHandler::with_config(cfg);
 
