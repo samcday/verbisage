@@ -143,7 +143,7 @@ mod tests {
             writeln!(f, "help").unwrap();
             writeln!(f, "helium").unwrap();
         }
-        let file_dict = FileDictionaryBackend::from_multiple_files(&[dict_path]).unwrap();
+        let file_dict = FileDictionaryBackend::from_multiple_files(&[dict_path], false).unwrap();
         let dict_clone = file_dict.clone();
         let sc: Box<dyn SpellChecker> =
             Box::new(DictionarySpellChecker::new(std::sync::Arc::new(file_dict)));

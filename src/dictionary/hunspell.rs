@@ -18,6 +18,7 @@ type SharedError = Box<dyn Error + Send + Sync>;
 pub struct HunspellDictionaryBackend {
     words: HashMap<String, f64>,
     words_sorted: Vec<String>,
+    writable: bool,
 }
 
 impl HunspellDictionaryBackend {
@@ -53,6 +54,7 @@ impl HunspellDictionaryBackend {
         Ok(Self {
             words,
             words_sorted,
+            writable: false,
         })
     }
 
@@ -61,6 +63,7 @@ impl HunspellDictionaryBackend {
         Self {
             words: HashMap::new(),
             words_sorted: Vec::new(),
+            writable: false,
         }
     }
 }
@@ -112,6 +115,10 @@ impl DictionaryBackend for HunspellDictionaryBackend {
 
     fn contains(&self, word: &str) -> bool {
         self.words.contains_key(&word.to_lowercase())
+    }
+
+    fn is_writable(&self) -> bool {
+        self.writable
     }
 }
 

@@ -4,27 +4,25 @@ use std::path::Path;
 
 use rsmarisa::{Agent, Trie};
 
-use crate::prediction::{Prediction, Predictor};
+use crate::prediction::ngram_backend::NgramBackend;
 
-/// Predictor backed by a MARISA trie with companion counts file.
+/// N‑gram data access layer backed by a MARISA trie + companion counts file.
 ///
-/// The trie stores n-gram keys prefixed by order number:
+/// The trie stores n‑gram keys prefixed by order number:
 /// - `"1 <word>"` for unigrams
 /// - `"2 <w1> <w2>"` for bigrams
 /// - `"3 <w1> <w2> <w3>"` for trigrams
 ///
 /// The counts file is a flat file of u32 little-endian values, indexed
 /// by trie key ID, with a 4-byte magic header.
-pub struct MarisaPredictor {
+pub struct MarisaNgramBackend {
     trie: Trie,
-    /// Flat array of u32 counts, indexed by trie key ID.
     counts: Vec<u32>,
-    /// Total sum of all unigram counts (for confidence normalisation).
-    total_unigram_count: f64,
+    total_unigram_count: u64,
+    max_order: usize,
 }
 
-impl MarisaPredictor {
-    /// Load from companion `.trie` and `.counts` files.
+impl MarisaNgramBackend {
     pub fn from_files(
         trie_path: &Path,
         counts_path: &Path,
@@ -37,110 +35,123 @@ impl MarisaPredictor {
         trie.load(trie_path_str)?;
 
         let counts_data = fs::read(counts_path)?;
-        // Skip 4-byte magic header
         let count_bytes = &counts_data[4..];
         let count_u32_slice = unsafe {
-            // Align check: count_bytes starts at offset 4, which is always
-            // 4-byte aligned when the file is read into a Vec<u8>.
             debug_assert!(count_bytes.as_ptr() as usize % mem::align_of::<u32>() == 0);
             std::slice::from_raw_parts(count_bytes.as_ptr() as *const u32, count_bytes.len() / 4)
         };
-
         let counts: Vec<u32> = count_u32_slice.to_vec();
 
-        // Compute total unigram mass for confidence normalisation
         let mut total = 0u64;
+        let mut max_order = 0usize;
         let mut agent = Agent::new();
-        agent.set_query_str("1 ");
+
+        agent.set_query_str("");
         while trie.predictive_search(&mut agent) {
+            let key = agent.key().as_str();
             let id = agent.key().id();
+
             if let Some(&c) = counts.get(id) {
-                total += c as u64;
+                if c > 0 {
+                    if key.starts_with("1 ") {
+                        total += c as u64;
+                    }
+                    if let Some(prefix) = key.split_whitespace().next() {
+                        if let Ok(order) = prefix.parse::<usize>() {
+                            if order > max_order {
+                                max_order = order;
+                            }
+                        }
+                    }
+                }
             }
         }
-        let total_unigram_count = total as f64;
 
         Ok(Self {
             trie,
             counts,
-            total_unigram_count,
+            total_unigram_count: total,
+            max_order,
         })
     }
 
-    /// Prefix for unigrams ("1 "), bigrams ("2 "), trigrams ("3 ").
-    fn prefix_for_context(context: &[&str]) -> String {
-        match context.len() {
-            0 => "1 ".to_string(),
-            1 => format!("2 {} ", context[0]),
-            2 => format!("3 {} {} ", context[0], context[1]),
-            _ => format!("3 {} {} ", context[0], context[1]),
-        }
+    fn ngram_key(ngram: &[&str]) -> String {
+        let order = ngram.len();
+        format!("{} {}", order, ngram.join(" "))
     }
 }
 
-impl Predictor for MarisaPredictor {
-    fn predict_next(&self, context: &[&str], max_suggestions: usize) -> Vec<Prediction> {
-        if max_suggestions == 0 {
-            return Vec::new();
+impl NgramBackend for MarisaNgramBackend {
+    fn max_order(&self) -> usize {
+        self.max_order
+    }
+
+    fn unigram_total(&self) -> u64 {
+        self.total_unigram_count
+    }
+
+    fn ngram_count(&self, ngram: &[&str]) -> u64 {
+        let key = Self::ngram_key(ngram);
+        let mut agent = Agent::new();
+        agent.set_query_str(&key);
+        if self.trie.lookup(&mut agent) {
+            let id = agent.key().id();
+            self.counts.get(id).copied().unwrap_or(0) as u64
+        } else {
+            0
+        }
+    }
+
+    fn candidates(&self, context: &[&str], max_candidates: usize) -> Vec<(String, u64)> {
+        let order = context.len() + 1;
+        if order == 1 {
+            let mut results: Vec<(String, u64)> = Vec::new();
+            let mut agent = Agent::new();
+            agent.set_query_str("1 ");
+            while self.trie.predictive_search(&mut agent) {
+                let key = agent.key().as_str();
+                if !key.starts_with("1 ") {
+                    break;
+                }
+                let id = agent.key().id();
+                let count = self.counts.get(id).copied().unwrap_or(0) as u64;
+                if count > 0 {
+                    let word = &key[2..];
+                    if !word.is_empty() {
+                        results.push((word.to_string(), count));
+                    }
+                }
+            }
+            results.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            results.truncate(max_candidates);
+            return results;
         }
 
-        let prefix = Self::prefix_for_context(context);
-
+        let prefix = format!("{} {} ", order, context.join(" "));
+        let mut results: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         let mut agent = Agent::new();
         agent.set_query_str(&prefix);
 
-        // Collect all completions with their counts
-        let mut results: Vec<(String, u32)> = Vec::new();
         while self.trie.predictive_search(&mut agent) {
             let key = agent.key().as_str();
-            let id = agent.key().id();
-
-            // Check that key actually starts with our prefix
             if !key.starts_with(&prefix) {
-                continue;
+                break;
             }
-
-            // Extract the continuation: the word(s) after the context words
-            let rest = &key[prefix.len()..];
-            let next_word = rest.split_whitespace().next().unwrap_or(rest).to_string();
-            if next_word.is_empty() {
-                continue;
-            }
-
-            let count = self.counts.get(id).copied().unwrap_or(0);
+            let id = agent.key().id();
+            let count = self.counts.get(id).copied().unwrap_or(0) as u64;
             if count > 0 {
-                results.push((next_word, count));
+                let rest = &key[prefix.len()..];
+                let next_word = rest.split_whitespace().next().unwrap_or(rest);
+                if !next_word.is_empty() {
+                    *results.entry(next_word.to_string()).or_insert(0) += count;
+                }
             }
         }
 
-        // Aggregate counts for same next_word (different suffixes match same next word)
-        let mut aggregated: std::collections::HashMap<String, u64> =
-            std::collections::HashMap::new();
-        for (word, count) in results {
-            *aggregated.entry(word).or_insert(0) += count as u64;
-        }
-
-        // Sort by count descending, then word ascending
-        let mut sorted: Vec<(String, u64)> = aggregated.into_iter().collect();
+        let mut sorted: Vec<(String, u64)> = results.into_iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-
-        // Compute normaliser: for unigram context use total, for others use
-        // the sum of all matched counts
-        let normaliser = if context.is_empty() {
-            self.total_unigram_count.max(1.0)
-        } else {
-            let total: u64 = sorted.iter().map(|(_, c)| c).sum();
-            (total as f64).max(1.0)
-        };
-
+        sorted.truncate(max_candidates);
         sorted
-            .into_iter()
-            .take(max_suggestions)
-            .map(|(word, count)| Prediction {
-                word,
-                confidence: (count as f64) / normaliser,
-            })
-            .collect()
     }
 }
 
@@ -164,9 +175,6 @@ mod tests {
         let s = trie_path.to_str().unwrap();
         trie.save(s).unwrap();
 
-        // Write counts file: 4-byte magic + u32 per key
-        // Counts must be indexed by the trie's internal key ID (not insertion order).
-        // Use lookup to find each key's ID from the built trie.
         let counts_path = dir.join("ngrams.counts");
         let mut f = fs::File::create(&counts_path).unwrap();
         f.write_all(&0x0098a15au32.to_le_bytes()).unwrap();
@@ -186,7 +194,49 @@ mod tests {
     }
 
     #[test]
-    fn predict_unigrams() {
+    fn unigram_total_sums_correctly() {
+        let dir = tempdir().unwrap();
+        build_marisa_ngrams(
+            dir.path(),
+            &[
+                ("1 der", 1000),
+                ("1 die", 800),
+                ("1 und", 600),
+                ("2 der stadt", 500),
+            ],
+        );
+        let backend = MarisaNgramBackend::from_files(
+            &dir.path().join("ngrams.trie"),
+            &dir.path().join("ngrams.counts"),
+        )
+        .unwrap();
+        assert_eq!(backend.unigram_total(), 2400);
+    }
+
+    #[test]
+    fn ngram_count_exact_lookup() {
+        let dir = tempdir().unwrap();
+        build_marisa_ngrams(
+            dir.path(),
+            &[
+                ("1 der", 1000),
+                ("2 der stadt", 500),
+                ("3 der stadt park", 100),
+            ],
+        );
+        let backend = MarisaNgramBackend::from_files(
+            &dir.path().join("ngrams.trie"),
+            &dir.path().join("ngrams.counts"),
+        )
+        .unwrap();
+        assert_eq!(backend.ngram_count(&["der"]), 1000);
+        assert_eq!(backend.ngram_count(&["der", "stadt"]), 500);
+        assert_eq!(backend.ngram_count(&["der", "stadt", "park"]), 100);
+        assert_eq!(backend.ngram_count(&["der", "fluss"]), 0);
+    }
+
+    #[test]
+    fn candidates_unigram() {
         let dir = tempdir().unwrap();
         build_marisa_ngrams(
             dir.path(),
@@ -197,21 +247,19 @@ mod tests {
                 ("1 in", 400),
             ],
         );
-        let p = MarisaPredictor::from_files(
+        let backend = MarisaNgramBackend::from_files(
             &dir.path().join("ngrams.trie"),
             &dir.path().join("ngrams.counts"),
         )
         .unwrap();
-
-        let results = p.predict_next(&[], 2);
+        let results = backend.candidates(&[], 2);
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].word, "der");
-        assert_eq!(results[1].word, "die");
-        assert!(results[0].confidence > 0.0 && results[0].confidence <= 1.0);
+        assert_eq!(results[0], ("der".to_string(), 1000));
+        assert_eq!(results[1], ("die".to_string(), 800));
     }
 
     #[test]
-    fn predict_bigrams() {
+    fn candidates_bigram() {
         let dir = tempdir().unwrap();
         build_marisa_ngrams(
             dir.path(),
@@ -219,86 +267,35 @@ mod tests {
                 ("2 der stadt", 500),
                 ("2 der fluss", 300),
                 ("2 der berg", 100),
-                ("2 die frau", 200),
             ],
         );
-        let p = MarisaPredictor::from_files(
+        let backend = MarisaNgramBackend::from_files(
             &dir.path().join("ngrams.trie"),
             &dir.path().join("ngrams.counts"),
         )
         .unwrap();
-
-        let results = p.predict_next(&["der"], 2);
+        let results = backend.candidates(&["der"], 2);
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].word, "stadt");
-        assert_eq!(results[1].word, "fluss");
+        assert_eq!(results[0], ("stadt".to_string(), 500));
+        assert_eq!(results[1], ("fluss".to_string(), 300));
     }
 
     #[test]
-    fn predict_trigrams() {
-        let dir = tempdir().unwrap();
-        build_marisa_ngrams(
-            dir.path(),
-            &[
-                ("3 der stadt park", 100),
-                ("3 der stadt bahnhof", 200),
-                ("3 der stadt zentrum", 50),
-            ],
-        );
-        let p = MarisaPredictor::from_files(
-            &dir.path().join("ngrams.trie"),
-            &dir.path().join("ngrams.counts"),
-        )
-        .unwrap();
-
-        let results = p.predict_next(&["der", "stadt"], 3);
-        assert_eq!(results.len(), 3);
-        assert_eq!(results[0].word, "bahnhof");
-        assert_eq!(results[1].word, "park");
-        assert_eq!(results[2].word, "zentrum");
-    }
-
-    #[test]
-    fn empty_context_returns_unigrams() {
+    fn max_order_detected() {
         let dir = tempdir().unwrap();
         build_marisa_ngrams(
             dir.path(),
             &[
                 ("1 der", 100),
-                ("2 der stadt", 50), // bigram should NOT be returned for empty context
+                ("2 der stadt", 50),
+                ("3 der stadt park", 10),
             ],
         );
-        let p = MarisaPredictor::from_files(
+        let backend = MarisaNgramBackend::from_files(
             &dir.path().join("ngrams.trie"),
             &dir.path().join("ngrams.counts"),
         )
         .unwrap();
-
-        let results = p.predict_next(&[], 10);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].word, "der");
-    }
-
-    #[test]
-    fn max_suggestions_respected() {
-        let dir = tempdir().unwrap();
-        build_marisa_ngrams(
-            dir.path(),
-            &[
-                ("2 der stadt", 100),
-                ("2 der fluss", 90),
-                ("2 der berg", 80),
-            ],
-        );
-        let p = MarisaPredictor::from_files(
-            &dir.path().join("ngrams.trie"),
-            &dir.path().join("ngrams.counts"),
-        )
-        .unwrap();
-
-        assert_eq!(p.predict_next(&["der"], 0).len(), 0);
-        assert_eq!(p.predict_next(&["der"], 1).len(), 1);
-        assert_eq!(p.predict_next(&["der"], 2).len(), 2);
-        assert_eq!(p.predict_next(&["der"], 10).len(), 3);
+        assert_eq!(backend.max_order(), 3);
     }
 }

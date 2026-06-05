@@ -75,6 +75,28 @@ pub trait DictionaryBackend: Send + Sync {
 
     /// Return `true` when the word exists in the dictionary.
     fn contains(&self, word: &str) -> bool;
+
+    /// Whether this backend supports write operations.
+    fn is_writable(&self) -> bool {
+        false
+    }
+
+    /// Add a word to the dictionary.
+    ///
+    /// For backends that store frequency, `frequency` is used.
+    /// For backends that only track membership (MARISA, Hunspell),
+    /// `frequency` is ignored.
+    ///
+    /// `allow_existing`: if true, overwrite when the word exists;
+    /// if false, return Err when the word already exists.
+    fn add_word(
+        &self,
+        _word: &str,
+        _frequency: f64,
+        _allow_existing: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Err("not supported".into())
+    }
 }
 
 // ---------------------------------------------------------------------------

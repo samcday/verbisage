@@ -131,8 +131,8 @@ mod tests {
     #[test]
     fn basic_spellcheck_with_file_backend() {
         let mut dict = crate::dictionary::FileDictionaryBackend::new();
-        dict.add_word("hello".to_string(), 1.0);
-        dict.add_word("world".to_string(), 1.0);
+        dict.add_word_mut("hello".to_string(), 1.0);
+        dict.add_word_mut("world".to_string(), 1.0);
 
         let checker = DictionarySpellChecker::new(Arc::new(dict));
         assert!(checker.is_correct("hello"));
@@ -142,9 +142,9 @@ mod tests {
     #[test]
     fn suggests_something() {
         let mut dict = crate::dictionary::FileDictionaryBackend::new();
-        dict.add_word("hello".to_string(), 1.0);
-        dict.add_word("help".to_string(), 1.0);
-        dict.add_word("helm".to_string(), 1.0);
+        dict.add_word_mut("hello".to_string(), 1.0);
+        dict.add_word_mut("help".to_string(), 1.0);
+        dict.add_word_mut("helm".to_string(), 1.0);
 
         let checker = DictionarySpellChecker::new(Arc::new(dict));
         let suggestions = checker.suggest("hel");

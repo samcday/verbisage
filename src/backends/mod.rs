@@ -184,8 +184,8 @@ impl SqlitePreset {
                 capabilities: vec![Capability::Ngrams],
             },
             SqliteFormat::Presage => Self {
-                table: Some("words".into()),
-                word_col: Some("word".into()),
+                table: None,
+                word_col: None,
                 freq_col: Some("frequency".into()),
                 table_ngrams: Some("ngrams".into()),
                 context_cols: Some(vec!["prev".into()]),

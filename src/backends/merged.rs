@@ -56,6 +56,24 @@ impl DictionaryBackend for MergedDictionary {
         }
         0.0
     }
+
+    fn is_writable(&self) -> bool {
+        self.backends.iter().any(|b| b.is_writable())
+    }
+
+    fn add_word(
+        &self,
+        word: &str,
+        frequency: f64,
+        allow_existing: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for backend in &self.backends {
+            if backend.is_writable() {
+                return backend.add_word(word, frequency, allow_existing);
+            }
+        }
+        Err("no writable backend found".into())
+    }
 }
 
 /// A merged predictor that queries multiple `Predictor` instances.
@@ -109,7 +127,7 @@ mod tests {
     fn make_dict(words: &[(&str, f64)]) -> Box<dyn DictionaryBackend> {
         let mut d = FileDictionaryBackend::new();
         for (w, f) in words {
-            d.add_word(w.to_string(), *f);
+            d.add_word_mut(w.to_string(), *f);
         }
         Box::new(d)
     }

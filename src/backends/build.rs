@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::dictionary::paths::{LanguagePaths, expand_tilde};
 use crate::dictionary::{DictionaryBackend, FileDictionaryBackend};
-use crate::prediction::Predictor;
+use crate::prediction::{Predictor, smoothed::SmoothedPredictor};
 use crate::spellcheck::{DictionarySpellChecker, SpellChecker};
 
 #[cfg(feature = "sqlite")]
@@ -11,7 +11,7 @@ use crate::backends::SharedSqliteConnection;
 #[cfg(feature = "sqlite")]
 use crate::dictionary::SqliteDictionaryBackend;
 #[cfg(feature = "sqlite")]
-use crate::prediction::sqlite::SqlitePredictor;
+use crate::prediction::sqlite::SqliteNgramBackend;
 #[cfg(feature = "sqlite")]
 use crate::spellcheck::SqliteSpellChecker;
 
@@ -20,7 +20,7 @@ use crate::dictionary::HunspellDictionaryBackend;
 #[cfg(feature = "marisa")]
 use crate::dictionary::MarisaDictionaryBackend;
 #[cfg(feature = "marisa")]
-use crate::prediction::marisa::MarisaPredictor;
+use crate::prediction::marisa::MarisaNgramBackend;
 #[cfg(feature = "hunspell")]
 use crate::spellcheck::HunspellSpellChecker;
 
@@ -71,7 +71,7 @@ fn build_file(
         if let Some(word_index) = def.word_index {
             // Delimited mode (CSV, TSV, etc.) with explicit column indexes.
             let delim_byte = delim.as_bytes().first().copied().unwrap_or(b',');
-            let mut merged = FileDictionaryBackend::new();
+            let merged = FileDictionaryBackend::new();
             for f in &files {
                 match FileDictionaryBackend::from_delimited_file(
                     f,
@@ -79,6 +79,7 @@ fn build_file(
                     def.has_header,
                     word_index,
                     def.freq_index,
+                    false,
                 ) {
                     Ok(other) => merged.merge(&other),
                     Err(e) => eprintln!("warning: failed to load '{}': {}", f.display(), e),
@@ -88,14 +89,14 @@ fn build_file(
         } else {
             // Delimiter set but no word_index — treat as flat word-per-line.
             eprintln!("warning: delimiter set but no word_index; falling back to flat mode");
-            FileDictionaryBackend::from_multiple_files(&files).unwrap_or_else(|e| {
+            FileDictionaryBackend::from_multiple_files(&files, false).unwrap_or_else(|e| {
                 eprintln!("warning: failed to load file backend: {}", e);
                 FileDictionaryBackend::new()
             })
         }
     } else {
         // Flat / freq mode — auto-detect whitespace-separated or line-separated
-        FileDictionaryBackend::from_multiple_files(&files).unwrap_or_else(|e| {
+        FileDictionaryBackend::from_multiple_files(&files, false).unwrap_or_else(|e| {
             eprintln!("warning: failed to load file backend: {}", e);
             FileDictionaryBackend::new()
         })
@@ -139,24 +140,53 @@ fn build_sqlite(
         // Share connection between dict and predictor
         match SharedSqliteConnection::open(&path) {
             Ok(shared) => {
-                let table = def.table.as_deref().unwrap_or("words");
-                let word_col = def.word_col.as_deref().unwrap_or("word");
-                let freq_col = def.freq_col.as_deref().unwrap_or("frequency");
-                let dict =
-                    SqliteDictionaryBackend::from_shared(shared.clone(), table, word_col, freq_col);
-
-                let sc: Box<dyn SpellChecker> =
-                    Box::new(SqliteSpellChecker::new(Arc::new(dict.clone())));
-
                 let table_ngrams = def.table_ngrams.as_deref().unwrap_or("ngrams");
                 let next_col = def.next_col.as_deref().unwrap_or("next");
+                let freq_col = def.freq_col.as_deref().unwrap_or("frequency");
                 let context_cols = if def.context_cols.is_empty() {
                     vec!["prev".to_string()]
                 } else {
                     def.context_cols.clone()
                 };
-                let predictor =
-                    SqlitePredictor::new(shared, table_ngrams, &context_cols, next_col, freq_col);
+                let max_order = context_cols.len();
+                let writable = true;
+
+                let dict = if def.table.is_some() {
+                    // Separate dictionary table
+                    let table = def.table.as_deref().unwrap_or("words");
+                    let word_col = def.word_col.as_deref().unwrap_or("word");
+                    SqliteDictionaryBackend::from_shared(
+                        shared.clone(),
+                        table,
+                        word_col,
+                        freq_col,
+                        writable,
+                    )
+                } else {
+                    // Shared-table mode: dict reads ngram table's unigram rows
+                    SqliteDictionaryBackend::from_ngram_unigrams(
+                        shared.clone(),
+                        table_ngrams,
+                        &context_cols,
+                        next_col,
+                        freq_col,
+                        writable,
+                    )
+                };
+
+                let sc: Box<dyn SpellChecker> =
+                    Box::new(SqliteSpellChecker::new(Arc::new(dict.clone())));
+
+                let backend = SqliteNgramBackend::new(
+                    shared,
+                    table_ngrams,
+                    &context_cols,
+                    next_col,
+                    freq_col,
+                    max_order,
+                    writable,
+                );
+                let predictor = SmoothedPredictor::new(Box::new(backend));
 
                 (Box::new(dict), Some(sc), Some(Box::new(predictor)))
             }
@@ -178,6 +208,7 @@ fn build_sqlite(
             def.table.as_deref().unwrap_or("words"),
             def.word_col.as_deref().unwrap_or("word"),
             def.freq_col.as_deref().unwrap_or("frequency"),
+            true,
         );
         match result {
             Ok(dict) => {
@@ -205,9 +236,18 @@ fn build_sqlite(
         } else {
             def.context_cols.clone()
         };
-        match SqlitePredictor::from_path(&path, table_ngrams, &context_cols[0], next_col, freq_col)
-        {
-            Ok(predictor) => {
+        let max_order = context_cols.len();
+        match SqliteNgramBackend::from_path(
+            &path,
+            table_ngrams,
+            &context_cols,
+            next_col,
+            freq_col,
+            max_order,
+            true,
+        ) {
+            Ok(backend) => {
+                let predictor = SmoothedPredictor::new(Box::new(backend));
                 let empty: Box<dyn DictionaryBackend> = Box::new(FileDictionaryBackend::new());
                 (empty, None, Some(Box::new(predictor)))
             }
@@ -369,8 +409,11 @@ fn build_marisa_predictor(
         }
     };
 
-    match MarisaPredictor::from_files(&trie_file, &counts_file) {
-        Ok(p) => Some(Box::new(p) as Box<dyn Predictor>),
+    match MarisaNgramBackend::from_files(&trie_file, &counts_file) {
+        Ok(backend) => {
+            let predictor = SmoothedPredictor::new(Box::new(backend));
+            Some(Box::new(predictor) as Box<dyn Predictor>)
+        }
         Err(e) => {
             eprintln!(
                 "warning: failed to load marisa ngram predictor (trie={}, counts={}): {}",

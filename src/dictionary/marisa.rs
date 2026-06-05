@@ -7,6 +7,7 @@ use crate::dictionary::{DictionaryBackend, DictionaryQuery, DictionaryResult};
 /// Dictionary backend backed by a MARISA trie (static, read-only).
 pub struct MarisaDictionaryBackend {
     trie: Trie,
+    writable: bool,
 }
 
 impl MarisaDictionaryBackend {
@@ -16,11 +17,17 @@ impl MarisaDictionaryBackend {
             .ok_or_else(|| format!("non-utf8 path: {}", path.display()))?;
         let mut trie = Trie::new();
         trie.load(s)?;
-        Ok(Self { trie })
+        Ok(Self {
+            trie,
+            writable: false,
+        })
     }
 
     pub fn new() -> Self {
-        Self { trie: Trie::new() }
+        Self {
+            trie: Trie::new(),
+            writable: false,
+        }
     }
 }
 
@@ -82,6 +89,10 @@ impl DictionaryBackend for MarisaDictionaryBackend {
         let mut agent = Agent::new();
         agent.set_query_str(word);
         self.trie.lookup(&mut agent)
+    }
+
+    fn is_writable(&self) -> bool {
+        self.writable
     }
 }
 
