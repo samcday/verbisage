@@ -249,6 +249,19 @@ impl LanguagePaths {
         files
     }
 
+    /// Resolve ALL candidate dictionary paths (including non-existing).
+    pub fn resolve_dict_files_all(&self) -> Vec<PathBuf> {
+        let sys_strs: Vec<&str> = self
+            .system_dict_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let usr_strs: Vec<&str> = self.user_dict_patterns.iter().map(|s| s.as_str()).collect();
+        let mut files = self.resolve_system_all(&sys_strs);
+        files.extend(self.resolve_user_all(&usr_strs));
+        files
+    }
+
     /// Marisa n-gram trie files (for prediction).
     pub fn resolve_marisa_ngram_trie_files(&self) -> Vec<PathBuf> {
         let sys: Vec<&str> = self

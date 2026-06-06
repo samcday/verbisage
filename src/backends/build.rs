@@ -68,7 +68,20 @@ fn build_file(
     let files = resolve_files(def, lang, lp);
 
     if files.is_empty() {
-        eprintln!("warning: no file dictionary found for '{}'", lang);
+        let tried = lp.resolve_dict_files_all()
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "warning: no file dictionary found for '{}' (tried: {})",
+            lang,
+            if tried.is_empty() {
+                "(no paths resolved)".to_string()
+            } else {
+                tried
+            }
+        );
     }
 
     let user_dir = lp.user_dir.as_os_str().to_str().unwrap_or("").to_string();
