@@ -212,18 +212,8 @@ fn assign_two(
             needed: Capability::Dictionary,
         });
     }
-    let extra0: HashSet<Capability> = seg0_def
-        .capabilities
-        .difference(&HashSet::from([Capability::Dictionary]))
-        .copied()
-        .collect();
-    if !extra0.is_empty() {
-        warnings.push(ChainWarning::ExtraCapability {
-            name: names[0].clone(),
-            role: SegmentRole::Dictionary,
-            extra: extra0,
-        });
-    }
+    // Note: we no longer warn about extra capabilities on seg0 because
+    // compose_chain collects all capabilities from every segment.
 
     segments.push(SegWithRole {
         name: names[0].clone(),
@@ -238,7 +228,6 @@ fn assign_two(
 
     let has_uni = seg1_def.capabilities.contains(&Capability::Unigrams);
     let has_ngram = seg1_def.capabilities.contains(&Capability::Ngrams);
-    let has_dict = seg1_def.capabilities.contains(&Capability::Dictionary);
 
     if !has_uni && !has_ngram {
         warnings.push(ChainWarning::RedundantSegment(
@@ -262,23 +251,9 @@ fn assign_two(
         SegmentRole::Unigrams
     };
 
-    // Warn about extra capabilities beyond assigned role
-    if has_dict {
-        let needed: HashSet<Capability> = match role {
-            SegmentRole::Dictionary => HashSet::from([Capability::Dictionary]),
-            SegmentRole::Unigrams => HashSet::from([Capability::Unigrams]),
-            SegmentRole::Ngrams => HashSet::from([Capability::Ngrams]),
-        };
-        let extra: HashSet<Capability> =
-            seg1_def.capabilities.difference(&needed).copied().collect();
-        if !extra.is_empty() {
-            warnings.push(ChainWarning::ExtraCapability {
-                name: names[1].clone(),
-                role,
-                extra,
-            });
-        }
-    }
+    // Note: we no longer warn about "extra" capabilities on seg1 because
+    // compose_chain collects all capabilities from every segment regardless
+    // of assigned role. The role is purely a hint for gap-filling logic.
 
     segments.push(SegWithRole {
         name: names[1].clone(),
@@ -307,25 +282,6 @@ fn assign_three(
             needed: Capability::Dictionary,
         });
     }
-    let extra0: HashSet<Capability> = seg0_def
-        .capabilities
-        .difference(&HashSet::from([Capability::Dictionary]))
-        .copied()
-        .collect();
-    if !extra0.is_empty() {
-        // For 3-seg, seg0 extra caps beyond dict are just ignored/warned
-        warnings.push(ChainWarning::ExtraCapability {
-            name: names[0].clone(),
-            role: SegmentRole::Dictionary,
-            extra: extra0,
-        });
-    }
-
-    segments.push(SegWithRole {
-        name: names[0].clone(),
-        role: SegmentRole::Dictionary,
-        def: seg0_def.clone(),
-    });
 
     // seg1 = unigrams
     if !seg1_def.capabilities.contains(&Capability::Unigrams) {
@@ -335,24 +291,6 @@ fn assign_three(
             needed: Capability::Unigrams,
         });
     }
-    let extra1: HashSet<Capability> = seg1_def
-        .capabilities
-        .difference(&HashSet::from([Capability::Unigrams]))
-        .copied()
-        .collect();
-    if !extra1.is_empty() {
-        warnings.push(ChainWarning::ExtraCapability {
-            name: names[1].clone(),
-            role: SegmentRole::Unigrams,
-            extra: extra1,
-        });
-    }
-
-    segments.push(SegWithRole {
-        name: names[1].clone(),
-        role: SegmentRole::Unigrams,
-        def: seg1_def.clone(),
-    });
 
     // seg2 = ngrams
     if !seg2_def.capabilities.contains(&Capability::Ngrams) {
@@ -362,18 +300,18 @@ fn assign_three(
             needed: Capability::Ngrams,
         });
     }
-    let extra2: HashSet<Capability> = seg2_def
-        .capabilities
-        .difference(&HashSet::from([Capability::Ngrams]))
-        .copied()
-        .collect();
-    if !extra2.is_empty() {
-        warnings.push(ChainWarning::ExtraCapability {
-            name: names[2].clone(),
-            role: SegmentRole::Ngrams,
-            extra: extra2,
-        });
-    }
+
+    segments.push(SegWithRole {
+        name: names[0].clone(),
+        role: SegmentRole::Dictionary,
+        def: seg0_def.clone(),
+    });
+
+    segments.push(SegWithRole {
+        name: names[1].clone(),
+        role: SegmentRole::Unigrams,
+        def: seg1_def.clone(),
+    });
 
     segments.push(SegWithRole {
         name: names[2].clone(),
@@ -538,24 +476,21 @@ mod tests {
     }
 
     #[test]
-    fn warn_extra_capabilities() {
+    fn no_extra_cap_warning_full_backend() {
         let mut defs = HashMap::new();
         defs.insert("full".into(), full_backend("full"));
         defs.insert("n".into(), ngram_backend("n"));
 
         let (_, warnings) = assign_roles("full+n", &defs).unwrap();
+        // Full backend on seg0 should NOT warn about extra capabilities
+        // since compose_chain collects all capabilities from every segment.
         let has_extra = warnings.iter().any(|w| {
-            matches!(
-                w,
-                ChainWarning::ExtraCapability {
-                    role: SegmentRole::Dictionary,
-                    ..
-                }
-            )
+            matches!(w, ChainWarning::ExtraCapability { .. })
         });
         assert!(
-            has_extra,
-            "expected ExtraCapability warning for seg0 full backend"
+            !has_extra,
+            "did not expect ExtraCapability warning, got: {:?}",
+            warnings
         );
     }
 
