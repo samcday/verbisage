@@ -157,7 +157,7 @@ impl DaemonHandler {
             return Err(format!("no dictionary loaded for '{}'", lang));
         }
         let mut suggestions = match &backend.spellchecker {
-            Some(sc) => sc.suggest(word),
+            Some(sc) => sc.suggest(word, &[]),
             None => {
                 let results = backend.dictionary.query_prefixes(&[DictionaryQuery {
                     prefix: Some(word.to_string()),

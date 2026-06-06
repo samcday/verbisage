@@ -34,23 +34,10 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
         self.backend.contains(word)
     }
 
-    fn suggest(&self, word: &str) -> Vec<String> {
-        // Strategy: generate prefix queries for each prefix of the input,
-        // plus a subsequence-matching query, and collect candidate words
-        // that are "close" to the input.
-        //
-        // The implementation must:
-        //   1. Build a `DictionaryQuery` for each prefix and suffix variation
-        //      that could match the input.
-        //   2. Query the backend and score candidates by similarity.
-        //   3. Return the top N candidates, sorted by relevance.
-        //
-        // Current naive approach: query with the word as a prefix (catches
-        // exact matches and longer words starting with the input), and also
-        // query with the first few characters to catch common typos.
+    fn suggest(&self, word: &str, context: &[&str]) -> Vec<String> {
+        let _ = context;
         let mut candidates = Vec::new();
 
-        // Exact prefix match
         let exact = self.backend.query_prefixes(&[DictionaryQuery {
             prefix: Some(word.to_lowercase()),
             suffix: None,
@@ -59,8 +46,6 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
         }]);
         candidates.extend(exact.into_iter().map(|r| r.word));
 
-        // Relaxed prefix — first 3 characters (catches completions of
-        // partial input).
         if word.chars().count() > 3 {
             let prefix: String = word.chars().take(3).collect();
             let relaxed = self.backend.query_prefixes(&[DictionaryQuery {
@@ -72,12 +57,9 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
             candidates.extend(relaxed.into_iter().map(|r| r.word));
         }
 
-        // Deduplicate while preserving order.
         let mut seen = std::collections::HashSet::new();
         candidates.retain(|w| seen.insert(w.clone()));
 
-        // Score candidates by shared prefix length (simple heuristic).
-        // Production replacement: use Levenshtein distance.
         candidates.sort_by(|a, b| {
             let a_score = SharedPrefix::score(word, a);
             let b_score = SharedPrefix::score(word, b);
@@ -147,7 +129,7 @@ mod tests {
         dict.add_word_mut("helm".to_string(), 1.0);
 
         let checker = DictionarySpellChecker::new(Arc::new(dict));
-        let suggestions = checker.suggest("hel");
+        let suggestions = checker.suggest("hel", &[]);
         assert!(!suggestions.is_empty());
         assert!(suggestions.contains(&"hello".to_string()));
     }

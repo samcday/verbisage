@@ -305,7 +305,7 @@ fn run_correct(
     } else {
         let (_, sc, _) = open_backend(shared, lang, named_backends);
         match &sc {
-            Some(s) => s.suggest(word),
+            Some(s) => s.suggest(word, &[]),
             None => {
                 eprintln!("warning: no dictionary loaded for '{}'", lang);
                 Vec::new()

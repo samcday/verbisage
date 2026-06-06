@@ -69,7 +69,7 @@ impl SpellChecker for HunspellSpellChecker {
         self.dict.check(word)
     }
 
-    fn suggest(&self, word: &str) -> Vec<String> {
+    fn suggest(&self, word: &str, _context: &[&str]) -> Vec<String> {
         self.dict
             .entry(word)
             .suggest()
@@ -87,7 +87,7 @@ mod tests {
         let checker = HunspellSpellChecker::from_tag("en_US").unwrap();
         assert!(checker.is_correct("hello"));
         assert!(!checker.is_correct("helo"));
-        let suggestions = checker.suggest("helo");
+        let suggestions = checker.suggest("helo", &[]);
         assert!(suggestions.contains(&"hello".to_string()));
     }
 }

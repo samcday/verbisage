@@ -7,11 +7,13 @@ pub trait SpellChecker: Send + Sync {
     fn is_correct(&self, word: &str) -> bool;
 
     /// Returns a list of suggested corrections, sorted by relevance
-    /// (most likely first).
-    fn suggest(&self, word: &str) -> Vec<String>;
+    /// (most likely first).  `context` is optional preceding words that
+    /// can be used to boost candidates that form common n‑grams.
+    fn suggest(&self, word: &str, context: &[&str]) -> Vec<String>;
 }
 
 pub mod dictionary;
+pub mod suggest;
 
 #[cfg(feature = "sqlite")]
 pub mod sqlite;

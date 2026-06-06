@@ -17,7 +17,7 @@ use crate::spellcheck::HunspellSpellChecker;
 
 use super::chain::SegmentRole;
 use super::merged::{MergedDictionary, MergedPredictor};
-use super::{BackendType, ResolvedBackendDef};
+use super::{BackendType, Capability, ResolvedBackendDef};
 
 /// Normalize a directory path string: expand tilde and ensure no trailing slash.
 /// This ensures consistent behavior regardless of whether the user includes
