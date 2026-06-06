@@ -4,10 +4,8 @@ use std::sync::Arc;
 use crate::dictionary::paths::{LanguagePaths, expand_tilde};
 use crate::dictionary::{DictionaryBackend, FileDictionaryBackend, PresageSqliteBackend};
 use crate::prediction::{Predictor, smoothed::SmoothedPredictor};
-use crate::spellcheck::SpellChecker;
+use crate::spellcheck::{DictionarySpellChecker, SpellChecker};
 
-#[cfg(feature = "sqlite")]
-use crate::backends::SharedSqliteConnection;
 #[cfg(feature = "sqlite")]
 use crate::spellcheck::SqliteSpellChecker;
 

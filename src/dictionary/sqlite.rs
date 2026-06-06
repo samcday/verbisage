@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use crate::backends::SharedSqliteConnection;
 use crate::prediction::ngram_backend::NgramBackend;
@@ -16,10 +16,19 @@ pub struct PresageSqliteBackend {
     created_new_file: bool,
     schema_initialized: Mutex<bool>,
     cache: SharedQueryCache,
+    ngrams_level_max: usize,
 }
 
 impl PresageSqliteBackend {
     pub fn open<P: AsRef<Path>>(path: P, writable: bool) -> Result<Self, SharedError> {
+        Self::open_with_max(path, writable, 3)
+    }
+
+    pub fn open_with_max<P: AsRef<Path>>(
+        path: P,
+        writable: bool,
+        ngrams_level_max: usize,
+    ) -> Result<Self, SharedError> {
         let path = path.as_ref();
         let file_existed = path.exists();
         let conn = SharedSqliteConnection::open(path)?;
@@ -30,6 +39,7 @@ impl PresageSqliteBackend {
             created_new_file: !file_existed,
             schema_initialized: Mutex::new(false),
             cache: SharedQueryCache::new(),
+            ngrams_level_max,
         })
     }
 
@@ -38,22 +48,37 @@ impl PresageSqliteBackend {
         writable: bool,
         created_new_file: bool,
     ) -> Self {
+        Self::from_shared_with_max(conn, writable, created_new_file, 3)
+    }
+
+    pub fn from_shared_with_max(
+        conn: SharedSqliteConnection,
+        writable: bool,
+        created_new_file: bool,
+        ngrams_level_max: usize,
+    ) -> Self {
         Self {
             conn,
             writable,
             created_new_file,
             schema_initialized: Mutex::new(false),
             cache: SharedQueryCache::new(),
+            ngrams_level_max,
         }
     }
 
     pub fn new() -> Self {
+        Self::with_max(3)
+    }
+
+    pub fn with_max(ngrams_level_max: usize) -> Self {
         Self {
             conn: SharedSqliteConnection::in_memory(),
             writable: true,
             created_new_file: true,
             schema_initialized: Mutex::new(false),
             cache: SharedQueryCache::new(),
+            ngrams_level_max,
         }
     }
 
@@ -66,12 +91,25 @@ impl PresageSqliteBackend {
             *initialized = true;
             return;
         }
+        let mut sql_parts = Vec::new();
+        for n in 1..=self.ngrams_level_max {
+            let cols: Vec<String> = (0..n)
+                .map(|i| {
+                    if i == n - 1 {
+                        "word".into()
+                    } else {
+                        format!("word_{}", n - 1 - i)
+                    }
+                })
+                .collect();
+            let pk = cols.join(", ");
+            sql_parts.push(format!(
+                "CREATE TABLE IF NOT EXISTS _{}_gram ({}, count INTEGER DEFAULT 1, UNIQUE({}))",
+                n, pk, pk
+            ));
+        }
         let conn = self.conn.lock();
-        let _ = conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS _1_gram (word TEXT PRIMARY KEY, count INTEGER DEFAULT 1);
-             CREATE TABLE IF NOT EXISTS _2_gram (word_1 TEXT, word TEXT, count INTEGER DEFAULT 1, UNIQUE(word_1, word));
-             CREATE TABLE IF NOT EXISTS _3_gram (word_2 TEXT, word_1 TEXT, word TEXT, count INTEGER DEFAULT 1, UNIQUE(word_2, word_1, word));",
-        );
+        let _ = conn.execute_batch(&sql_parts.join("; "));
         *initialized = true;
     }
 
@@ -199,7 +237,7 @@ impl DictionaryBackend for PresageSqliteBackend {
 
         if allow_existing {
             let sql = "INSERT OR REPLACE INTO _1_gram (word, count) VALUES (?1, ?2)";
-            conn.execute(sql, [word, &count])
+            conn.execute(sql, rusqlite::params![word, count])
                 .map(|_| ())
                 .map_err(Into::into)
         } else {
@@ -212,7 +250,7 @@ impl DictionaryBackend for PresageSqliteBackend {
                 return Err(format!("word '{}' already exists", word).into());
             }
             let sql = "INSERT INTO _1_gram (word, count) VALUES (?1, ?2)";
-            conn.execute(sql, [word, &count])
+            conn.execute(sql, rusqlite::params![word, count])
                 .map(|_| ())
                 .map_err(Into::into)
         }
@@ -221,7 +259,7 @@ impl DictionaryBackend for PresageSqliteBackend {
 
 impl NgramBackend for PresageSqliteBackend {
     fn max_order(&self) -> usize {
-        3
+        self.ngrams_level_max
     }
 
     fn unigram_total(&self) -> u64 {
@@ -242,43 +280,30 @@ impl NgramBackend for PresageSqliteBackend {
 
     fn ngram_count(&self, ngram: &[&str]) -> u64 {
         let order = ngram.len();
-        if order == 0 || order > 3 {
+        if order == 0 || order > self.ngrams_level_max {
             return 0;
         }
 
-        let (sql, params) = match order {
-            1 => {
-                let next_word = ngram[0];
-                (
-                    "SELECT COALESCE(SUM(count), 0) FROM _1_gram WHERE word = ?1".to_string(),
-                    vec![&next_word as &dyn rusqlite::types::ToSql],
-                )
-            }
-            2 => {
-                let word_1 = ngram[0];
-                let next_word = ngram[1];
-                (
-                    "SELECT COALESCE(SUM(count), 0) FROM _2_gram WHERE word_1 = ?1 AND word = ?2"
-                        .to_string(),
-                    vec![&word_1, &next_word],
-                )
-            }
-            3 => {
-                let word_2 = ngram[0];
-                let word_1 = ngram[1];
-                let next_word = ngram[2];
-                (
-                    "SELECT COALESCE(SUM(count), 0) FROM _3_gram WHERE word_2 = ?1 AND word_1 = ?2 AND word = ?3"
-                        .to_string(),
-                    vec![&word_2, &word_1, &next_word],
-                )
-            }
-            _ => unreachable!(),
-        };
+        let table = format!("_{}_gram", order);
+        let where_clause: Vec<String> = (0..order)
+            .map(|i| {
+                let col = if i == order - 1 {
+                    "word".to_string()
+                } else {
+                    format!("word_{}", order - 1 - i)
+                };
+                format!("{} = ?{}", col, i + 1)
+            })
+            .collect();
+        let sql = format!(
+            "SELECT COALESCE(SUM(count), 0) FROM {} WHERE {}",
+            table,
+            where_clause.join(" AND ")
+        );
 
         let conn = self.conn.lock();
         if let Ok(mut stmt) = conn.prepare(&sql) {
-            if let Ok(mut rows) = stmt.query(params.as_slice()) {
+            if let Ok(mut rows) = stmt.query(rusqlite::params_from_iter(ngram.iter().copied())) {
                 if let Ok(row) = rows.next() {
                     if let Ok(val) = row.unwrap().get::<_, i64>(0) {
                         return val as u64;
@@ -291,49 +316,47 @@ impl NgramBackend for PresageSqliteBackend {
 
     fn candidates(&self, context: &[&str], max_candidates: usize) -> Vec<(String, u64)> {
         let order = context.len() + 1;
-        if order < 1 || order > 3 {
+        if order < 1 || order > self.ngrams_level_max {
             return Vec::new();
         }
 
-        let (sql, params) = match order {
-            1 => (
-                format!(
-                    "SELECT word, count FROM _1_gram ORDER BY count DESC LIMIT {}",
-                    max_candidates
-                ),
-                Vec::new(),
-            ),
-            2 => {
-                let word_1 = context[0];
-                (
-                    format!(
-                        "SELECT word, count FROM _2_gram WHERE word_1 = ?1 ORDER BY count DESC LIMIT {}",
-                        max_candidates
-                    ),
-                    vec![&word_1 as &dyn rusqlite::types::ToSql],
-                )
-            }
-            3 => {
-                let word_2 = context[0];
-                let word_1 = context[1];
-                (
-                    format!(
-                        "SELECT word, count FROM _3_gram WHERE word_2 = ?1 AND word_1 = ?2 ORDER BY count DESC LIMIT {}",
-                        max_candidates
-                    ),
-                    vec![&word_2, &word_1],
-                )
-            }
-            _ => unreachable!(),
+        let table = format!("_{}_gram", order);
+        let where_clause: Vec<String> = context
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                let col = if i == order - 1 {
+                    "word".to_string()
+                } else {
+                    format!("word_{}", order - 1 - i)
+                };
+                format!("{} = ?{}", col, i + 1)
+            })
+            .collect();
+
+        let sql = if where_clause.is_empty() {
+            format!(
+                "SELECT word, count FROM {} ORDER BY count DESC LIMIT {}",
+                table, max_candidates
+            )
+        } else {
+            format!(
+                "SELECT word, count FROM {} WHERE {} ORDER BY count DESC LIMIT {}",
+                table,
+                where_clause.join(" AND "),
+                max_candidates
+            )
         };
 
         let conn = self.conn.lock();
         if let Ok(mut stmt) = conn.prepare(&sql) {
-            if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
-                let word: String = row.get(0)?;
-                let count: i64 = row.get(1)?;
-                Ok((word, count as u64))
-            }) {
+            if let Ok(rows) =
+                stmt.query_map(rusqlite::params_from_iter(context.iter().copied()), |row| {
+                    let word: String = row.get(0)?;
+                    let count: i64 = row.get(1)?;
+                    Ok((word, count as u64))
+                })
+            {
                 return rows.filter_map(|r| r.ok()).collect();
             }
         }
@@ -353,8 +376,8 @@ impl NgramBackend for PresageSqliteBackend {
         if !self.writable {
             return Err("backend is not writable".into());
         }
-        if ngram.is_empty() || ngram.len() > 3 {
-            return Err("ngram must have 1-3 elements".into());
+        if ngram.is_empty() || ngram.len() > self.ngrams_level_max {
+            return Err(format!("ngram order must be 1-{}", self.ngrams_level_max).into());
         }
         if delta < 0.0 {
             return Err("delta must be non-negative".into());
@@ -364,48 +387,56 @@ impl NgramBackend for PresageSqliteBackend {
 
         let delta_int = delta as i64;
         let order = ngram.len();
+        let table = format!("_{}_gram", order);
+
+        let cols: Vec<String> = (0..order)
+            .map(|i| {
+                if i == order - 1 {
+                    "word".to_string()
+                } else {
+                    format!("word_{}", order - 1 - i)
+                }
+            })
+            .collect();
+        let where_parts: Vec<String> = cols
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{} = ?{}", c, i + 1))
+            .collect();
+        let update_sql = format!(
+            "UPDATE {} SET count = count + ?{} WHERE {}",
+            table,
+            order + 1,
+            where_parts.join(" AND ")
+        );
+
+        let insert_cols = cols.join(", ");
+        let insert_placeholders: Vec<String> = (1..=order).map(|i| format!("?{}", i)).collect();
+        let insert_sql = format!(
+            "INSERT OR IGNORE INTO {} ({}, count) VALUES ({}, ?{})",
+            table,
+            insert_cols,
+            insert_placeholders.join(", "),
+            order + 1
+        );
+
+        let params: Vec<Box<dyn rusqlite::types::ToSql>> = ngram
+            .iter()
+            .map(|w| Box::new(*w) as Box<dyn rusqlite::types::ToSql>)
+            .chain(std::iter::once(
+                Box::new(delta_int) as Box<dyn rusqlite::types::ToSql>
+            ))
+            .collect();
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> = params
+            .iter()
+            .map(|p| p.as_ref() as &dyn rusqlite::types::ToSql)
+            .collect();
 
         let conn = self.conn.lock();
-        let rows_changed = match order {
-            1 => {
-                let next_word = ngram[0];
-                let update_sql = "UPDATE _1_gram SET count = count + ?2 WHERE word = ?1";
-                let rows = conn.execute(update_sql, [next_word, &delta_int])?;
-                if rows == 0 && save_unknown {
-                    let insert_sql = "INSERT OR IGNORE INTO _1_gram (word, count) VALUES (?1, ?2)";
-                    conn.execute(insert_sql, [next_word, &delta_int])?;
-                }
-                rows
-            }
-            2 => {
-                let word_1 = ngram[0];
-                let next_word = ngram[1];
-                let update_sql =
-                    "UPDATE _2_gram SET count = count + ?3 WHERE word_1 = ?1 AND word = ?2";
-                let rows = conn.execute(update_sql, [word_1, next_word, &delta_int])?;
-                if rows == 0 && save_unknown {
-                    let insert_sql =
-                        "INSERT OR IGNORE INTO _2_gram (word_1, word, count) VALUES (?1, ?2, ?3)";
-                    conn.execute(insert_sql, [word_1, next_word, &delta_int])?;
-                }
-                rows
-            }
-            3 => {
-                let word_2 = ngram[0];
-                let word_1 = ngram[1];
-                let next_word = ngram[2];
-                let update_sql = "UPDATE _3_gram SET count = count + ?4 WHERE word_2 = ?1 AND word_1 = ?2 AND word = ?3";
-                let rows = conn.execute(update_sql, [word_2, word_1, next_word, &delta_int])?;
-                if rows == 0 && save_unknown {
-                    let insert_sql = "INSERT OR IGNORE INTO _3_gram (word_2, word_1, word, count) VALUES (?1, ?2, ?3, ?4)";
-                    conn.execute(insert_sql, [word_2, word_1, next_word, &delta_int])?;
-                }
-                rows
-            }
-            _ => unreachable!(),
-        };
-
-        if !save_unknown && rows_changed == 0 {
+        let rows = conn.execute(&update_sql, params_ref.as_slice())?;
+        if rows == 0 && save_unknown {
+            conn.execute(&insert_sql, params_ref.as_slice())?;
+        } else if rows == 0 {
             return Err(format!("ngram {:?} not found in backend", ngram).into());
         }
 
@@ -421,6 +452,7 @@ impl Clone for PresageSqliteBackend {
             created_new_file: self.created_new_file,
             schema_initialized: Mutex::new(false),
             cache: SharedQueryCache::new(),
+            ngrams_level_max: self.ngrams_level_max,
         }
     }
 }
@@ -433,7 +465,7 @@ mod tests {
 
     fn setup_presage_db(conn: &Connection) {
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS _1_gram (word TEXT PRIMARY KEY, count INTEGER DEFAULT 1);
+            "CREATE TABLE IF NOT EXISTS _1_gram (word TEXT, count INTEGER DEFAULT 1, UNIQUE(word));
              CREATE TABLE IF NOT EXISTS _2_gram (word_1 TEXT, word TEXT, count INTEGER DEFAULT 1, UNIQUE(word_1, word));
              CREATE TABLE IF NOT EXISTS _3_gram (word_2 TEXT, word_1 TEXT, word TEXT, count INTEGER DEFAULT 1, UNIQUE(word_2, word_1, word));
              INSERT OR REPLACE INTO _1_gram VALUES ('hello', 100);
@@ -612,7 +644,7 @@ mod tests {
         let shared = SharedSqliteConnection::new(conn);
         let backend = PresageSqliteBackend::from_shared(shared, true, true);
 
-        assert!(backend.is_writable());
+        assert!(DictionaryBackend::is_writable(&backend));
         backend
             .increase_ngram_frequency(&["hello"], 5.0, false)
             .unwrap();
@@ -649,7 +681,7 @@ mod tests {
         let shared = SharedSqliteConnection::new(conn);
         let backend = PresageSqliteBackend::from_shared(shared, false, false);
 
-        assert!(!backend.is_writable());
+        assert!(!NgramBackend::is_writable(&backend));
         let err = backend.increase_ngram_frequency(&["test"], 1.0, true);
         assert!(err.is_err());
     }
