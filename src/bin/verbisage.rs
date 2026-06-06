@@ -252,7 +252,14 @@ fn main() {
             context,
             delta,
             save_unknown,
-        } => run_ngram_bump(&shared, client_mode, &context, delta, save_unknown),
+        } => run_ngram_bump(
+            &shared,
+            named_backends,
+            client_mode,
+            &context,
+            delta,
+            save_unknown,
+        ),
     }
 }
 
@@ -445,6 +452,7 @@ fn run_word_add(
 
 fn run_ngram_bump(
     shared: &SharedArgs,
+    named_backends: Option<&HashMap<String, BackendDef>>,
     client_mode: ClientMode,
     context: &str,
     delta: f64,
@@ -456,7 +464,7 @@ fn run_ngram_bump(
     if client_mode == ClientMode::Dbus {
         dbus_bump_ngram(ngram, delta, save_unknown, lang);
     } else {
-        let (_, _, predictor) = open_backend(shared, lang, None);
+        let (_, _, predictor) = open_backend(shared, lang, named_backends);
         match predictor {
             Some(pred) => {
                 let ngram_refs: Vec<&str> = ngram.iter().map(|s| s.as_str()).collect();
