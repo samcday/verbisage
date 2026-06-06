@@ -4,6 +4,7 @@ use std::path::Path;
 
 use rsmarisa::{Agent, Trie};
 
+use crate::dictionary::{DictionaryBackend, DictionaryQuery, DictionaryResult};
 use crate::prediction::ngram_backend::NgramBackend;
 
 /// N‑gram data access layer backed by a MARISA trie + companion counts file.
@@ -78,6 +79,89 @@ impl MarisaNgramBackend {
     fn ngram_key(ngram: &[&str]) -> String {
         let order = ngram.len();
         format!("{} {}", order, ngram.join(" "))
+    }
+}
+
+impl DictionaryBackend for MarisaNgramBackend {
+    fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
+        let mut results: Vec<DictionaryResult> = Vec::new();
+
+        for query in queries {
+            let prefix = match &query.prefix {
+                Some(p) => p.clone(),
+                None => continue,
+            };
+            let min_len = query.min_length.unwrap_or(0);
+            let max_len = query.max_length.unwrap_or(usize::MAX);
+
+            let unigram_prefix = format!("1 {}", prefix);
+            let mut agent = Agent::new();
+            agent.set_query_str(&unigram_prefix);
+
+            while self.trie.predictive_search(&mut agent) {
+                let key = agent.key().as_str();
+                if !key.starts_with("1 ") {
+                    break;
+                }
+                let word = &key[2..];
+                let word_len = word.len();
+                if word_len < min_len || word_len > max_len {
+                    continue;
+                }
+                if let Some(ref suffix) = query.suffix {
+                    if !word.ends_with(suffix) {
+                        continue;
+                    }
+                }
+                let id = agent.key().id();
+                let count = self.counts.get(id).copied().unwrap_or(0) as f64;
+                let confidence = if self.total_unigram_count > 0 {
+                    count / self.total_unigram_count as f64
+                } else {
+                    -1.0
+                };
+                results.push(DictionaryResult {
+                    word: word.to_string(),
+                    confidence,
+                });
+            }
+        }
+
+        results.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.word.cmp(&b.word))
+        });
+        results
+    }
+
+    fn get_frequency(&self, word: &str) -> f64 {
+        let key = format!("1 {}", word);
+        let mut agent = Agent::new();
+        agent.set_query_str(&key);
+        if self.trie.lookup(&mut agent) {
+            let id = agent.key().id();
+            let count = self.counts.get(id).copied().unwrap_or(0) as f64;
+            if self.total_unigram_count > 0 {
+                count / self.total_unigram_count as f64
+            } else {
+                -1.0
+            }
+        } else {
+            -1.0
+        }
+    }
+
+    fn contains(&self, word: &str) -> bool {
+        let key = format!("1 {}", word);
+        let mut agent = Agent::new();
+        agent.set_query_str(&key);
+        self.trie.lookup(&mut agent)
+    }
+
+    fn is_writable(&self) -> bool {
+        false
     }
 }
 

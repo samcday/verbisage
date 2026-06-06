@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::spellcheck::SpellChecker;
@@ -52,11 +52,11 @@ impl HunspellSpellChecker {
         ];
 
         for dir in &dirs {
-            let aff_path = format!("{}/{}.aff", dir, tag);
-            let dic_path = format!("{}/{}.dic", dir, tag);
+            let aff_path = PathBuf::from(dir).join(format!("{}.aff", tag));
+            let dic_path = PathBuf::from(dir).join(format!("{}.dic", tag));
 
-            if Path::new(&aff_path).exists() && Path::new(&dic_path).exists() {
-                return Self::from_files(&aff_path, &dic_path);
+            if aff_path.exists() && dic_path.exists() {
+                return Self::from_files(aff_path.to_str().unwrap(), dic_path.to_str().unwrap());
             }
         }
 

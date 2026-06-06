@@ -25,6 +25,17 @@ use super::chain::SegmentRole;
 use super::merged::{MergedDictionary, MergedPredictor};
 use super::{BackendType, Capability, ResolvedBackendDef};
 
+/// Normalize a directory path string: expand tilde and ensure no trailing slash.
+/// This ensures consistent behavior regardless of whether the user includes
+/// a trailing slash in their config.
+fn normalize_dir(dir: &str) -> PathBuf {
+    let expanded = expand_tilde(dir);
+    let path_str = expanded.to_string_lossy();
+    // Strip trailing slashes (but keep root "/")
+    let trimmed = path_str.trim_end_matches('/');
+    PathBuf::from(if trimmed.is_empty() { "/" } else { trimmed })
+}
+
 // ---------------------------------------------------------------------------
 // Per-backend build
 // ---------------------------------------------------------------------------
@@ -150,7 +161,11 @@ fn build_sqlite(
         eprintln!(
             "warning: no sqlite database found for '{}' (tried: {})",
             lang,
-            files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+            files
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
 
@@ -363,23 +378,25 @@ fn build_marisa(
         }
     };
 
-    let backend = match crate::prediction::marisa::MarisaNgramBackend::from_files(
-        &trie_path,
-        &counts_path,
-    ) {
-        Ok(b) => {
-            eprintln!("info: loaded marisa ngram backend: {} + {}", trie_path.display(), counts_path.display());
-            Arc::new(b)
-        }
-        Err(e) => {
-            eprintln!(
-                "warning: failed to load marisa ngram backend '{}': {}",
-                trie_path.display(),
-                e
-            );
-            return (Box::new(FileDictionaryBackend::new()), None, None);
-        }
-    };
+    let backend =
+        match crate::prediction::marisa::MarisaNgramBackend::from_files(&trie_path, &counts_path) {
+            Ok(b) => {
+                eprintln!(
+                    "info: loaded marisa ngram backend: {} + {}",
+                    trie_path.display(),
+                    counts_path.display()
+                );
+                Arc::new(b)
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to load marisa ngram backend '{}': {}",
+                    trie_path.display(),
+                    e
+                );
+                return (Box::new(FileDictionaryBackend::new()), None, None);
+            }
+        };
 
     let dict: Box<dyn DictionaryBackend> = Box::new(backend.clone());
 
@@ -391,9 +408,11 @@ fn build_marisa(
     let predictor = if def.capabilities.contains(&Capability::Ngrams) {
         let ngram_backend: Box<dyn crate::prediction::ngram_backend::NgramBackend> =
             Box::new(backend);
-        Some(Box::new(
-            crate::prediction::smoothed::SmoothedPredictor::new(ngram_backend)
-        ) as Box<dyn crate::prediction::Predictor>)
+        Some(
+            Box::new(crate::prediction::smoothed::SmoothedPredictor::new(
+                ngram_backend,
+            )) as Box<dyn crate::prediction::Predictor>,
+        )
     } else {
         None
     };
@@ -456,7 +475,11 @@ fn build_hunspell(
     let sc = match (aff_path, dic_path) {
         (Some(aff), Some(dic)) => match HunspellSpellChecker::from_files(&aff, &dic) {
             Ok(c) => {
-                eprintln!("info: loaded hunspell spellchecker: {} + {}", aff.display(), dic.display());
+                eprintln!(
+                    "info: loaded hunspell spellchecker: {} + {}",
+                    aff.display(),
+                    dic.display()
+                );
                 Some(Box::new(c) as Box<dyn SpellChecker>)
             }
             Err(e) => {
@@ -498,8 +521,8 @@ fn find_hunspell_files(
     ];
 
     for dir in &dirs {
-        let aff = PathBuf::from(format!("{}/{}.aff", dir, lang));
-        let dic = PathBuf::from(format!("{}/{}.dic", dir, lang));
+        let aff = PathBuf::from(dir).join(format!("{}.aff", lang));
+        let dic = PathBuf::from(dir).join(format!("{}.dic", lang));
         if aff.exists() && dic.exists() {
             return (Some(aff), Some(dic));
         }
@@ -544,7 +567,16 @@ fn resolve_marisa_ngram_trie_files(
 
     if let Some(ref dict_path) = def.path {
         let expanded = dict_path.replace("{lang}", lang);
-        if let Some(dir) = PathBuf::from(expand_tilde(&expanded)).parent() {
+        let base = PathBuf::from(expand_tilde(&expanded));
+        // If path is a directory, use it directly; if it's a file, use its parent
+        let dir = if base.is_dir() {
+            base
+        } else if let Some(parent) = base.parent() {
+            parent.to_path_buf()
+        } else {
+            PathBuf::new()
+        };
+        if !dir.as_os_str().is_empty() {
             let candidate = dir.join("ngrams.trie");
             if candidate.exists() && !results.contains(&candidate) {
                 results.push(candidate);
@@ -579,7 +611,15 @@ fn resolve_marisa_ngram_counts_files(
 
     if let Some(ref dict_path) = def.path {
         let expanded = dict_path.replace("{lang}", lang);
-        if let Some(dir) = PathBuf::from(expand_tilde(&expanded)).parent() {
+        let base = PathBuf::from(expand_tilde(&expanded));
+        let dir = if base.is_dir() {
+            base
+        } else if let Some(parent) = base.parent() {
+            parent.to_path_buf()
+        } else {
+            PathBuf::new()
+        };
+        if !dir.as_os_str().is_empty() {
             let candidate = dir.join("ngrams.counts");
             if candidate.exists() && !results.contains(&candidate) {
                 results.push(candidate);
@@ -637,7 +677,24 @@ pub fn compose_chain(
     let mut predictors: Vec<Box<dyn Predictor>> = Vec::new();
 
     for seg in &assignment.segments {
-        let (dict, sc, pred) = build_backend(&seg.def, lang, lp);
+        // Apply per-backend directory overrides from the backend def
+        let mut seg_lp = lp.clone();
+        if let Some(ref dir) = seg.def.system_dir {
+            seg_lp = seg_lp.with_system_dir(normalize_dir(dir));
+        }
+        if let Some(ref dir) = seg.def.user_dir {
+            seg_lp = seg_lp.with_user_dir(normalize_dir(dir));
+        }
+        // Apply per-backend pattern overrides
+        if seg.def.system_patterns.is_some() || seg.def.user_patterns.is_some() {
+            seg_lp.set_patterns(
+                seg.def.system_patterns.as_deref(),
+                seg.def.user_patterns.as_deref(),
+                seg.def.system_patterns.as_deref(),
+                seg.def.user_patterns.as_deref(),
+            );
+        }
+        let (dict, sc, pred) = build_backend(&seg.def, lang, &seg_lp);
         match seg.role {
             SegmentRole::Dictionary | SegmentRole::Unigrams => {
                 dict_backends.push(dict);

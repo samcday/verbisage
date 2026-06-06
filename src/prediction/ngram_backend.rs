@@ -43,3 +43,35 @@ pub trait NgramBackend: Send + Sync {
         Err("not supported".into())
     }
 }
+
+impl<T: NgramBackend + ?Sized> NgramBackend for std::sync::Arc<T> {
+    fn max_order(&self) -> usize {
+        self.as_ref().max_order()
+    }
+
+    fn unigram_total(&self) -> u64 {
+        self.as_ref().unigram_total()
+    }
+
+    fn ngram_count(&self, ngram: &[&str]) -> u64 {
+        self.as_ref().ngram_count(ngram)
+    }
+
+    fn candidates(&self, context: &[&str], max_candidates: usize) -> Vec<(String, u64)> {
+        self.as_ref().candidates(context, max_candidates)
+    }
+
+    fn is_writable(&self) -> bool {
+        self.as_ref().is_writable()
+    }
+
+    fn increase_ngram_frequency(
+        &self,
+        ngram: &[&str],
+        delta: f64,
+        save_unknown: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.as_ref()
+            .increase_ngram_frequency(ngram, delta, save_unknown)
+    }
+}
