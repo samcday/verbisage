@@ -20,14 +20,14 @@ use crate::prediction::{Prediction, Predictor};
 /// 2. **Scoring** — for each candidate, compute the full smoothed
 ///    probability across all orders.
 pub struct SmoothedPredictor {
-    backend: Box<dyn NgramBackend>,
+    backend: std::sync::Arc<dyn NgramBackend>,
     deltas: Vec<f64>,
     count_threshold: u64,
     candidate_limit: usize,
 }
 
 impl SmoothedPredictor {
-    pub fn new(backend: Box<dyn NgramBackend>) -> Self {
+    pub fn new(backend: std::sync::Arc<dyn NgramBackend>) -> Self {
         Self {
             backend,
             deltas: vec![0.01, 0.1, 0.89],
@@ -170,6 +170,10 @@ impl Predictor for SmoothedPredictor {
         self.backend
             .increase_ngram_frequency(ngram, delta, save_unknown)
     }
+
+    fn ngram_backend(&self) -> Option<std::sync::Arc<dyn NgramBackend>> {
+        Some(self.backend.clone())
+    }
 }
 
 #[cfg(test)]
@@ -205,7 +209,7 @@ mod tests {
     #[test]
     fn smooth_unigram_context() {
         let backend = make_backend();
-        let predictor = SmoothedPredictor::new(backend);
+        let predictor = SmoothedPredictor::new(backend.into());
         let results = predictor.predict_next(&[], 2);
         assert_eq!(results.len(), 2);
         assert!(results[0].confidence > 0.0);
@@ -216,7 +220,7 @@ mod tests {
     #[test]
     fn smooth_bigram_context() {
         let backend = make_backend();
-        let predictor = SmoothedPredictor::new(backend);
+        let predictor = SmoothedPredictor::new(backend.into());
         let results = predictor.predict_next(&["hi"], 3);
         assert!(!results.is_empty());
         assert!(
@@ -229,7 +233,7 @@ mod tests {
     #[test]
     fn smooth_trigram_context() {
         let backend = make_backend();
-        let predictor = SmoothedPredictor::new(backend);
+        let predictor = SmoothedPredictor::new(backend.into());
         let results = predictor.predict_next(&["hi", "morning"], 3);
         assert!(!results.is_empty());
         assert!(
@@ -242,7 +246,7 @@ mod tests {
     #[test]
     fn zero_max_suggestions() {
         let backend = make_backend();
-        let predictor = SmoothedPredictor::new(backend);
+        let predictor = SmoothedPredictor::new(backend.into());
         let results = predictor.predict_next(&["hi"], 0);
         assert!(results.is_empty());
     }

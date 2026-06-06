@@ -708,7 +708,8 @@ mod tests {
         let backend = PresageSqliteBackend::from_shared(shared, true, false);
 
         let ngram_backend: Box<dyn NgramBackend> = Box::new(backend);
-        let predictor = SmoothedPredictor::new(ngram_backend).with_deltas(vec![0.4, 0.4, 0.2]);
+        let predictor =
+            SmoothedPredictor::new(ngram_backend.into()).with_deltas(vec![0.4, 0.4, 0.2]);
 
         assert_eq!(predictor.ngram_count(&["hello"]), 100);
 

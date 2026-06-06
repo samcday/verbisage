@@ -398,8 +398,9 @@ mod tests {
         .unwrap();
         let shared = SharedSqliteConnection::new(conn);
         let backend = PresageSqliteBackend::from_shared(shared, true, false);
-        let predictor: Box<dyn crate::prediction::Predictor> =
-            Box::new(SmoothedPredictor::new(Box::new(backend)).with_deltas(vec![0.4, 0.4, 0.2]));
+        let predictor: Box<dyn crate::prediction::Predictor> = Box::new(
+            SmoothedPredictor::new(std::sync::Arc::new(backend)).with_deltas(vec![0.4, 0.4, 0.2]),
+        );
 
         let dict = FileDictionaryBackend::new();
         let handler = DaemonHandler::new(Box::new(dict), None, Some(predictor), "en_US".into());

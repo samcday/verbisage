@@ -303,6 +303,13 @@ pub struct BackendDef {
     pub enable_unigrams: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enable_ngrams: Option<bool>,
+
+    // ── Hunspell fields ──────────────────────────────────────────────────
+    /// When true, use zspell's built-in suggestion engine.  When false
+    /// (default), use the generic edit-distance suggester connected to the
+    /// hunspell dictionary backend, optionally boosted by n-gram context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedded_correction_engine: Option<bool>,
 }
 
 /// Resolved backend with merged preset defaults and validated capabilities.
@@ -337,6 +344,9 @@ pub struct ResolvedBackendDef {
     // Hunspell
     pub hunspell_affix: Option<String>,
     pub hunspell_dict: Option<String>,
+    /// When true, use zspell's built-in corrections; when false (default),
+    /// use the generic suggester with dict + n-gram context.
+    pub embedded_correction_engine: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +495,7 @@ fn resolve_file_backend(
         next_col: None,
         hunspell_affix: None,
         hunspell_dict: None,
+        embedded_correction_engine: false,
     })
 }
 
@@ -538,6 +549,7 @@ fn resolve_sqlite_backend(
         next_col: None,
         hunspell_affix: None,
         hunspell_dict: None,
+        embedded_correction_engine: false,
     })
 }
 
@@ -589,6 +601,7 @@ fn resolve_marisa_backend(
         next_col: None,
         hunspell_affix: None,
         hunspell_dict: None,
+        embedded_correction_engine: false,
     })
 }
 
@@ -631,6 +644,7 @@ fn resolve_hunspell_backend(
         next_col: None,
         hunspell_affix: None,
         hunspell_dict: None,
+        embedded_correction_engine: def.embedded_correction_engine.unwrap_or(false),
     })
 }
 
@@ -699,6 +713,7 @@ fn implicit_backend_def(name: &str) -> Option<BackendDef> {
             next_col: None,
             enable_unigrams: None,
             enable_ngrams: None,
+            embedded_correction_engine: None,
         }),
         "sqlite" => Some(BackendDef {
             backend_type: BackendType::Sqlite,
@@ -721,6 +736,7 @@ fn implicit_backend_def(name: &str) -> Option<BackendDef> {
             next_col: None,
             enable_unigrams: None,
             enable_ngrams: None,
+            embedded_correction_engine: None,
         }),
         "hunspell" => Some(BackendDef {
             backend_type: BackendType::Hunspell,
@@ -743,6 +759,7 @@ fn implicit_backend_def(name: &str) -> Option<BackendDef> {
             next_col: None,
             enable_unigrams: None,
             enable_ngrams: None,
+            embedded_correction_engine: None,
         }),
         "marisa" => Some(BackendDef {
             backend_type: BackendType::Marisa,
@@ -765,6 +782,7 @@ fn implicit_backend_def(name: &str) -> Option<BackendDef> {
             next_col: None,
             enable_unigrams: None,
             enable_ngrams: None,
+            embedded_correction_engine: None,
         }),
         _ => None,
     }

@@ -65,6 +65,7 @@ fn resolve_backend_chain(
                             next_col: None,
                             enable_unigrams: None,
                             enable_ngrams: None,
+                            embedded_correction_engine: None,
                         },
                     );
                 } else {

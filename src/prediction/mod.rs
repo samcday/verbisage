@@ -43,4 +43,13 @@ pub trait Predictor: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err("not supported".into())
     }
+
+    /// Return the underlying n-gram backend if available.
+    ///
+    /// Used by spellcheckers that want to score suggestion candidates
+    /// using n-gram probabilities.  Returns `None` for frequency-only
+    /// predictors that don't carry n-gram data.
+    fn ngram_backend(&self) -> Option<std::sync::Arc<dyn ngram_backend::NgramBackend>> {
+        None
+    }
 }

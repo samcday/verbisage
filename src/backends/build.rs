@@ -174,7 +174,7 @@ fn build_sqlite(
             let backend_arc = Arc::new(backend);
             let dict: Box<dyn DictionaryBackend> = Box::new(backend_arc.clone());
             let sc: Box<dyn SpellChecker> = Box::new(SqliteSpellChecker::new(backend_arc.clone()));
-            let predictor = SmoothedPredictor::new(Box::new(backend_arc));
+            let predictor = SmoothedPredictor::new(backend_arc);
 
             (dict, Some(sc), Some(Box::new(predictor)))
         }
@@ -285,8 +285,8 @@ fn build_marisa(
     };
 
     let predictor = if def.capabilities.contains(&Capability::Ngrams) {
-        let ngram_backend: Box<dyn crate::prediction::ngram_backend::NgramBackend> =
-            Box::new(backend);
+        let ngram_backend: std::sync::Arc<dyn crate::prediction::ngram_backend::NgramBackend> =
+            std::sync::Arc::new(backend);
         Some(
             Box::new(crate::prediction::smoothed::SmoothedPredictor::new(
                 ngram_backend,
@@ -352,21 +352,23 @@ fn build_hunspell(
     };
 
     let sc = match (aff_path, dic_path) {
-        (Some(aff), Some(dic)) => match HunspellSpellChecker::from_files(&aff, &dic) {
-            Ok(c) => {
-                eprintln!(
-                    "info: loaded hunspell spellchecker: {} + {}",
-                    aff.display(),
-                    dic.display()
-                );
-                Some(Box::new(c) as Box<dyn SpellChecker>)
+        (Some(aff), Some(dic)) => {
+            match HunspellSpellChecker::from_files(&aff, &dic, def.embedded_correction_engine) {
+                Ok(c) => {
+                    eprintln!(
+                        "info: loaded hunspell spellchecker: {} + {}",
+                        aff.display(),
+                        dic.display()
+                    );
+                    Some(Box::new(c) as Box<dyn SpellChecker>)
+                }
+                Err(e) => {
+                    eprintln!("warning: failed to load hunspell from files: {}", e);
+                    None
+                }
             }
-            Err(e) => {
-                eprintln!("warning: failed to load hunspell from files: {}", e);
-                None
-            }
-        },
-        _ => match HunspellSpellChecker::from_tag(lang) {
+        }
+        _ => match HunspellSpellChecker::from_tag(lang, def.embedded_correction_engine) {
             Ok(c) => {
                 eprintln!("info: loaded hunspell spellchecker for tag '{}'", lang);
                 Some(Box::new(c) as Box<dyn SpellChecker>)
@@ -591,6 +593,11 @@ pub fn compose_chain(
                 }
             }
             SegmentRole::Ngrams => {
+                // Ngrams segments also provide dict (word membership + frequencies)
+                // and may carry a spellchecker. The n-gram backend itself contains
+                // unigram counts, so dict collection is needed for the suggester.
+                dict_backends.push(dict);
+                spellcheckers.push(sc);
                 if let Some(p) = pred {
                     predictors.push(p);
                 }
@@ -619,6 +626,18 @@ pub fn compose_chain(
         eprintln!("info: merged {} predictor backends", predictors.len());
         Some(Box::new(MergedPredictor::new(predictors)) as Box<dyn Predictor>)
     };
+
+    // Wire n-gram backend to spellchecker if possible
+    if let Some(ref sc) = spellchecker {
+        if sc.can_use_ngram_backend() {
+            if let Some(ref pred) = predictor {
+                if let Some(ngram) = pred.ngram_backend() {
+                    sc.set_ngram_backend(ngram);
+                    eprintln!("info: attached n-gram backend to spellchecker");
+                }
+            }
+        }
+    }
 
     ComposedBackend {
         loaded,

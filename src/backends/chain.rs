@@ -231,7 +231,11 @@ fn assign_two(
         def: seg0_def.clone(),
     });
 
-    // seg1 = unigrams/ngrams (whichever it provides)
+    // seg1 fills whatever capabilities seg0 doesn't cover.
+    // seg0 already provides Dictionary; if it also has Unigrams, seg1 should aim for Ngrams.
+    let seg0_has_uni = seg0_def.capabilities.contains(&Capability::Unigrams);
+    let seg0_has_ngram = seg0_def.capabilities.contains(&Capability::Ngrams);
+
     let has_uni = seg1_def.capabilities.contains(&Capability::Unigrams);
     let has_ngram = seg1_def.capabilities.contains(&Capability::Ngrams);
     let has_dict = seg1_def.capabilities.contains(&Capability::Dictionary);
@@ -242,28 +246,39 @@ fn assign_two(
             SegmentRole::Unigrams,
         ));
     }
-    if has_dict && !has_uni && !has_ngram {
-        warnings.push(ChainWarning::RedundantSegment(
-            names[1].clone(),
-            SegmentRole::Unigrams,
-        ));
-    } else if has_dict {
-        // seg1 has dict — warn it's ignored, assign to unigrams
-        warnings.push(ChainWarning::ExtraCapability {
-            name: names[1].clone(),
-            role: SegmentRole::Unigrams,
-            extra: HashSet::from([Capability::Dictionary]),
-        });
-    }
 
-    // Pick role: prefer unigrams if available, else ngrams
-    let role = if has_uni {
+    // Pick role: seg1 fills the gap left by seg0
+    let role = if !seg0_has_ngram && has_ngram {
+        // seg0 lacks ngrams — seg1 provides them (n-gram backend also carries unigram data)
+        SegmentRole::Ngrams
+    } else if !seg0_has_uni && has_uni {
+        // seg0 lacks unigrams — seg1 provides them
         SegmentRole::Unigrams
     } else if has_ngram {
         SegmentRole::Ngrams
+    } else if has_uni {
+        SegmentRole::Unigrams
     } else {
         SegmentRole::Unigrams
     };
+
+    // Warn about extra capabilities beyond assigned role
+    if has_dict {
+        let needed: HashSet<Capability> = match role {
+            SegmentRole::Dictionary => HashSet::from([Capability::Dictionary]),
+            SegmentRole::Unigrams => HashSet::from([Capability::Unigrams]),
+            SegmentRole::Ngrams => HashSet::from([Capability::Ngrams]),
+        };
+        let extra: HashSet<Capability> =
+            seg1_def.capabilities.difference(&needed).copied().collect();
+        if !extra.is_empty() {
+            warnings.push(ChainWarning::ExtraCapability {
+                name: names[1].clone(),
+                role,
+                extra,
+            });
+        }
+    }
 
     segments.push(SegWithRole {
         name: names[1].clone(),
@@ -403,6 +418,7 @@ mod tests {
             next_col: None,
             hunspell_affix: None,
             hunspell_dict: None,
+            embedded_correction_engine: false,
         }
     }
 
