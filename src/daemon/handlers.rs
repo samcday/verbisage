@@ -115,7 +115,7 @@ impl DaemonHandler {
         }
 
         let lp = self.lang_paths(lang);
-        let composed = crate::backends::build::compose_chain(&assignment, lang, &lp);
+        let composed = crate::backends::build::compose_chain(&assignment, lang, &lp, None, None);
 
         CachedBackend {
             loaded: composed.loaded,

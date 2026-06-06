@@ -221,7 +221,17 @@ pub fn open_backend(
     }
 
     let lp = build_language_paths(args, lang);
-    let composed = crate::backends::build::compose_chain(&assignment, lang, &lp);
+    let composed = crate::backends::build::compose_chain(
+        &assignment,
+        lang,
+        &lp,
+        args.system_data_dir
+            .as_ref()
+            .map(|p| p.to_str().unwrap_or("")),
+        args.user_data_dir
+            .as_ref()
+            .map(|p| p.to_str().unwrap_or("")),
+    );
 
     (
         composed.dictionary,

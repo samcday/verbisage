@@ -343,16 +343,17 @@ fn build_marisa(
 ) {
     use std::sync::Arc;
 
-    let trie_files = resolve_marisa_ngram_trie_files(def, lang, lp);
-    let counts_files = resolve_marisa_ngram_counts_files(def, lang, lp);
+    let trie_candidates = resolve_marisa_ngram_trie_files(def, lang, lp);
+    let counts_candidates = resolve_marisa_ngram_counts_files(def, lang, lp);
 
-    let trie_path = match trie_files.first() {
-        Some(p) => p.clone(),
+    let trie_path = trie_candidates.iter().cloned().find(|p| p.exists());
+    let trie_path = match trie_path {
+        Some(p) => p,
         None => {
             eprintln!(
                 "warning: no marisa ngram trie found for '{}' (tried: {})",
                 lang,
-                trie_files
+                trie_candidates
                     .iter()
                     .map(|p| p.display().to_string())
                     .collect::<Vec<_>>()
@@ -362,13 +363,14 @@ fn build_marisa(
         }
     };
 
-    let counts_path = match counts_files.first() {
-        Some(p) => p.clone(),
+    let counts_path = counts_candidates.iter().cloned().find(|p| p.exists());
+    let counts_path = match counts_path {
+        Some(p) => p,
         None => {
             eprintln!(
                 "warning: no marisa ngram counts file found for '{}' (tried: {})",
                 lang,
-                counts_files
+                counts_candidates
                     .iter()
                     .map(|p| p.display().to_string())
                     .collect::<Vec<_>>()
@@ -560,7 +562,7 @@ fn resolve_marisa_ngram_trie_files(
     if let Some(p) = &def.ngram_path {
         let expanded = p.replace("{lang}", lang);
         let path = expand_tilde(&expanded);
-        if path.exists() {
+        if !results.contains(&path) {
             results.push(path);
         }
     }
@@ -568,7 +570,6 @@ fn resolve_marisa_ngram_trie_files(
     if let Some(ref dict_path) = def.path {
         let expanded = dict_path.replace("{lang}", lang);
         let base = PathBuf::from(expand_tilde(&expanded));
-        // If path is a directory, use it directly; if it's a file, use its parent
         let dir = if base.is_dir() {
             base
         } else if let Some(parent) = base.parent() {
@@ -578,7 +579,7 @@ fn resolve_marisa_ngram_trie_files(
         };
         if !dir.as_os_str().is_empty() {
             let candidate = dir.join("ngrams.trie");
-            if candidate.exists() && !results.contains(&candidate) {
+            if !results.contains(&candidate) {
                 results.push(candidate);
             }
         }
@@ -604,7 +605,7 @@ fn resolve_marisa_ngram_counts_files(
     if let Some(p) = &def.ngram_path {
         let expanded = p.replace("{lang}", lang).replace(".trie", ".counts");
         let path = expand_tilde(&expanded);
-        if path.exists() {
+        if !results.contains(&path) {
             results.push(path);
         }
     }
@@ -621,7 +622,7 @@ fn resolve_marisa_ngram_counts_files(
         };
         if !dir.as_os_str().is_empty() {
             let candidate = dir.join("ngrams.counts");
-            if candidate.exists() && !results.contains(&candidate) {
+            if !results.contains(&candidate) {
                 results.push(candidate);
             }
         }
@@ -667,25 +668,34 @@ pub struct ComposedBackend {
 }
 
 /// Compose a chain role assignment into a single backend bundle.
+///
+/// `cli_system_dir` and `cli_user_dir` are CLI overrides (e.g. `--system-data-dir`).
+/// When set, they take precedence over per-backend config values.
 pub fn compose_chain(
     assignment: &super::chain::RoleAssignment,
     lang: &str,
     lp: &LanguagePaths,
+    cli_system_dir: Option<&str>,
+    cli_user_dir: Option<&str>,
 ) -> ComposedBackend {
     let mut dict_backends: Vec<Box<dyn DictionaryBackend>> = Vec::new();
     let mut spellcheckers: Vec<Option<Box<dyn SpellChecker>>> = Vec::new();
     let mut predictors: Vec<Box<dyn Predictor>> = Vec::new();
 
     for seg in &assignment.segments {
-        // Apply per-backend directory overrides from the backend def
         let mut seg_lp = lp.clone();
-        if let Some(ref dir) = seg.def.system_dir {
-            seg_lp = seg_lp.with_system_dir(normalize_dir(dir));
+        // CLI overrides take precedence over per-backend config values
+        if cli_system_dir.is_none() {
+            if let Some(ref dir) = seg.def.system_dir {
+                seg_lp = seg_lp.with_system_dir(normalize_dir(dir));
+            }
         }
-        if let Some(ref dir) = seg.def.user_dir {
-            seg_lp = seg_lp.with_user_dir(normalize_dir(dir));
+        if cli_user_dir.is_none() {
+            if let Some(ref dir) = seg.def.user_dir {
+                seg_lp = seg_lp.with_user_dir(normalize_dir(dir));
+            }
         }
-        // Apply per-backend pattern overrides
+        // Per-backend pattern overrides always apply (no CLI equivalent yet)
         if seg.def.system_patterns.is_some() || seg.def.user_patterns.is_some() {
             seg_lp.set_patterns(
                 seg.def.system_patterns.as_deref(),
