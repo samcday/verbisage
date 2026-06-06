@@ -139,15 +139,9 @@ impl SharedArgs {
                 .or(Some("frequency".into()));
         }
 
-        // ── system_data_dir ──────────────────────────────────────────────
-        if self.system_data_dir.is_none() {
-            self.system_data_dir = Some(expand_tilde(crate::dictionary::paths::SYSTEM_DATA_DIR));
-        }
-
-        // ── user_data_dir ────────────────────────────────────────────────
-        if self.user_data_dir.is_none() {
-            self.user_data_dir = Some(expand_tilde(crate::dictionary::paths::USER_DATA_DIR_REL));
-        }
+        // ── system_data_dir / user_data_dir ──────────────────────────────────
+        // Don't fill defaults here — leave None so compose_chain can apply
+        // per-backend config overrides. Defaults come from LanguagePaths::new().
 
         // ── tilde expansion for all path fields ──────────────────────────
         if let Some(dir) = &mut self.system_data_dir {

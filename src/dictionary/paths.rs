@@ -26,7 +26,7 @@ pub const SYSTEM_DATA_DIR: &str = env_or!("VERBISAGE_SYSTEM_DIR", "/usr/share/ve
 /// User data directory (relative to `$HOME`).
 ///
 /// Override at build time via `VERBISAGE_USER_DIR`.
-pub const USER_DATA_DIR_REL: &str = env_or!("VERBISAGE_USER_DIR", ".local/share/verbisage");
+pub const USER_DATA_DIR_REL: &str = env_or!("VERBISAGE_USER_DIR", "~/.local/share/verbisage");
 
 // ---------------------------------------------------------------------------
 // Helper: tilde expansion
@@ -112,10 +112,10 @@ pub struct LanguagePaths {
 
 impl LanguagePaths {
     pub fn new(language: &str) -> Self {
-        let home = || std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let _home = || std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         Self {
             system_dir: PathBuf::from(SYSTEM_DATA_DIR),
-            user_dir: PathBuf::from(home()).join(USER_DATA_DIR_REL),
+            user_dir: PathBuf::from(USER_DATA_DIR_REL),
             language: language.to_string(),
             system_file_override: PathOverride::Default,
             user_file_override: PathOverride::Default,
@@ -208,6 +208,30 @@ impl LanguagePaths {
         find_files(&self.user_dir, &self.language, patterns)
     }
 
+    /// Resolve ALL candidate paths in **system** directory (including non-existing).
+    pub fn resolve_system_all(&self, patterns: &[&str]) -> Vec<PathBuf> {
+        match &self.system_file_override {
+            PathOverride::Skip => return Vec::new(),
+            PathOverride::File(p) => {
+                return vec![expand_tilde(p.to_str().unwrap_or(""))];
+            }
+            PathOverride::Default => {}
+        }
+        find_all_candidates(&self.system_dir, &self.language, patterns)
+    }
+
+    /// Resolve ALL candidate paths in **user** directory (including non-existing).
+    pub fn resolve_user_all(&self, patterns: &[&str]) -> Vec<PathBuf> {
+        match &self.user_file_override {
+            PathOverride::Skip => return Vec::new(),
+            PathOverride::File(p) => {
+                return vec![expand_tilde(p.to_str().unwrap_or(""))];
+            }
+            PathOverride::Default => {}
+        }
+        find_all_candidates(&self.user_dir, &self.language, patterns)
+    }
+
     /// Convenience: word-list dictionary files (file backend).
     ///
     /// For each pattern, first tries the full language tag (e.g. `en_US`),
@@ -256,6 +280,40 @@ impl LanguagePaths {
             .collect();
         let sys = self.resolve_system(&sys);
         let usr = self.resolve_user(&usr);
+        sys.into_iter().chain(usr).collect()
+    }
+
+    /// Marisa n-gram trie files — ALL candidates (including non-existing).
+    pub fn resolve_all_marisa_ngram_trie_files(&self) -> Vec<PathBuf> {
+        let sys: Vec<&str> = self
+            .system_marisa_ngram_trie_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let usr: Vec<&str> = self
+            .user_marisa_ngram_trie_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let sys = self.resolve_system_all(&sys);
+        let usr = self.resolve_user_all(&usr);
+        sys.into_iter().chain(usr).collect()
+    }
+
+    /// Marisa n-gram counts files — ALL candidates (including non-existing).
+    pub fn resolve_all_marisa_ngram_counts_files(&self) -> Vec<PathBuf> {
+        let sys: Vec<&str> = self
+            .system_marisa_ngram_counts_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let usr: Vec<&str> = self
+            .user_marisa_ngram_counts_patterns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let sys = self.resolve_system_all(&sys);
+        let usr = self.resolve_user_all(&usr);
         sys.into_iter().chain(usr).collect()
     }
 
@@ -345,23 +403,36 @@ fn language_fallbacks(tag: &str) -> Vec<String> {
 
 /// Search `dir` for files matching any `pattern`, trying each language
 /// fallback in order.  Returns the first match per pattern (most specific
-/// language wins).
+/// language wins). Only returns existing files.
 fn find_files(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
     let fallbacks = language_fallbacks(language);
     let mut files = Vec::new();
 
     for pattern in patterns {
-        let mut matched = false;
         for lang in &fallbacks {
             let filename = pattern.replace("{lang}", lang);
             let f = dir.join(&filename);
             if f.exists() {
                 files.push(f);
-                matched = true;
                 break;
             }
         }
-        let _ = matched;
+    }
+
+    files
+}
+
+/// Generate all candidate paths for `dir` matching any `pattern`, trying each
+/// language fallback in order. Returns ALL candidates regardless of existence.
+fn find_all_candidates(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
+    let fallbacks = language_fallbacks(language);
+    let mut files = Vec::new();
+
+    for pattern in patterns {
+        for lang in &fallbacks {
+            let filename = pattern.replace("{lang}", lang);
+            files.push(dir.join(&filename));
+        }
     }
 
     files
