@@ -317,6 +317,7 @@ fn run_correct(
         println!("{}", s);
     }
     if suggestions.is_empty() {
+        eprintln!("no suggestions found for '{}'", word);
         std::process::exit(1);
     }
 }
