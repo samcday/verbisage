@@ -27,7 +27,7 @@ pub use paths::LanguagePaths;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 #[cfg(feature = "sqlite")]
-pub use sqlite::SqliteDictionaryBackend;
+pub use sqlite::PresageSqliteBackend;
 
 // ---------------------------------------------------------------------------
 // Query types

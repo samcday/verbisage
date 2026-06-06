@@ -18,7 +18,7 @@ pub use prediction::{Prediction, Predictor};
 pub use spellcheck::SpellChecker;
 
 #[cfg(feature = "sqlite")]
-pub use dictionary::SqliteDictionaryBackend;
+pub use dictionary::PresageSqliteBackend;
 
 #[cfg(feature = "dbus")]
 pub use clients::DbusClient;

@@ -176,33 +176,30 @@ impl Predictor for SmoothedPredictor {
 mod tests {
     use super::*;
     use crate::backends::SharedSqliteConnection;
-    use crate::prediction::sqlite::SqliteNgramBackend;
+    use crate::dictionary::PresageSqliteBackend;
     use rusqlite::Connection;
 
     fn make_backend() -> Box<dyn NgramBackend> {
         let conn = Connection::open(":memory:").unwrap();
         conn.execute_batch(
-            "CREATE TABLE ngrams (context_1 TEXT, context_2 TEXT, next_word TEXT NOT NULL, frequency REAL NOT NULL);
-             INSERT INTO ngrams VALUES (NULL, NULL, 'hello', 1000);
-             INSERT INTO ngrams VALUES (NULL, NULL, 'goodbye', 800);
-             INSERT INTO ngrams VALUES (NULL, NULL, 'thanks', 600);
-             INSERT INTO ngrams VALUES ('hi', NULL, 'hello', 500);
-             INSERT INTO ngrams VALUES ('hi', NULL, 'hey', 300);
-             INSERT INTO ngrams VALUES ('morning', NULL, 'hello', 200);
-             INSERT INTO ngrams VALUES ('hi', 'morning', 'hello', 100);
-             INSERT INTO ngrams VALUES ('hi', 'morning', 'goodbye', 50);",
+            "CREATE TABLE _1_gram (word TEXT PRIMARY KEY, count INTEGER DEFAULT 1);
+             CREATE TABLE _2_gram (word_1 TEXT, word TEXT, count INTEGER DEFAULT 1, UNIQUE(word_1, word));
+             CREATE TABLE _3_gram (word_2 TEXT, word_1 TEXT, word TEXT, count INTEGER DEFAULT 1, UNIQUE(word_2, word_1, word));
+             INSERT OR REPLACE INTO _1_gram VALUES ('hello', 1000);
+             INSERT OR REPLACE INTO _1_gram VALUES ('goodbye', 800);
+             INSERT OR REPLACE INTO _1_gram VALUES ('thanks', 600);
+             INSERT OR REPLACE INTO _1_gram VALUES ('hi', 500);
+             INSERT OR REPLACE INTO _1_gram VALUES ('hey', 300);
+             INSERT OR REPLACE INTO _1_gram VALUES ('morning', 200);
+             INSERT OR REPLACE INTO _2_gram VALUES ('hi', 'hello', 500);
+             INSERT OR REPLACE INTO _2_gram VALUES ('hi', 'hey', 300);
+             INSERT OR REPLACE INTO _2_gram VALUES ('morning', 'hello', 200);
+             INSERT OR REPLACE INTO _3_gram VALUES ('hi', 'morning', 'hello', 100);
+             INSERT OR REPLACE INTO _3_gram VALUES ('hi', 'morning', 'goodbye', 50);",
         )
         .unwrap();
         let shared = SharedSqliteConnection::new(conn);
-        Box::new(SqliteNgramBackend::new(
-            shared,
-            "ngrams",
-            &["context_1".to_string(), "context_2".to_string()],
-            "next_word",
-            "frequency",
-            3,
-            false,
-        ))
+        Box::new(PresageSqliteBackend::from_shared(shared, false, false))
     }
 
     #[test]

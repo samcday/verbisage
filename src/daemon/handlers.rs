@@ -358,9 +358,9 @@ impl DaemonHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dictionary::FileDictionaryBackend;
+    use crate::backends::SharedSqliteConnection;
+    use crate::dictionary::{FileDictionaryBackend, PresageSqliteBackend};
     use crate::prediction::smoothed::SmoothedPredictor;
-    use crate::prediction::sqlite::SqliteNgramBackend;
     use crate::spellcheck::{DictionarySpellChecker, SpellChecker};
     use serde_json::json;
 
@@ -390,23 +390,16 @@ mod tests {
     fn handler_ngram_bump() {
         let conn = rusqlite::Connection::open(":memory:").unwrap();
         conn.execute_batch(
-            "CREATE TABLE ngrams (context_1 TEXT, next_word TEXT NOT NULL, frequency REAL NOT NULL);
-             INSERT INTO ngrams VALUES (NULL, 'hello', 10.0);",
+            "CREATE TABLE _1_gram (word TEXT PRIMARY KEY, count INTEGER DEFAULT 1);
+             CREATE TABLE _2_gram (word_1 TEXT, word TEXT, count INTEGER DEFAULT 1, UNIQUE(word_1, word));
+             CREATE TABLE _3_gram (word_2 TEXT, word_1 TEXT, word TEXT, count INTEGER DEFAULT 1, UNIQUE(word_2, word_1, word));
+             INSERT OR REPLACE INTO _1_gram VALUES ('hello', 10);",
         )
         .unwrap();
-        let shared = crate::backends::SharedSqliteConnection::new(conn);
-        let ngram_backend = SqliteNgramBackend::new(
-            shared,
-            "ngrams",
-            &["context_1".to_string()],
-            "next_word",
-            "frequency",
-            2,
-            true,
-        );
-        let predictor: Box<dyn crate::prediction::Predictor> = Box::new(
-            SmoothedPredictor::new(Box::new(ngram_backend)).with_deltas(vec![0.4, 0.4, 0.2]),
-        );
+        let shared = SharedSqliteConnection::new(conn);
+        let backend = PresageSqliteBackend::from_shared(shared, true, false);
+        let predictor: Box<dyn crate::prediction::Predictor> =
+            Box::new(SmoothedPredictor::new(Box::new(backend)).with_deltas(vec![0.4, 0.4, 0.2]));
 
         let dict = FileDictionaryBackend::new();
         let handler = DaemonHandler::new(Box::new(dict), None, Some(predictor), "en_US".into());

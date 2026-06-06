@@ -2,16 +2,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::dictionary::paths::{LanguagePaths, expand_tilde};
-use crate::dictionary::{DictionaryBackend, FileDictionaryBackend};
+use crate::dictionary::{DictionaryBackend, FileDictionaryBackend, PresageSqliteBackend};
 use crate::prediction::{Predictor, smoothed::SmoothedPredictor};
-use crate::spellcheck::{DictionarySpellChecker, SpellChecker};
+use crate::spellcheck::SpellChecker;
 
 #[cfg(feature = "sqlite")]
 use crate::backends::SharedSqliteConnection;
-#[cfg(feature = "sqlite")]
-use crate::dictionary::SqliteDictionaryBackend;
-#[cfg(feature = "sqlite")]
-use crate::prediction::sqlite::SqliteNgramBackend;
 #[cfg(feature = "sqlite")]
 use crate::spellcheck::SqliteSpellChecker;
 
@@ -146,7 +142,7 @@ fn build_file(
 
 #[cfg(feature = "sqlite")]
 fn build_sqlite(
-    def: &ResolvedBackendDef,
+    _def: &ResolvedBackendDef,
     lang: &str,
     lp: &LanguagePaths,
 ) -> (
@@ -154,162 +150,45 @@ fn build_sqlite(
     Option<Box<dyn SpellChecker>>,
     Option<Box<dyn Predictor>>,
 ) {
-    let files = resolve_files(def, lang, lp);
+    let files = resolve_files(_def, lang, lp);
     let path = files.first().cloned();
-
-    if path.is_none() {
-        eprintln!(
-            "warning: no sqlite database found for '{}' (tried: {})",
-            lang,
-            files
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-
-    let has_dict = def.capabilities.contains(&Capability::Dictionary)
-        || def.capabilities.contains(&Capability::Unigrams);
-    let has_ngrams = def.capabilities.contains(&Capability::Ngrams);
 
     let path = match path {
         Some(p) => p,
         None => {
+            eprintln!(
+                "warning: no sqlite database found for '{}' (tried: {})",
+                lang,
+                files
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             let empty: Box<dyn DictionaryBackend> = Box::new(FileDictionaryBackend::new());
             return (empty, None, None);
         }
     };
 
-    if has_dict && has_ngrams {
-        // Share connection between dict and predictor
-        match SharedSqliteConnection::open(&path) {
-            Ok(shared) => {
-                eprintln!("info: loaded sqlite database: {}", path.display());
-                let table_ngrams = def.table_ngrams.as_deref().unwrap_or("ngrams");
-                let next_col = def.next_col.as_deref().unwrap_or("next");
-                let freq_col = def.freq_col.as_deref().unwrap_or("frequency");
-                let context_cols = if def.context_cols.is_empty() {
-                    vec!["prev".to_string()]
-                } else {
-                    def.context_cols.clone()
-                };
-                let max_order = context_cols.len();
-                let writable = true;
+    match PresageSqliteBackend::open(&path, true) {
+        Ok(backend) => {
+            eprintln!("info: loaded sqlite database: {}", path.display());
+            let backend_arc = Arc::new(backend);
+            let dict: Box<dyn DictionaryBackend> = Box::new(backend_arc.clone());
+            let sc: Box<dyn SpellChecker> = Box::new(SqliteSpellChecker::new(backend_arc.clone()));
+            let predictor = SmoothedPredictor::new(Box::new(backend_arc));
 
-                let dict = if def.table.is_some() {
-                    // Separate dictionary table
-                    let table = def.table.as_deref().unwrap_or("words");
-                    let word_col = def.word_col.as_deref().unwrap_or("word");
-                    SqliteDictionaryBackend::from_shared(
-                        shared.clone(),
-                        table,
-                        word_col,
-                        freq_col,
-                        writable,
-                    )
-                } else {
-                    // Shared-table mode: dict reads ngram table's unigram rows
-                    SqliteDictionaryBackend::from_ngram_unigrams(
-                        shared.clone(),
-                        table_ngrams,
-                        &context_cols,
-                        next_col,
-                        freq_col,
-                        writable,
-                    )
-                };
-
-                let sc: Box<dyn SpellChecker> =
-                    Box::new(SqliteSpellChecker::new(Arc::new(dict.clone())));
-
-                let backend = SqliteNgramBackend::new(
-                    shared,
-                    table_ngrams,
-                    &context_cols,
-                    next_col,
-                    freq_col,
-                    max_order,
-                    writable,
-                );
-                let predictor = SmoothedPredictor::new(Box::new(backend));
-
-                (Box::new(dict), Some(sc), Some(Box::new(predictor)))
-            }
-            Err(e) => {
-                eprintln!(
-                    "warning: failed to open sqlite db '{}': {}",
-                    path.display(),
-                    e
-                );
-                let empty: Box<dyn DictionaryBackend> = Box::new(FileDictionaryBackend::new());
-                (empty, None, None)
-            }
+            (dict, Some(sc), Some(Box::new(predictor)))
         }
-    } else if has_dict {
-        // Dict only (or dict + unigrams)
-        let _writable = true; // user file — TODO: determine writability
-        let result = SqliteDictionaryBackend::from_sqlite(
-            &path,
-            def.table.as_deref().unwrap_or("words"),
-            def.word_col.as_deref().unwrap_or("word"),
-            def.freq_col.as_deref().unwrap_or("frequency"),
-            true,
-        );
-        match result {
-            Ok(dict) => {
-                let sc: Box<dyn SpellChecker> =
-                    Box::new(SqliteSpellChecker::new(Arc::new(dict.clone())));
-                (Box::new(dict), Some(sc), None)
-            }
-            Err(e) => {
-                eprintln!(
-                    "warning: failed to open sqlite db '{}': {}",
-                    path.display(),
-                    e
-                );
-                let empty: Box<dyn DictionaryBackend> = Box::new(FileDictionaryBackend::new());
-                (empty, None, None)
-            }
+        Err(e) => {
+            eprintln!(
+                "warning: failed to open sqlite db '{}': {}",
+                path.display(),
+                e
+            );
+            let empty: Box<dyn DictionaryBackend> = Box::new(FileDictionaryBackend::new());
+            (empty, None, None)
         }
-    } else if has_ngrams {
-        // Ngrams only
-        let table_ngrams = def.table_ngrams.as_deref().unwrap_or("ngrams");
-        let next_col = def.next_col.as_deref().unwrap_or("next");
-        let freq_col = def.freq_col.as_deref().unwrap_or("frequency");
-        let context_cols = if def.context_cols.is_empty() {
-            vec!["prev".to_string()]
-        } else {
-            def.context_cols.clone()
-        };
-        let max_order = context_cols.len();
-        match SqliteNgramBackend::from_path(
-            &path,
-            table_ngrams,
-            &context_cols,
-            next_col,
-            freq_col,
-            max_order,
-            true,
-        ) {
-            Ok(backend) => {
-                let predictor = SmoothedPredictor::new(Box::new(backend));
-                let empty: Box<dyn DictionaryBackend> = Box::new(FileDictionaryBackend::new());
-                (empty, None, Some(Box::new(predictor)))
-            }
-            Err(e) => {
-                eprintln!(
-                    "warning: failed to open ngram predictor '{}': {}",
-                    path.display(),
-                    e
-                );
-                let empty: Box<dyn DictionaryBackend> = Box::new(FileDictionaryBackend::new());
-                (empty, None, None)
-            }
-        }
-    } else {
-        let empty: Box<dyn DictionaryBackend> = Box::new(FileDictionaryBackend::new());
-        (empty, None, None)
     }
 }
 

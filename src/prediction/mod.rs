@@ -1,15 +1,12 @@
-/// Next‑word prediction traits and types.
+/// Next-word prediction traits and types.
 ///
-/// The central trait is [`Predictor`], with implementations for SQLite
-/// n‑gram tables, MARISA trie backends, and frequency‑only (context‑free)
-/// backends.  The [`SmoothedPredictor`] provides linear interpolation
-/// smoothing across n‑gram orders.
+/// The central trait is [`Predictor`], with implementations for MARISA trie
+/// backends and frequency-only (context-free) backends.  The
+/// [`SmoothedPredictor`] provides linear interpolation smoothing across
+/// n-gram orders.
 pub mod frequency;
 pub mod ngram_backend;
 pub mod smoothed;
-
-#[cfg(feature = "sqlite")]
-pub mod sqlite;
 
 #[cfg(feature = "marisa")]
 pub mod marisa;

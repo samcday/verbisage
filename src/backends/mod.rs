@@ -492,27 +492,11 @@ fn resolve_sqlite_backend(
     name: &str,
     def: &BackendDef,
 ) -> Result<ResolvedBackendDef, BackendConfigError> {
-    let fmt = match &def.format {
-        Some(f) => SqliteFormat::from_str(f)
-            .ok_or_else(|| BackendConfigError::UnknownFormat(f.clone(), BackendType::Sqlite))?,
-        None => SqliteFormat::Custom,
-    };
+    let mut capabilities = HashSet::new();
+    capabilities.insert(Capability::Dictionary);
+    capabilities.insert(Capability::Unigrams);
+    capabilities.insert(Capability::Ngrams);
 
-    let preset = SqlitePreset::for_format(fmt);
-
-    let table = def.table.clone().or(preset.table);
-    let word_col = def.word_col.clone().or(preset.word_col);
-    let freq_col = def.freq_col.clone().or(preset.freq_col);
-    let table_ngrams = def.table_ngrams.clone().or(preset.table_ngrams);
-    let context_cols = def
-        .context_cols
-        .clone()
-        .or(preset.context_cols)
-        .unwrap_or_default();
-    let next_col = def.next_col.clone().or(preset.next_col);
-
-    // Start with preset capabilities
-    let mut capabilities: HashSet<Capability> = preset.capabilities.into_iter().collect();
     if let Some(en) = def.enable_unigrams {
         if en {
             capabilities.insert(Capability::Unigrams);
@@ -525,51 +509,6 @@ fn resolve_sqlite_backend(
             capabilities.insert(Capability::Ngrams);
         } else {
             capabilities.remove(&Capability::Ngrams);
-        }
-    }
-
-    // Validate required fields
-    if capabilities.contains(&Capability::Dictionary)
-        || capabilities.contains(&Capability::Unigrams)
-    {
-        if table.is_none() {
-            return Err(BackendConfigError::MissingRequiredField(
-                "table",
-                Capability::Dictionary,
-            ));
-        }
-        if word_col.is_none() {
-            return Err(BackendConfigError::MissingRequiredField(
-                "word_col",
-                Capability::Dictionary,
-            ));
-        }
-        if freq_col.is_none() {
-            return Err(BackendConfigError::MissingRequiredField(
-                "freq_col",
-                Capability::Dictionary,
-            ));
-        }
-    }
-
-    if capabilities.contains(&Capability::Ngrams) {
-        if table_ngrams.is_none() {
-            return Err(BackendConfigError::MissingRequiredField(
-                "table_ngrams",
-                Capability::Ngrams,
-            ));
-        }
-        if context_cols.is_empty() {
-            return Err(BackendConfigError::MissingRequiredField(
-                "context_cols",
-                Capability::Ngrams,
-            ));
-        }
-        if next_col.is_none() {
-            return Err(BackendConfigError::MissingRequiredField(
-                "next_col",
-                Capability::Ngrams,
-            ));
         }
     }
 
@@ -591,12 +530,12 @@ fn resolve_sqlite_backend(
         has_header: false,
         word_index: None,
         freq_index: None,
-        table,
-        word_col,
-        freq_col,
-        table_ngrams,
-        context_cols,
-        next_col,
+        table: None,
+        word_col: None,
+        freq_col: None,
+        table_ngrams: None,
+        context_cols: Vec::new(),
+        next_col: None,
         hunspell_affix: None,
         hunspell_dict: None,
     })
@@ -763,7 +702,7 @@ fn implicit_backend_def(name: &str) -> Option<BackendDef> {
         }),
         "sqlite" => Some(BackendDef {
             backend_type: BackendType::Sqlite,
-            format: Some("presage_words".into()),
+            format: Some("presage".into()),
             path: None,
             ngram_path: None,
             system_dir: None,
