@@ -39,12 +39,9 @@ fn resolve_backend_chain(
             let seg = seg.trim();
             if let Some(bt) = BackendType::from_name(seg) {
                 let name = format!("default_{}", bt.as_name());
-                if cfg
-                    .backends
-                    .as_ref()
-                    .map_or(true, |m| !m.contains_key(&name))
-                {
-                    let mut backends = cfg.backends.take().unwrap_or_default();
+                let mut backends = cfg.backends.take().unwrap_or_default();
+                // Create new or update existing with CLI overrides
+                if !backends.contains_key(&name) {
                     backends.insert(
                         name.clone(),
                         BackendDef {
@@ -70,8 +67,14 @@ fn resolve_backend_chain(
                             enable_ngrams: None,
                         },
                     );
-                    cfg.backends = Some(backends);
+                } else {
+                    // Update existing backend with CLI overrides
+                    if let Some(backend) = backends.get_mut(&name) {
+                        backend.system_dir = Some(system_dir.clone());
+                        backend.user_dir = Some(user_dir.clone());
+                    }
                 }
+                cfg.backends = Some(backends);
                 name
             } else {
                 seg.to_string()
@@ -495,6 +498,20 @@ fn merge_config(
         .or_else(|| cfg.backend.clone())
         .unwrap_or_else(|| "file".into());
     cfg.backend = Some(resolve_backend_chain(&chain, &mut cfg, shared));
+
+    // Apply CLI path overrides to ALL backends (for config-dump accuracy)
+    if let Some(ref sys_dir) = shared.system_data_dir {
+        let sys = sys_dir.to_string_lossy().to_string();
+        for backend in cfg.backends.iter_mut().flat_map(|m| m.values_mut()) {
+            backend.system_dir = Some(sys.clone());
+        }
+    }
+    if let Some(ref usr_dir) = shared.user_data_dir {
+        let usr = usr_dir.to_string_lossy().to_string();
+        for backend in cfg.backends.iter_mut().flat_map(|m| m.values_mut()) {
+            backend.user_dir = Some(usr.clone());
+        }
+    }
 
     // Language: CLI > config > default
     cfg.language_default = shared

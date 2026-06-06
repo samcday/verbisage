@@ -585,7 +585,7 @@ fn resolve_marisa_ngram_trie_files(
         }
     }
 
-    for p in lp.resolve_marisa_ngram_trie_files() {
+    for p in lp.resolve_all_marisa_ngram_trie_files() {
         if !results.contains(&p) {
             results.push(p);
         }
@@ -628,7 +628,7 @@ fn resolve_marisa_ngram_counts_files(
         }
     }
 
-    for p in lp.resolve_marisa_ngram_counts_files() {
+    for p in lp.resolve_all_marisa_ngram_counts_files() {
         if !results.contains(&p) {
             results.push(p);
         }
