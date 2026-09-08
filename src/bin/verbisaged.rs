@@ -85,6 +85,7 @@ fn main() {
                 });
                 if let Err(e) = rt.block_on(run_dbus(handler)) {
                     eprintln!("dbus server error: {}", e);
+                    std::process::exit(1);
                 }
             }
             #[cfg(not(feature = "dbus"))]

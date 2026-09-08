@@ -1,0 +1,3 @@
+[submodule "patricia_dict"]
+	path = patricia_dict
+	url = https://github.com/samcday/android-patricia-dict.git

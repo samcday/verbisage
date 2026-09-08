@@ -5,6 +5,9 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+#[cfg(feature = "patricia")]
+pub mod patricia;
+
 pub mod compact;
 pub mod file;
 pub mod paths;
@@ -64,11 +67,24 @@ pub struct DictionaryResult {
 /// All implementors must be [`Send`] + [`Sync`] so that a single trait object
 /// can be shared across threads (e.g. inside an `Arc`).
 pub trait DictionaryBackend: Send + Sync {
+    /// Whether no words are available. Loading failures return an empty file
+    /// backend, which lets the daemon report unavailable language data.
+    fn is_empty(&self) -> bool {
+        false
+    }
+
     /// Batch-query the dictionary against one or more constraint sets.
     ///
     /// The returned vector is sorted by descending confidence, then
     /// lexicographically by word.
     fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult>;
+
+    /// Return the highest ranked candidates, with a bounded output allocation.
+    fn query_limited(&self, queries: &[DictionaryQuery], max: usize) -> Vec<DictionaryResult> {
+        let mut results = self.query_prefixes(queries);
+        results.truncate(max);
+        results
+    }
 
     /// Retrieve the normalised frequency for a word (0.0–1.0).
     fn get_frequency(&self, word: &str) -> f64;
@@ -100,8 +116,16 @@ pub trait DictionaryBackend: Send + Sync {
 }
 
 impl<T: DictionaryBackend> DictionaryBackend for Arc<T> {
+    fn is_empty(&self) -> bool {
+        (**self).is_empty()
+    }
+
     fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
         (**self).query_prefixes(queries)
+    }
+
+    fn query_limited(&self, queries: &[DictionaryQuery], max: usize) -> Vec<DictionaryResult> {
+        (**self).query_limited(queries, max)
     }
 
     fn get_frequency(&self, word: &str) -> f64 {

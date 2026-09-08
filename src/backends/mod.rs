@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum BackendType {
+    #[serde(rename = "patricia")]
+    Patricia,
     #[serde(rename = "file")]
     File,
     #[serde(rename = "sqlite")]
@@ -33,6 +35,7 @@ impl BackendType {
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "file" => Some(Self::File),
+            "patricia" => Some(Self::Patricia),
             "sqlite" => Some(Self::Sqlite),
             "marisa" => Some(Self::Marisa),
             "hunspell" => Some(Self::Hunspell),
@@ -44,6 +47,7 @@ impl BackendType {
     pub fn as_name(&self) -> &'static str {
         match self {
             Self::File => "file",
+            Self::Patricia => "patricia",
             Self::Sqlite => "sqlite",
             Self::Marisa => "marisa",
             Self::Hunspell => "hunspell",
@@ -405,6 +409,13 @@ pub fn resolve_backend_def(
 ) -> Result<ResolvedBackendDef, BackendConfigError> {
     match def.backend_type {
         BackendType::File => resolve_file_backend(name, def),
+        BackendType::Patricia => {
+            let mut resolved = resolve_hunspell_backend(name, def)?;
+            resolved.backend_type = BackendType::Patricia;
+            resolved.capabilities.insert(Capability::Unigrams);
+            resolved.capabilities.insert(Capability::Ngrams);
+            Ok(resolved)
+        },
         BackendType::Sqlite => resolve_sqlite_backend(name, def),
         BackendType::Marisa => resolve_marisa_backend(name, def),
         BackendType::Hunspell => resolve_hunspell_backend(name, def),
@@ -691,6 +702,11 @@ pub fn resolve_chain_with_backcompat(
 /// Generate an implicit `BackendDef` for an old-style backend name, or `None`
 /// if the name is not a recognized shorthand.
 fn implicit_backend_def(name: &str) -> Option<BackendDef> {
+    if name == "patricia" {
+        let mut def = implicit_backend_def("hunspell")?;
+        def.backend_type = BackendType::Patricia;
+        return Some(def);
+    }
     match name {
         "file" => Some(BackendDef {
             backend_type: BackendType::File,

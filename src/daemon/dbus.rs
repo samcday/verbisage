@@ -81,37 +81,45 @@ impl VerbisageDbus {
             max_len,
             lang
         );
-        let prefix_opts: Vec<Option<String>> = if prefixes.is_empty() {
-            vec![None]
-        } else {
-            prefixes.into_iter().map(Some).collect()
-        };
-        let suffix_opts: Vec<Option<String>> = if suffixes.is_empty() {
-            vec![None]
-        } else {
-            suffixes.into_iter().map(Some).collect()
-        };
-        let queries: Vec<DictionaryQuery> = prefix_opts
-            .into_iter()
-            .flat_map(|p| {
-                suffix_opts.iter().map(move |s| DictionaryQuery {
-                    prefix: p.clone(),
-                    suffix: s.clone(),
-                    min_length: if min_len == 0 {
-                        None
-                    } else {
-                        Some(min_len as usize)
-                    },
-                    max_length: if max_len == 0 {
-                        None
-                    } else {
-                        Some(max_len as usize)
-                    },
-                })
-            })
-            .collect();
+        let queries = dictionary_queries(prefixes, suffixes, min_len, max_len);
         self.handler
             .query(&queries, lang)
+            .map(|results| {
+                results
+                    .into_iter()
+                    .map(|r| (r.word, r.confidence))
+                    .collect()
+            })
+            .map_err(log_and_err)
+    }
+
+    /// Query completion candidates with a bounded response. The limit is
+    /// clamped to 100; zero returns no candidates. Query remains available
+    /// for clients that need the complete dictionary result set.
+    #[zbus(out_args("result"))]
+    async fn query_limited(
+        &self,
+        prefixes: Vec<String>,
+        suffixes: Vec<String>,
+        min_len: u32,
+        max_len: u32,
+        lang: &str,
+        max: u32,
+    ) -> Result<Vec<(String, f64)>, FdoError> {
+        if prefixes.len() > 16
+            || suffixes.len() > 16
+            || prefixes.iter().chain(&suffixes).any(|s| s.len() > 256)
+        {
+            return Err(FdoError::InvalidArgs(
+                "completion query is too large".into(),
+            ));
+        }
+        if max == 0 {
+            return Ok(Vec::new());
+        }
+        let queries = dictionary_queries(prefixes, suffixes, min_len, max_len);
+        self.handler
+            .query_limited(&queries, lang, max.min(100) as usize)
             .map(|results| {
                 results
                     .into_iter()
@@ -227,4 +235,42 @@ pub async fn run(handler: DaemonHandler) -> zbus::Result<()> {
     eprintln!("[daemon] connected to dbus");
     std::future::pending::<()>().await;
     Ok(())
+}
+
+fn dictionary_queries(
+    prefixes: Vec<String>,
+    suffixes: Vec<String>,
+    min_len: u32,
+    max_len: u32,
+) -> Vec<DictionaryQuery> {
+    let prefix_opts: Vec<Option<String>> = if prefixes.is_empty() {
+        vec![None]
+    } else {
+        prefixes.into_iter().map(Some).collect()
+    };
+    let suffix_opts: Vec<Option<String>> = if suffixes.is_empty() {
+        vec![None]
+    } else {
+        suffixes.into_iter().map(Some).collect()
+    };
+    let queries: Vec<DictionaryQuery> = prefix_opts
+        .into_iter()
+        .flat_map(|p| {
+            suffix_opts.iter().map(move |s| DictionaryQuery {
+                prefix: p.clone(),
+                suffix: s.clone(),
+                min_length: if min_len == 0 {
+                    None
+                } else {
+                    Some(min_len as usize)
+                },
+                max_length: if max_len == 0 {
+                    None
+                } else {
+                    Some(max_len as usize)
+                },
+            })
+        })
+        .collect();
+    queries
 }

@@ -71,11 +71,20 @@ impl DaemonHandler {
         req_lang.unwrap_or(&self.default_lang)
     }
 
-    fn get_or_load_backend(&self, lang: &str) -> Arc<CachedBackend> {
+    fn get_or_load_backend(&self, lang: &str) -> Result<Arc<CachedBackend>, String> {
+        // Language tags are substituted into dictionary paths.
+        if lang.is_empty()
+            || lang.len() > 64
+            || !lang
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'@' | b'.'))
+        {
+            return Err("invalid language tag".into());
+        }
         {
             let cache = self.cache.lock().unwrap();
             if let Some(backend) = cache.get(lang) {
-                return backend.clone();
+                return Ok(backend.clone());
             }
         }
 
@@ -83,10 +92,14 @@ impl DaemonHandler {
         crate::veprintln!("[handler] loaded backend for '{}'", lang);
 
         let mut cache = self.cache.lock().unwrap();
-        cache
+        // Keep language switching bounded in a long-running session service.
+        if cache.len() >= 8 {
+            cache.clear();
+        }
+        Ok(cache
             .entry(lang.to_string())
             .or_insert_with(|| Arc::new(backend))
-            .clone()
+            .clone())
     }
 
     fn build_backend(&self, lang: &str) -> CachedBackend {
@@ -141,7 +154,7 @@ impl DaemonHandler {
     // ── Typed API ─────────────────────────────────────────────────────────
 
     pub fn is_correct(&self, word: &str, lang: &str) -> Result<bool, String> {
-        let backend = self.get_or_load_backend(lang);
+        let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
         }
@@ -152,7 +165,7 @@ impl DaemonHandler {
     }
 
     pub fn suggest(&self, word: &str, max: usize, lang: &str) -> Result<Vec<String>, String> {
-        let backend = self.get_or_load_backend(lang);
+        let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
         }
@@ -177,11 +190,24 @@ impl DaemonHandler {
         queries: &[DictionaryQuery],
         lang: &str,
     ) -> Result<Vec<DictionaryResult>, String> {
-        let backend = self.get_or_load_backend(lang);
+        let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
         }
         Ok(backend.dictionary.query_prefixes(queries))
+    }
+
+    pub fn query_limited(
+        &self,
+        queries: &[DictionaryQuery],
+        lang: &str,
+        max: usize,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        let backend = self.get_or_load_backend(lang)?;
+        if !backend.loaded {
+            return Err(format!("no dictionary loaded for '{}'", lang));
+        }
+        Ok(backend.dictionary.query_limited(queries, max))
     }
 
     pub fn predict(
@@ -190,7 +216,7 @@ impl DaemonHandler {
         max: usize,
         lang: &str,
     ) -> Result<Vec<Prediction>, String> {
-        let backend = self.get_or_load_backend(lang);
+        let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
         }
@@ -201,7 +227,7 @@ impl DaemonHandler {
     }
 
     pub fn frequency(&self, word: &str, lang: &str) -> Result<f64, String> {
-        let backend = self.get_or_load_backend(lang);
+        let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
         }
@@ -215,7 +241,7 @@ impl DaemonHandler {
         allow_existing: bool,
         lang: &str,
     ) -> Result<(), String> {
-        let backend = self.get_or_load_backend(lang);
+        let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
         }
@@ -232,7 +258,7 @@ impl DaemonHandler {
         save_unknown: bool,
         lang: &str,
     ) -> Result<(), String> {
-        let backend = self.get_or_load_backend(lang);
+        let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
         }

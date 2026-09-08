@@ -17,14 +17,16 @@ sqlite = ["dep:rusqlite"]
 hunspell = ["dep:zspell"]
 marisa = ["dep:rsmarisa"]
 dbus = ["dep:zbus", "dep:tokio"]
+patricia = ["dep:patricia_dict"]
 
 [dependencies]
+patricia_dict = { path = "patricia_dict", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
 
-rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+rusqlite = { version = "0.32", optional = true }
 zspell = { version = "0.5", features = ["unstable-suggestions"], optional = true }
 rsmarisa = { version = "0.4", optional = true }
 zbus = { version = "5", features = ["p2p"], optional = true }
@@ -34,7 +36,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = tr
 tempfile = "3"
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [[bin]]
 name = "verbisaged"

@@ -340,6 +340,10 @@ fn insert_word(inner: &mut FileDictionaryInner, word: String, frequency: f64) {
 }
 
 impl DictionaryBackend for FileDictionaryBackend {
+    fn is_empty(&self) -> bool {
+        self.inner.read().unwrap().words.is_empty()
+    }
+
     fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
         let inner = self.inner.read().unwrap();
         let mut all_results = Vec::new();
