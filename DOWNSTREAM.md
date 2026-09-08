@@ -68,8 +68,10 @@ The separately packaged English dictionary comes from
 [Helium314/aosp-dictionaries](https://codeberg.org/Helium314/aosp-dictionaries).
 The corpus used for the trial has SHA-256
 `bd950ef4b57655120eee65cee62a5d216a63f721d9a8bb759ce2022437840443`.
-Its source rebuild and license records belong to the data package; this fork
-does not bundle or download that corpus at runtime.
+Its source rebuild and license records belong to the data package. The runtime
+expects a separately installed data file and never downloads it. The Patricia
+submodule retains upstream example dictionaries, including this corpus; the
+build commands above do not install those fixtures.
 
 ## Runtime and API
 
