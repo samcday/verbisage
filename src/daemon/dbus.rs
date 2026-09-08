@@ -10,12 +10,22 @@ use super::DaemonHandler;
 /// Registered at the well-known name `org.verbisage.Dictionary`, object path
 /// `/org/verbisage/Dictionary`, interface `org.verbisage.Dictionary1`.
 pub struct VerbisageDbus {
-    handler: DaemonHandler,
+    handler: std::sync::Arc<DaemonHandler>,
+    #[cfg(feature = "swipe")]
+    swipe_slot: std::sync::Arc<tokio::sync::Semaphore>,
+    #[cfg(feature = "swipe")]
+    swipe_runtime: Option<tokio::runtime::Handle>,
 }
 
 impl VerbisageDbus {
     pub fn new(handler: DaemonHandler) -> Self {
-        Self { handler }
+        Self {
+            handler: std::sync::Arc::new(handler),
+            #[cfg(feature = "swipe")]
+            swipe_slot: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
+            #[cfg(feature = "swipe")]
+            swipe_runtime: tokio::runtime::Handle::try_current().ok(),
+        }
     }
 }
 
@@ -82,6 +92,48 @@ impl VerbisageDbus {
                     .map(|r| (r.word, r.confidence))
                     .collect()
             })
+            .map_err(log_and_err)
+    }
+
+    /// Resolve a complete single-finger word gesture against supplied key bounds.
+    /// Coordinates share widget logical units. Each point includes elapsed ms.
+    /// The caller must discard stale replies and require explicit word selection.
+    #[cfg(feature = "swipe")]
+    #[zbus(out_args("result"))]
+    async fn recognize_swipe(
+        &self,
+        trace: Vec<(f64, f64, u32)>,
+        keys: Vec<(String, f64, f64, f64, f64)>,
+        max: u32,
+        lang: String,
+    ) -> Result<Vec<(String, f64)>, FdoError> {
+        let request =
+            crate::swipe::SwipeRequest::new(trace, keys, max).map_err(FdoError::InvalidArgs)?;
+        // zbus uses its own executor in the existing daemon configuration. Use
+        // the Tokio handle captured when the daemon registered this interface;
+        // neither worker creation nor the timer may assume a Tokio caller.
+        let runtime = self
+            .swipe_runtime
+            .as_ref()
+            .ok_or_else(|| FdoError::Failed("swipe worker runtime is unavailable".into()))?;
+        let permit = self
+            .swipe_slot
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| FdoError::Failed("swipe recognition is busy".into()))?;
+        let handler = self.handler.clone();
+        let worker = runtime.spawn_blocking(move || {
+            // A timed-out worker retains its permit until it finishes: incoming
+            // requests cannot build an unbounded queue of abandoned CPU work.
+            let _permit = permit;
+            handler.recognize_swipe(request, &lang)
+        });
+        runtime.spawn(async move {
+            tokio::time::timeout(std::time::Duration::from_secs(1), worker).await
+        }).await
+            .map_err(|_| FdoError::Failed("swipe response task failed".into()))?
+            .map_err(|_| FdoError::Failed("swipe recognition exceeded its response deadline".into()))?
+            .map_err(|_| FdoError::Failed("swipe recognition worker failed".into()))?
             .map_err(log_and_err)
     }
 
@@ -258,7 +310,7 @@ impl VerbisageDbus {
 
 /// Register on the session bus and serve forever.
 pub async fn run(handler: DaemonHandler) -> zbus::Result<()> {
-    let dbus_obj = VerbisageDbus { handler };
+    let dbus_obj = VerbisageDbus::new(handler);
     crate::veprintln!("[daemon] connecting to dbus...");
     let _conn = zbus::connection::Builder::session()?
         .name("org.verbisage.Dictionary")?
@@ -306,4 +358,127 @@ fn dictionary_queries(
         })
         .collect();
     queries
+}
+
+#[cfg(all(test, feature = "swipe"))]
+mod swipe_tests {
+    use super::*;
+    use crate::dictionary::{DictionaryBackend, DictionaryQuery, DictionaryResult};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
+
+    struct BlockedDictionary {
+        release: Arc<AtomicBool>,
+        entered: Arc<AtomicUsize>,
+    }
+    impl DictionaryBackend for BlockedDictionary {
+        fn query_prefixes(&self, _: &[DictionaryQuery]) -> Vec<DictionaryResult> {
+            Vec::new()
+        }
+        fn get_frequency(&self, _: &str) -> f64 {
+            0.0
+        }
+        fn contains(&self, _: &str) -> bool {
+            false
+        }
+        fn swipe_candidates(
+            &self,
+            _: &[String],
+            _: &[String],
+            _: &[u8],
+            _: std::time::Instant,
+        ) -> Result<Vec<DictionaryResult>, String> {
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            while !self.release.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(Vec::new())
+        }
+    }
+    struct ReleaseOnDrop(Arc<AtomicBool>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    fn arguments() -> (Vec<(f64, f64, u32)>, Vec<(String, f64, f64, f64, f64)>) {
+        (
+            vec![(10.0, 10.0, 0), (50.0, 10.0, 100)],
+            vec![
+                ("a".into(), 0.0, 0.0, 20.0, 20.0),
+                ("b".into(), 40.0, 0.0, 20.0, 20.0),
+            ],
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn swipe_deadline_keeps_one_worker_and_complete_responsive() {
+        let release = Arc::new(AtomicBool::new(false));
+        let _release_on_failure = ReleaseOnDrop(release.clone());
+        let entered = Arc::new(AtomicUsize::new(0));
+        let handler = DaemonHandler::new(
+            Box::new(BlockedDictionary {
+                release: release.clone(),
+                entered: entered.clone(),
+            }),
+            None,
+            None,
+            "en_US".into(),
+        );
+        let dbus = Arc::new(VerbisageDbus::new(handler));
+        let first = dbus.clone();
+        let worker = tokio::spawn(async move {
+            let (trace, keys) = arguments();
+            first.recognize_swipe(trace, keys, 6, "en_US".into()).await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while entered.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("worker entered candidate search");
+        let (trace, keys) = arguments();
+        assert!(
+            dbus.recognize_swipe(trace, keys, 6, "en_US".into())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("busy")
+        );
+        let completed =
+            tokio::time::timeout(Duration::from_millis(200), dbus.complete("hel", 6, "en_US"))
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(completed.is_empty());
+        assert!(
+            worker
+                .await
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("deadline")
+        );
+        let (trace, keys) = arguments();
+        assert!(
+            dbus.recognize_swipe(trace, keys, 6, "en_US".into())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("busy")
+        );
+        assert_eq!(entered.load(Ordering::SeqCst), 1);
+        release.store(true, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while dbus.swipe_slot.available_permits() != 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 }

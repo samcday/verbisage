@@ -98,6 +98,104 @@ impl DictionaryBackend for PatriciaDictionaryBackend {
         results
     }
 
+    #[cfg(feature = "swipe")]
+    fn swipe_candidates(
+        &self,
+        starts: &[String],
+        ends: &[String],
+        letters: &[u8],
+        deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        use crate::swipe::{MAX_CANDIDATES, MAX_TRIE_NODES, MAX_WORD_BYTES};
+        use patricia_dict::VisitControl;
+
+        if std::time::Instant::now() >= deadline {
+            return Err("swipe candidate search exceeded its time budget".into());
+        }
+        if starts.is_empty() || ends.is_empty() || letters.is_empty() {
+            return Ok(Vec::new());
+        }
+        let starts: Vec<_> = starts.iter().map(|s| s.to_ascii_lowercase()).collect();
+        let ends: Vec<_> = ends.iter().map(|s| s.to_ascii_lowercase()).collect();
+        let mut results: Vec<DictionaryResult> = Vec::new();
+        let mut visited = 0;
+        let mut failure = None;
+        // A filtering iterator can inspect an entire nonmatching subtree before
+        // yielding once. Check every trie node, including rejected terminals,
+        // so impossible endpoint combinations still obey the work budget.
+        self.dictionary.traverse_nodes(&mut |node| {
+            if std::time::Instant::now() >= deadline {
+                failure = Some("swipe candidate search exceeded its time budget");
+                return VisitControl::Stop;
+            }
+            if visited >= MAX_TRIE_NODES {
+                failure = Some("swipe candidate search exceeded its node budget");
+                return VisitControl::Stop;
+            }
+            visited += 1;
+            if node.prefix.len() > MAX_WORD_BYTES
+                || !node
+                    .prefix
+                    .bytes()
+                    .all(|byte| letters.contains(&byte.to_ascii_lowercase()))
+            {
+                return VisitControl::PruneChildren;
+            }
+            let word = node.prefix.to_ascii_lowercase();
+            if !starts
+                .iter()
+                .any(|start| word.starts_with(start) || start.starts_with(&word))
+            {
+                return VisitControl::PruneChildren;
+            }
+            let descend = if word.len() < MAX_WORD_BYTES {
+                VisitControl::Continue
+            } else {
+                VisitControl::PruneChildren
+            };
+            let Some(attributes) = node.attributes.as_ref() else {
+                return descend;
+            };
+            if !node.is_terminal
+                || word.len() < 2
+                || node.is_not_a_word
+                || !usable(attributes)
+                || attributes.represents_beginning_of_sentence
+                || !starts.iter().any(|start| word.starts_with(start))
+                || !ends.iter().any(|end| word.ends_with(end))
+            {
+                return descend;
+            }
+            let candidate = DictionaryResult {
+                word,
+                confidence: f64::from(attributes.probability) / 255.0,
+            };
+            if let Some(index) = results.iter().position(|r| r.word == candidate.word) {
+                if results[index].confidence >= candidate.confidence {
+                    return descend;
+                }
+                results.remove(index);
+            }
+            let index = results
+                .binary_search_by(|r| rank(r, &candidate))
+                .unwrap_or_else(|i| i);
+            if index < MAX_CANDIDATES {
+                results.insert(index, candidate);
+                if results.len() > MAX_CANDIDATES {
+                    results.pop();
+                }
+            }
+            descend
+        });
+        if let Some(message) = failure {
+            return Err(message.into());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("swipe candidate search exceeded its time budget".into());
+        }
+        Ok(results)
+    }
+
     fn query_limited(&self, queries: &[DictionaryQuery], max: usize) -> Vec<DictionaryResult> {
         let mut results: Vec<DictionaryResult> = Vec::new();
         if max == 0 {
@@ -211,5 +309,107 @@ mod tests {
         assert!(backend.predict_next(&["unrecognized"], 3).is_empty());
         assert!(backend.predict_next(&["hello"], 0).is_empty());
         assert!(!backend.is_writable());
+    }
+
+    #[cfg(feature = "swipe")]
+    fn swipe_fixture(words: &[(String, u8, u8)]) -> (tempfile::TempDir, PatriciaDictionaryBackend) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("swipe.dict");
+        Dictionary::create_empty_v403(&path, "en_US").unwrap();
+        patricia_dict::v4::writer::append_words_batch_with_flags(&path, words).unwrap();
+        let backend = PatriciaDictionaryBackend::open(&path).unwrap();
+        (temp, backend)
+    }
+
+    #[cfg(feature = "swipe")]
+    #[test]
+    fn swipe_filters_flags_unicode_and_lengths_without_pruning_real_children() {
+        use std::time::{Duration, Instant};
+        let mut words: Vec<_> = [
+            ("CAT", 200, 0),
+            ("cat", 100, 0),
+            ("cart", 190, 0),
+            ("cut", 240, 0x08),
+            ("cuts", 170, 0),
+            ("cot", 245, 0x04),
+            ("cots", 180, 0),
+            ("cant", 250, 0x01),
+            ("cäst", 255, 0),
+            ("ca-t", 255, 0),
+            ("c1t", 255, 0),
+            ("cabt", 255, 0),
+            ("c", 255, 0),
+        ]
+        .into_iter()
+        .map(|(word, score, flags)| (word.into(), score, flags))
+        .collect();
+        let longest = format!("c{}t", "a".repeat(crate::swipe::MAX_WORD_BYTES - 2));
+        words.push((longest.clone(), 90, 0));
+        // Patricia's format supports at most 48 code points. Its writer does
+        // not reject longer input yet; an over-limit sibling would create an
+        // invalid fixture that also disrupts traversal of this valid word.
+        let (_temp, backend) = swipe_fixture(&words);
+        let results = backend
+            .swipe_candidates(
+                &["c".into()],
+                &["t".into(), "s".into()],
+                b"acorstun",
+                Instant::now() + Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(
+            results.iter().map(|r| r.word.as_str()).collect::<Vec<_>>(),
+            vec!["cat", "cart", "cots", "cuts", longest.as_str()]
+        );
+        assert_eq!(results[0].confidence, 200.0 / 255.0);
+        assert_eq!(
+            results.len(),
+            results
+                .iter()
+                .map(|r| &r.word)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        );
+    }
+
+    #[cfg(feature = "swipe")]
+    #[test]
+    fn swipe_expired_search_rejects_even_when_no_word_matches() {
+        let (_temp, backend) = swipe_fixture(&[("cat".into(), 100, 0)]);
+        let result = backend.swipe_candidates(
+            &["c".into()],
+            &["z".into()],
+            b"abcdefghijklmnopqrstuvwxyz",
+            std::time::Instant::now(),
+        );
+        assert!(result.unwrap_err().contains("time budget"));
+    }
+
+    #[cfg(feature = "swipe")]
+    #[test]
+    fn swipe_node_budget_counts_nonmatching_words() {
+        use std::time::{Duration, Instant};
+        // No word ends in z. A yielded-word counter would never advance while
+        // scanning this trie; its node count exceeds the explicit work cap.
+        let words: Vec<_> = (0..=crate::swipe::MAX_TRIE_NODES)
+            .map(|mut i| {
+                let mut word = [b'a'; 6];
+                word[5] = b'b';
+                for digit in word[1..5].iter_mut().rev() {
+                    *digit = b'a' + (i % 26) as u8;
+                    i /= 26;
+                }
+                assert_eq!(i, 0, "fixture needs more base-26 digits");
+                (String::from_utf8(word.to_vec()).unwrap(), 100, 0)
+            })
+            .collect();
+        let (_temp, backend) = swipe_fixture(&words);
+        let result = backend.swipe_candidates(
+            &["a".into()],
+            &["z".into()],
+            b"abcdefghijklmnopqrstuvwxyz",
+            Instant::now() + Duration::from_secs(60),
+        );
+        assert!(result.unwrap_err().contains("node budget"));
     }
 }

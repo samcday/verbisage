@@ -213,6 +213,19 @@ impl DaemonHandler {
             .collect())
     }
 
+    #[cfg(feature = "swipe")]
+    pub fn recognize_swipe(
+        &self,
+        request: crate::swipe::SwipeRequest,
+        lang: &str,
+    ) -> Result<Vec<(String, f64)>, String> {
+        let backend = self.get_or_load_backend(lang)?;
+        if !backend.loaded {
+            return Err(format!("no dictionary loaded for '{}'", lang));
+        }
+        request.recognize(backend.dictionary.as_ref())
+    }
+
     pub fn query(
         &self,
         queries: &[DictionaryQuery],
