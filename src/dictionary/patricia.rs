@@ -189,6 +189,8 @@ mod tests {
         dictionary.append("hello", 200).unwrap();
         dictionary.append("help", 100).unwrap();
         dictionary.append("world", 150).unwrap();
+        dictionary.append("Linux", 150).unwrap();
+        dictionary.append("linum", 100).unwrap();
         dictionary.add_ngram("world", &["hello"], 230).unwrap();
         drop(dictionary);
         let backend = Arc::new(PatriciaDictionaryBackend::open(&path).unwrap());
@@ -204,6 +206,7 @@ mod tests {
         assert_eq!(backend.query_limited(&[query.clone()], 1)[0].word, "hello");
         assert_eq!(backend.query_prefixes(&[query]).len(), 2);
         assert!(backend.suggest("helo", &[]).contains(&"hello".into()));
+        assert!(crate::completion::complete(backend.as_ref(), "linux", 6).is_empty());
         assert_eq!(backend.predict_next(&["hello"], 1)[0].word, "world");
         assert!(backend.predict_next(&["unrecognized"], 3).is_empty());
         assert!(backend.predict_next(&["hello"], 0).is_empty());

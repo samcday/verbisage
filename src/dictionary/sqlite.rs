@@ -192,6 +192,73 @@ impl DictionaryBackend for PresageSqliteBackend {
         })
     }
 
+    // Bound the database result and treat user prefixes/suffixes as literal
+    // text. The legacy unbounded query API remains unchanged.
+    fn query_limited(&self, queries: &[DictionaryQuery], max: usize) -> Vec<DictionaryResult> {
+        use rusqlite::types::Value;
+        if max == 0 || queries.is_empty() {
+            return Vec::new();
+        }
+        let literal = |text: &str| {
+            text.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        };
+        let mut values = Vec::<Value>::new();
+        let mut clauses = Vec::new();
+        for query in queries {
+            let mut terms = Vec::new();
+            if let Some(prefix) = &query.prefix {
+                values.push(Value::Text(format!("{}%", literal(prefix))));
+                terms.push(format!("word LIKE ?{} ESCAPE '\\'", values.len()));
+            }
+            if let Some(suffix) = &query.suffix {
+                values.push(Value::Text(format!("%{}", literal(suffix))));
+                terms.push(format!("word LIKE ?{} ESCAPE '\\'", values.len()));
+            }
+            if let Some(min) = query.min_length {
+                values.push(Value::Integer(min.try_into().unwrap_or(i64::MAX)));
+                terms.push(format!("LENGTH(word) >= ?{}", values.len()));
+            }
+            if let Some(max) = query.max_length {
+                values.push(Value::Integer(max.try_into().unwrap_or(i64::MAX)));
+                terms.push(format!("LENGTH(word) <= ?{}", values.len()));
+            }
+            clauses.push(if terms.is_empty() {
+                "(1)".into()
+            } else {
+                format!("({})", terms.join(" AND "))
+            });
+        }
+        values.push(Value::Integer(max.try_into().unwrap_or(i64::MAX)));
+        let sql = format!(
+            "SELECT word, count FROM _1_gram WHERE {} ORDER BY CASE WHEN count > 0 THEN count ELSE -1 END DESC, word ASC LIMIT ?{}",
+            clauses.join(" OR "),
+            values.len()
+        );
+        let conn = self.conn.lock();
+        let mut statement = match conn.prepare(&sql) {
+            Ok(statement) => statement,
+            Err(error) => {
+                eprintln!("warning: sqlite completion query failed: {error}");
+                return Vec::new();
+            }
+        };
+        match statement.query_map(rusqlite::params_from_iter(values.iter()), |row| {
+            let count: i64 = row.get(1)?;
+            Ok(DictionaryResult {
+                word: row.get(0)?,
+                confidence: if count > 0 { count as f64 } else { -1.0 },
+            })
+        }) {
+            Ok(rows) => rows.filter_map(Result::ok).collect(),
+            Err(error) => {
+                eprintln!("warning: sqlite completion query failed: {error}");
+                Vec::new()
+            }
+        }
+    }
+
     fn get_frequency(&self, word: &str) -> f64 {
         let sql = "SELECT count FROM _1_gram WHERE word = ?1 LIMIT 1";
         let conn = self.conn.lock();
@@ -517,6 +584,59 @@ mod tests {
         }]);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].word, "hello");
+    }
+
+    #[test]
+    fn bounded_queries_keep_apostrophes_and_wildcards_literal() {
+        let conn = Connection::open(":memory:").unwrap();
+        setup_presage_db(&conn);
+        for word in [
+            "don't",
+            "don'ts",
+            "50%off",
+            "50xoff",
+            "under_score",
+            "underXscore",
+            "back\\slash",
+        ] {
+            conn.execute("INSERT INTO _1_gram VALUES (?1, 10)", [word])
+                .unwrap();
+        }
+        let backend =
+            PresageSqliteBackend::from_shared(SharedSqliteConnection::new(conn), false, false);
+        for (prefix, expected) in [
+            ("don'", "don't"),
+            ("50%", "50%off"),
+            ("under_", "under_score"),
+            ("back\\", "back\\slash"),
+        ] {
+            let query = DictionaryQuery {
+                prefix: Some(prefix.into()),
+                suffix: None,
+                min_length: None,
+                max_length: None,
+            };
+            assert_eq!(backend.query_limited(&[query.clone()], 1)[0].word, expected);
+            assert!(backend.query_limited(&[query], 0).is_empty());
+        }
+        let query = DictionaryQuery {
+            prefix: Some("' OR 1=1 --".into()),
+            suffix: None,
+            min_length: None,
+            max_length: None,
+        };
+        assert!(backend.query_limited(&[query], 10).is_empty());
+        let query = DictionaryQuery {
+            prefix: Some("don'".into()),
+            suffix: Some("'t".into()),
+            min_length: Some(5),
+            max_length: Some(5),
+        };
+        assert_eq!(backend.query_limited(&[query], 10)[0].word, "don't");
+        assert_eq!(
+            crate::completion::complete(&backend, "don'", 1)[0].word,
+            "don't"
+        );
     }
 
     #[test]
