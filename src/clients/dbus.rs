@@ -89,6 +89,24 @@ impl DbusClient {
         msg.body().deserialize()
     }
 
+    /// Retrieve a bounded set of completion candidates.
+    pub fn query_limited(
+        &self,
+        prefixes: &[String],
+        suffixes: &[String],
+        min_len: u32,
+        max_len: u32,
+        lang: &str,
+        max: u32,
+    ) -> zbus::Result<Vec<(String, f64)>> {
+        let msg = self.call(
+            "QueryLimited",
+            self.dest(),
+            &(prefixes, suffixes, min_len, max_len, lang, max),
+        )?;
+        msg.body().deserialize()
+    }
+
     /// Predict next word(s) from `context` for the given `lang`.
     pub fn predict(
         &self,
@@ -231,6 +249,27 @@ mod tests {
         let o: &[String] = &[String::from("o")];
         let results = client.query(hel, o, 0, 0, "en_US").unwrap();
         assert!(!results.is_empty());
+
+        let results = client.query_limited(hel, &[], 0, 0, "en_US", 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].0.starts_with("hel"));
+        assert!(
+            client
+                .query_limited(hel, &[], 0, 0, "en_US", 0)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            client
+                .query_limited(&vec!["h".into(); 17], &[], 0, 0, "en_US", 1)
+                .is_err()
+        );
+        assert!(
+            client
+                .query_limited(hel, &[], 0, 0, "../../outside", 1)
+                .is_err()
+        );
+        assert!(client.query_limited(hel, &[], 0, 0, "zz_ZZ", 1).is_err());
 
         drop(client);
     }

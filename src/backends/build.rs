@@ -46,6 +46,7 @@ pub fn build_backend(
 ) {
     match def.backend_type {
         BackendType::File => build_file(def, lang, lp),
+        BackendType::Patricia => build_patricia(def, lang),
         BackendType::Sqlite => build_sqlite(def, lang, lp),
         BackendType::Marisa => build_marisa(def, lang, lp),
         BackendType::Hunspell => build_hunspell(def, lang, lp),
@@ -543,7 +544,7 @@ fn resolve_files(def: &ResolvedBackendDef, lang: &str, lp: &LanguagePaths) -> Ve
         BackendType::File => lp.resolve_dict_files(),
         BackendType::Sqlite => lp.resolve_sqlite_files(),
         BackendType::Marisa => lp.resolve_marisa_files(),
-        BackendType::Hunspell => Vec::new(),
+        BackendType::Hunspell | BackendType::Patricia => Vec::new(),
     }
 }
 
@@ -618,7 +619,7 @@ pub fn compose_chain(
         }
     }
 
-    let loaded = !dict_backends.is_empty() || !predictors.is_empty();
+    let loaded = dict_backends.iter().any(|dict| !dict.is_empty()) || !predictors.is_empty();
 
     let merged_dict: Box<dyn DictionaryBackend> = if dict_backends.is_empty() {
         Box::new(FileDictionaryBackend::new())
@@ -658,4 +659,34 @@ pub fn compose_chain(
         spellchecker,
         predictor,
     }
+}
+
+
+#[cfg(feature = "patricia")]
+fn build_patricia(
+    def: &ResolvedBackendDef,
+    lang: &str,
+) -> (Box<dyn DictionaryBackend>, Option<Box<dyn SpellChecker>>, Option<Box<dyn Predictor>>) {
+    let path = def.path.as_ref().map(|p| expand_tilde(&p.replace("{lang}", lang)))
+        .unwrap_or_else(|| PathBuf::from(def.system_dir.as_deref()
+            .unwrap_or("/usr/share/android-patricia-dictionaries")).join(format!("{lang}.dict")));
+    match crate::dictionary::patricia::PatriciaDictionaryBackend::open(&path) {
+        Ok(backend) => {
+            let backend = Arc::new(backend);
+            (Box::new(backend.clone()), Some(Box::new(backend.clone())), Some(Box::new(backend)))
+        }
+        Err(error) => {
+            eprintln!("warning: cannot load Patricia dictionary '{}': {error}", path.display());
+            (Box::new(FileDictionaryBackend::new()), None, None)
+        }
+    }
+}
+
+#[cfg(not(feature = "patricia"))]
+fn build_patricia(
+    _def: &ResolvedBackendDef,
+    _lang: &str,
+) -> (Box<dyn DictionaryBackend>, Option<Box<dyn SpellChecker>>, Option<Box<dyn Predictor>>) {
+    eprintln!("warning: patricia feature not enabled");
+    (Box::new(FileDictionaryBackend::new()), None, None)
 }

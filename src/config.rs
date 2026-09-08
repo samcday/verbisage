@@ -50,7 +50,16 @@ pub struct Config {
 
 pub fn default_config_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-    PathBuf::from(home).join(".config/verbisage/config.toml")
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| PathBuf::from(home).join(".config"));
+    let user_config = config_dir.join("verbisage/config.toml");
+    if user_config.exists() {
+        user_config
+    } else {
+        PathBuf::from("/etc/verbisage/config.toml")
+    }
 }
 
 pub fn load_config(path: &PathBuf) -> Option<Config> {

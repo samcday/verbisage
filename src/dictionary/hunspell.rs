@@ -75,6 +75,10 @@ impl Default for HunspellDictionaryBackend {
 }
 
 impl DictionaryBackend for HunspellDictionaryBackend {
+    fn is_empty(&self) -> bool {
+        self.words.is_empty()
+    }
+
     fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
         let mut all_results = Vec::new();
 
