@@ -18,8 +18,10 @@ hunspell = ["dep:zspell"]
 marisa = ["dep:rsmarisa"]
 dbus = ["dep:zbus", "dep:tokio"]
 patricia = ["dep:patricia_dict"]
+swipe = ["patricia", "dbus", "dep:drift_type"]
 
 [dependencies]
+drift_type = { git = "https://codeberg.org/eclexic/drift_type", rev = "f63256a5bb973b10a4e11e190cfbb105fc89da0a", optional = true }
 patricia_dict = { path = "patricia_dict", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -30,7 +32,7 @@ rusqlite = { version = "0.32", optional = true }
 zspell = { version = "0.5", features = ["unstable-suggestions"], optional = true }
 rsmarisa = { version = "0.4", optional = true }
 zbus = { version = "5", features = ["p2p"], optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

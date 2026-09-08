@@ -23,3 +23,6 @@ pub use dictionary::PresageSqliteBackend;
 
 #[cfg(feature = "dbus")]
 pub use clients::DbusClient;
+
+#[cfg(feature = "swipe")]
+pub mod swipe;
