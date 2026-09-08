@@ -1,5 +1,9 @@
 # PocketFed integration
 
+The baseline below describes the stable `codex/pocketfed` branch. This
+`codex/swipe-prototype` branch adds the changes and updated reader pin described
+in [SWIPE.md](SWIPE.md).
+
 This repository imports the public history of
 [InsanePrawn/verbisage](https://gitlab.com/InsanePrawn/verbisage). GitHub does not
 identify the cross-host import as a native GitHub fork. The integration branch

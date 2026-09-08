@@ -1,5 +1,9 @@
 # Verbisage
 
+This `codex/swipe-prototype` branch adds experimental whole-word gesture
+recognition. See [SWIPE.md](SWIPE.md) for its API, build and replay checks.
+The stable integration remains on `codex/pocketfed`.
+
 Verbisage provides dictionary queries, spelling suggestions and prediction through
 Rust, a command-line client, and a session D-Bus daemon.
 
