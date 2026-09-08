@@ -1,0 +1,60 @@
+.TH VERBISAGE 1 "September 2026" "Verbisage 0.1.0" "User Commands"
+.SH NAME
+verbisage \- query word dictionaries and spelling suggestions
+.SH SYNOPSIS
+.B verbisage
+.RI [ options ] " command " [ arguments ]
+.SH DESCRIPTION
+Verbisage checks words, suggests corrections, queries dictionary entries and
+predicts words. It can use a local backend or connect to the session D-Bus
+daemon. The packaged configuration selects the D-Bus client and a read-only
+English Patricia dictionary.
+.SH COMMANDS
+.TP
+.B check
+Check whether a word exists in the selected dictionary.
+.TP
+.B correct
+Return spelling suggestions.
+.TP
+.B query
+Find words matching prefix, suffix or length constraints.
+.TP
+.B predict
+Suggest a next word from preceding context.
+.TP
+.B config-dump
+Display the effective configuration.
+.TP
+.B word-add, ngram-bump
+Request dictionary updates. The packaged system Patricia dictionary does not
+support these operations.
+.PP
+Use
+.B verbisage command --help
+for command arguments and options.
+.SH OPTIONS
+.TP
+.BI --config " path"
+Read an explicit configuration file.
+.TP
+.BI --language " tag"
+Select a language, such as en_US.
+.TP
+.BI --mode " mode"
+Select standalone or dbus client operation.
+.TP
+.BI --backend " chain"
+Select a backend chain for local operation.
+.TP
+.B --verbose
+Write diagnostic details to standard error.
+.TP
+.B --help
+Display all supported options.
+.SH FILES
+An existing configuration under an absolute XDG_CONFIG_HOME, or otherwise
+~/.config/verbisage/config.toml, takes precedence over
+/etc/verbisage/config.toml unless --config is supplied.
+.SH SEE ALSO
+.BR verbisaged (1)

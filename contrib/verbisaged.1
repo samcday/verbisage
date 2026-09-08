@@ -1,0 +1,56 @@
+.TH VERBISAGED 1 "September 2026" "Verbisage 0.1.0" "User Commands"
+.SH NAME
+verbisaged \- serve dictionary completion and spelling requests
+.SH SYNOPSIS
+.B verbisaged
+.RI [ options ]
+.SH DESCRIPTION
+Verbisaged serves dictionary operations over the session D-Bus or a
+line-oriented JSON protocol on standard input and output. The packaged
+session service starts it on demand with --mode dbus. It does not require
+a system-bus service or administrator privileges.
+.SH OPTIONS
+.TP
+.BI --mode " mode"
+Select dbus or stdio server operation.
+.TP
+.BI --config " path"
+Read an explicit configuration file.
+.TP
+.BI --language " tag"
+Set the default language, such as en_US.
+.TP
+.BI --backend " chain"
+Override the configured backend chain.
+.TP
+.B --verbose
+Write diagnostic details to standard error.
+.TP
+.B --help
+Display all supported dictionary and configuration options.
+.SH D-BUS INTERFACE
+The session name is org.verbisage.Dictionary, object path
+/org/verbisage/Dictionary and interface org.verbisage.Dictionary1.
+.PP
+Complete(word, max, language) returns ranked word/score pairs combining
+current-word prefixes and single-edit corrections. It omits the exact input,
+which callers should preserve as a separate literal choice. Scores are
+relative heuristics, not probabilities. The maximum response is 100 entries;
+input is limited to 128 Unicode characters and 512 UTF-8 bytes.
+.PP
+QueryLimited, Query, Suggest, IsCorrect, Frequency and Predict remain
+available. AddWord and BumpNgram report unsupported operations for the
+read-only packaged Patricia data.
+.SH FILES
+.TP
+.B /etc/verbisage/config.toml
+Default system configuration.
+.TP
+.B ~/.config/verbisage/config.toml
+An existing user configuration overrides the system file. An absolute
+XDG_CONFIG_HOME replaces ~/.config. An explicit --config overrides both.
+.TP
+.B /usr/share/android-patricia-dictionaries/en_US.dict
+English dictionary supplied by the separate language-data package.
+.SH SEE ALSO
+.BR verbisage (1)

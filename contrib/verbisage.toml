@@ -1,0 +1,13 @@
+# The system dictionary is read-only. User learning is not enabled.
+backend = "patricia"
+language_default = "en_US"
+
+[backends.patricia]
+type = "patricia"
+system_dir = "/usr/share/android-patricia-dictionaries"
+
+[daemon]
+mode = "dbus"
+
+[client]
+mode = "dbus"
