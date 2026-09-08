@@ -185,6 +185,23 @@ impl DaemonHandler {
         Ok(suggestions)
     }
 
+    pub fn complete(
+        &self,
+        word: &str,
+        max: usize,
+        lang: &str,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        let backend = self.get_or_load_backend(lang)?;
+        if !backend.loaded {
+            return Err(format!("no dictionary loaded for '{}'", lang));
+        }
+        Ok(crate::completion::complete(
+            backend.dictionary.as_ref(),
+            word,
+            max,
+        ))
+    }
+
     pub fn query(
         &self,
         queries: &[DictionaryQuery],

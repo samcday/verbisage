@@ -53,6 +53,37 @@ impl VerbisageDbus {
             .map_err(log_and_err)
     }
 
+    /// Rank current-word prefixes and single-edit corrections together.
+    /// Scores are relative heuristics, not probabilities. The caller keeps
+    /// the exact typed literal as an independent choice. Known words and
+    /// fragments shorter than three characters receive prefix matches only.
+    /// Empty/whitespace input or max=0 returns []; max is capped at 100.
+    #[zbus(out_args("result"))]
+    async fn complete(
+        &self,
+        word: &str,
+        max: u32,
+        lang: &str,
+    ) -> Result<Vec<(String, f64)>, FdoError> {
+        if word.len() > 512 || word.chars().count() > 128 || word.chars().any(char::is_control) {
+            return Err(FdoError::InvalidArgs(
+                "completion word is too large or contains control characters".into(),
+            ));
+        }
+        if max == 0 || word.is_empty() || word.chars().any(char::is_whitespace) {
+            return Ok(Vec::new());
+        }
+        self.handler
+            .complete(word, max.min(100) as usize, lang)
+            .map(|results| {
+                results
+                    .into_iter()
+                    .map(|r| (r.word, r.confidence))
+                    .collect()
+            })
+            .map_err(log_and_err)
+    }
+
     /// Search the dictionary for words matching prefix and/or suffix
     /// constraints.  When both `prefixes` and `suffixes` are empty every
     /// entry is a candidate (subject to length bounds).

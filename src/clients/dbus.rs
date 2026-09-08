@@ -71,6 +71,12 @@ impl DbusClient {
         msg.body().deserialize()
     }
 
+    /// Rank current-word completions and corrections in one bounded response.
+    pub fn complete(&self, word: &str, max: u32, lang: &str) -> zbus::Result<Vec<(String, f64)>> {
+        let message = self.call("Complete", self.dest(), &(word, max, lang))?;
+        message.body().deserialize()
+    }
+
     /// Query the dictionary with prefix/suffix/length constraints for `lang`.
     /// Multiple prefixes and suffixes produce the Cartesian product of queries.
     pub fn query(
@@ -270,6 +276,16 @@ mod tests {
                 .is_err()
         );
         assert!(client.query_limited(hel, &[], 0, 0, "zz_ZZ", 1).is_err());
+
+        let completed = client.complete("helo", 6, "en_US").unwrap();
+        assert_eq!(completed[0].0, "hello");
+        assert_eq!(client.complete("helo", 1, "en_US").unwrap(), completed[..1]);
+        assert!(client.complete("hello", 0, "en_US").unwrap().is_empty());
+        assert!(client.complete("", 6, "en_US").unwrap().is_empty());
+        assert!(client.complete("two words", 6, "en_US").unwrap().is_empty());
+        assert!(client.complete(&"a".repeat(129), 6, "en_US").is_err());
+        assert!(client.complete("hello", 6, "../invalid").is_err());
+        assert!(client.complete("hello", 6, "zz_ZZ").is_err());
 
         drop(client);
     }

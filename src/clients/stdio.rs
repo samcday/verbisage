@@ -89,8 +89,30 @@ impl StdioClient {
     pub fn spawn(args: &[&str]) -> Result<Self, ClientError> {
         let exe = find_binary();
 
+        // Accept existing callers that already select stdio, but never let
+        // a contradictory transport turn a pipe client into a D-Bus server.
+        let mut options = Vec::new();
+        let mut remaining = args.iter().copied();
+        while let Some(argument) = remaining.next() {
+            let mode = if argument == "--mode" {
+                Some(remaining.next().unwrap_or(""))
+            } else {
+                argument.strip_prefix("--mode=")
+            };
+            if let Some(mode) = mode {
+                if mode != "stdio" {
+                    return Err(ClientError::Spawn(
+                        "StdioClient requires stdio transport".into(),
+                    ));
+                }
+            } else {
+                options.push(argument);
+            }
+        }
         let mut cmd = Command::new(&exe);
-        cmd.args(args)
+        // This client owns its transport even when the system config selects D-Bus.
+        cmd.args(["--mode", "stdio"])
+            .args(options)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
@@ -301,7 +323,13 @@ mod tests {
             writeln!(f, "helium").unwrap();
         }
 
+        let config = dir.join("config.toml");
+        std::fs::write(&config, "[daemon]\nmode=\"dbus\"\n").unwrap();
         let mut client = StdioClient::spawn(&[
+            "--mode",
+            "stdio",
+            "--config",
+            &config.to_string_lossy(),
             "--backend",
             "file",
             "--system-data-dir",
@@ -376,6 +404,8 @@ mod tests {
         let exe = find_binary();
         let mut child = Command::new(&exe)
             .args([
+                "--mode",
+                "stdio",
                 "--backend",
                 "file",
                 "--system-data-dir",
@@ -406,6 +436,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn stdio_client_rejects_contradictory_transport_before_spawn() {
+        assert!(matches!(
+            StdioClient::spawn(&["--mode=dbus"]),
+            Err(ClientError::Spawn(_))
+        ));
+        assert!(matches!(
+            StdioClient::spawn(&["--mode", "standalone"]),
+            Err(ClientError::Spawn(_))
+        ));
+    }
+
     /// Test word_add method through stdio client.
     #[test]
     fn stdio_client_word_add() {
@@ -418,6 +460,7 @@ mod tests {
         }
 
         let mut client = StdioClient::spawn(&[
+            "--mode=stdio",
             "--backend",
             "file",
             "--language",
