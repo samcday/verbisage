@@ -316,6 +316,26 @@ impl DaemonHandler {
         )
     }
 
+    #[cfg(feature = "swipe")]
+    pub fn recognize_swipe(
+        &self,
+        request: crate::swipe::SwipeRequest,
+        lang: &str,
+    ) -> Result<Vec<(String, f64)>, String> {
+        if request.max_results() > self.config.max_complete_results {
+            return Err(format!(
+                "requested max {} exceeds swipe cap {}",
+                request.max_results(),
+                self.config.max_complete_results
+            ));
+        }
+        let backend = self.get_or_load_backend(lang)?;
+        if !backend.loaded {
+            return Err(format!("no dictionary loaded for '{}'", lang));
+        }
+        request.recognize(backend.dictionary.as_ref())
+    }
+
     pub fn query(
         &self,
         queries: &[DictionaryQuery],

@@ -18,9 +18,11 @@ hunspell = ["dep:zspell"]
 marisa = ["dep:rsmarisa"]
 dbus = ["dep:zbus", "dep:tokio"]
 patricia = ["dep:patricia_dict"]
+swipe = ["patricia", "dbus", "dep:drift_type"]
 
 [dependencies]
 keyboard-layout = { path = "../keyboard_layout", features = ["serde", "heli-simple", "heli-json", "unicode-keyboard3", "xkb"] }
+drift_type = { path = "../drift-type", optional = true }
 patricia_dict = { path = "patricia_dict", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

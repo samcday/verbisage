@@ -158,6 +158,18 @@ pub trait DictionaryBackend: Send + Sync {
         Ok(results)
     }
 
+    /// Bounded candidate snapshot for the optional whole-word swipe prototype.
+    #[cfg(feature = "swipe")]
+    fn swipe_candidates(
+        &self,
+        _starts: &[String],
+        _ends: &[String],
+        _letters: &[u8],
+        _deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        Err("swipe recognition requires a Patricia backend".into())
+    }
+
     /// Retrieve the normalized frequency for a word: its 0.0–1.0 share of
     /// the backend's unigram mass, or -1.0 when the word is unknown or the
     /// backend carries no frequency data. The lookup itself is exact.
@@ -218,6 +230,17 @@ impl<T: DictionaryBackend> DictionaryBackend for Arc<T> {
         deadline: std::time::Instant,
     ) -> Result<Vec<DictionaryResult>, String> {
         (**self).search_words(search, deadline)
+    }
+
+    #[cfg(feature = "swipe")]
+    fn swipe_candidates(
+        &self,
+        starts: &[String],
+        ends: &[String],
+        letters: &[u8],
+        deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        (**self).swipe_candidates(starts, ends, letters, deadline)
     }
 
     fn get_frequency(&self, word: &str) -> f64 {
