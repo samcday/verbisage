@@ -57,7 +57,8 @@ impl VerbisageDbus {
     /// Scores are relative heuristics, not probabilities. The caller keeps
     /// the exact typed literal as an independent choice. Known words and
     /// fragments shorter than three characters receive prefix matches only.
-    /// Empty/whitespace input or max=0 returns []; max is capped at 100.
+    /// Empty/whitespace input or max=0 returns []; max above the configured
+    /// Complete cap (default 1_000) is rejected by the handler.
     #[zbus(out_args("result"))]
     async fn complete(
         &self,
@@ -74,7 +75,7 @@ impl VerbisageDbus {
             return Ok(Vec::new());
         }
         self.handler
-            .complete(word, max.min(100) as usize, lang)
+            .complete(word, max as usize, lang)
             .map(|results| {
                 results
                     .into_iter()
@@ -124,9 +125,10 @@ impl VerbisageDbus {
             .map_err(log_and_err)
     }
 
-    /// Query completion candidates with a bounded response. The limit is
-    /// clamped to 100; zero returns no candidates. Query remains available
-    /// for clients that need the complete dictionary result set.
+    /// Query completion candidates with a bounded response. Zero max returns
+    /// no candidates; max above the configured bounded-query cap (default
+    /// 200_000) is rejected by the handler. Query remains available for
+    /// clients that need the complete dictionary result set.
     #[zbus(out_args("result"))]
     async fn query_limited(
         &self,
@@ -150,7 +152,7 @@ impl VerbisageDbus {
         }
         let queries = dictionary_queries(prefixes, suffixes, min_len, max_len);
         self.handler
-            .query_limited(&queries, lang, max.min(100) as usize)
+            .query_limited(&queries, lang, max as usize)
             .map(|results| {
                 results
                     .into_iter()

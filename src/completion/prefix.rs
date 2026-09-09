@@ -4,7 +4,6 @@
 //! Semantics frozen: merge intact prefixes with all usable one-edit candidates
 //! before truncating. Scores are relative heuristics, not probabilities.
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use crate::dictionary::{DictionaryBackend, DictionaryQuery, DictionaryResult};
 
@@ -128,13 +127,13 @@ pub fn complete(backend: &dyn DictionaryBackend, input: &str, max: usize) -> Vec
 /// pretext maps to the branch's empty-input path (returns empty); cap-knob
 /// enforcement and timeout plumbing are deferred to the transport layer and
 /// `android.rs`.
-pub struct PrefixCompleter {
-    backend: Arc<dyn DictionaryBackend>,
+pub struct PrefixCompleter<'a> {
+    backend: &'a dyn DictionaryBackend,
     config: CompletionConfig,
 }
 
-impl PrefixCompleter {
-    pub fn new(backend: Arc<dyn DictionaryBackend>) -> Self {
+impl<'a> PrefixCompleter<'a> {
+    pub fn new(backend: &'a dyn DictionaryBackend) -> Self {
         Self {
             backend,
             config: CompletionConfig::default(),
@@ -147,11 +146,11 @@ impl PrefixCompleter {
     }
 }
 
-impl CompletionEngine for PrefixCompleter {
+impl CompletionEngine for PrefixCompleter<'_> {
     fn complete(&self, prefix: Option<&str>, max: usize) -> Vec<CompletionCandidate> {
         let input = prefix.unwrap_or("");
         let lowered = input.to_lowercase();
-        complete(&*self.backend, input, max)
+        complete(self.backend, input, max)
             .into_iter()
             .map(|r| {
                 // The transplanted ranking gives intact prefix continuations

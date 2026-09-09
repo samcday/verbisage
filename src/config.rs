@@ -27,6 +27,12 @@ pub struct ClientConfig {
 pub struct DaemonConfigSection {
     /// Daemon transport mode: "stdio" (default) or "dbus".
     pub mode: Option<String>,
+    /// Cap on accepted `Complete` `max` values (default 1_000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_complete_results: Option<usize>,
+    /// Cap on accepted bounded-query `max` values (default 200_000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_query_results: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]

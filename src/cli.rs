@@ -87,6 +87,14 @@ pub struct SharedArgs {
     #[arg(long)]
     pub verbose: bool,
 
+    /// Cap on accepted `Complete` `max` values (default 1_000).
+    #[arg(long)]
+    pub max_complete_results: Option<usize>,
+
+    /// Cap on accepted bounded-query `max` values (default 200_000).
+    #[arg(long)]
+    pub max_query_results: Option<usize>,
+
     /// Pattern overrides — set from config file, not a CLI argument.
     #[arg(skip)]
     pub patterns: PatternOverrides,

@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::json;
 
 use crate::backends::resolve_chain_with_backcompat;
+use crate::completion::{CompletionEngine, PrefixCompleter};
 use crate::dictionary::paths::LanguagePaths;
 use crate::dictionary::{
     DictionaryBackend, DictionaryQuery, DictionaryResult, FileDictionaryBackend,
@@ -191,15 +192,25 @@ impl DaemonHandler {
         max: usize,
         lang: &str,
     ) -> Result<Vec<DictionaryResult>, String> {
+        if max > self.config.max_complete_results {
+            return Err(format!(
+                "requested max {} exceeds Complete cap {}",
+                max, self.config.max_complete_results
+            ));
+        }
         let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
         }
-        Ok(crate::completion::complete(
-            backend.dictionary.as_ref(),
-            word,
-            max,
-        ))
+        let engine = PrefixCompleter::new(backend.dictionary.as_ref());
+        Ok(engine
+            .complete(Some(word), max)
+            .into_iter()
+            .map(|c| DictionaryResult {
+                word: c.word,
+                confidence: c.score,
+            })
+            .collect())
     }
 
     pub fn query(
@@ -220,6 +231,12 @@ impl DaemonHandler {
         lang: &str,
         max: usize,
     ) -> Result<Vec<DictionaryResult>, String> {
+        if max > self.config.max_query_results {
+            return Err(format!(
+                "requested max {} exceeds bounded-query cap {}",
+                max, self.config.max_query_results
+            ));
+        }
         let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
@@ -494,5 +511,59 @@ mod tests {
         let resp = handler.handle(req);
         assert!(resp.error.is_some());
         assert!(resp.error.as_ref().unwrap().contains("no predictor"));
+    }
+
+    #[test]
+    fn handler_complete_uses_engine_and_enforces_cap() {
+        let mut dict = FileDictionaryBackend::new();
+        dict.add_word_mut("hello".to_string(), 120.0);
+        dict.add_word_mut("help".to_string(), 149.0);
+        dict.add_word_mut("helium".to_string(), 80.0);
+        let handler = DaemonHandler::new(Box::new(dict), None, None, "en_US".into());
+
+        let results = handler.complete("hel", 6, "en_US").unwrap();
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|r| r.word.starts_with("hel")));
+
+        let err = handler.complete("hel", 1_001, "en_US").unwrap_err();
+        assert!(err.contains("exceeds"), "unexpected error: {}", err);
+        // At-cap requests pass the gate.
+        assert!(handler.complete("hel", 1_000, "en_US").is_ok());
+    }
+
+    #[test]
+    fn handler_query_limited_enforces_cap() {
+        let dict = FileDictionaryBackend::new();
+        let handler = DaemonHandler::new(Box::new(dict), None, None, "en_US".into());
+        let query = DictionaryQuery {
+            prefix: Some("hel".to_string()),
+            suffix: None,
+            min_length: None,
+            max_length: None,
+        };
+        let err = handler
+            .query_limited(&[query.clone()], "en_US", 200_001)
+            .unwrap_err();
+        assert!(err.contains("exceeds"), "unexpected error: {}", err);
+        assert!(handler.query_limited(&[query], "en_US", 200_000).is_ok());
+    }
+
+    #[test]
+    fn handler_caps_are_configurable() {
+        let mut cfg = DaemonConfig::default_for("en_US");
+        cfg.max_complete_results = 2;
+        cfg.max_query_results = 5;
+        let handler = DaemonHandler::with_config(cfg);
+        // Cap checks run before any backend is loaded.
+        let err = handler.complete("hel", 3, "en_US").unwrap_err();
+        assert!(err.contains("exceeds"), "unexpected error: {}", err);
+        let query = DictionaryQuery {
+            prefix: Some("hel".to_string()),
+            suffix: None,
+            min_length: None,
+            max_length: None,
+        };
+        let err = handler.query_limited(&[query], "en_US", 6).unwrap_err();
+        assert!(err.contains("exceeds"), "unexpected error: {}", err);
     }
 }

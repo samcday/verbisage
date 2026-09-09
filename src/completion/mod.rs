@@ -29,9 +29,11 @@ pub struct CompletionCandidate {
 /// timeout plumbing land with the transport layer and `android.rs`.
 #[derive(Debug, Clone)]
 pub struct CompletionConfig {
-    /// Transport-level cap on accepted `max` values. Oversized requests are
-    /// rejected, never silently clamped.
-    pub max_results: usize,
+    /// Transport-level cap on accepted `Complete` `max` values. Oversized
+    /// requests are rejected, never silently clamped.
+    pub max_complete_results: usize,
+    /// Transport-level cap on accepted bounded-query `max` values.
+    pub max_query_results: usize,
     /// Deadline for a single completion request.
     pub response_deadline: Duration,
     /// Time budget for dictionary-side candidate search.
@@ -41,7 +43,8 @@ pub struct CompletionConfig {
 impl Default for CompletionConfig {
     fn default() -> Self {
         Self {
-            max_results: 200_000,
+            max_complete_results: 1_000,
+            max_query_results: 200_000,
             response_deadline: Duration::from_secs(5),
             search_budget: Duration::from_secs(5),
         }

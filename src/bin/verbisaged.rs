@@ -45,6 +45,21 @@ fn main() {
         cfg.named_backends = backends.clone();
     }
 
+    // Config-file result caps apply only when the corresponding CLI flags are
+    // absent (CLI > config file > built-in default).
+    if let Some(section) = config.as_ref().and_then(|c| c.daemon.as_ref()) {
+        if shared.max_complete_results.is_none() {
+            if let Some(v) = section.max_complete_results {
+                cfg.max_complete_results = v;
+            }
+        }
+        if shared.max_query_results.is_none() {
+            if let Some(v) = section.max_query_results {
+                cfg.max_query_results = v;
+            }
+        }
+    }
+
     veprintln!("config file: {}", config_path.as_ref().unwrap().display());
     veprintln!("backend chain: {}", cfg.backend_chain);
     veprintln!("default language: {}", cfg.default_lang);
