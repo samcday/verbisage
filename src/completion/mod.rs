@@ -63,8 +63,8 @@ pub trait CompletionEngine: Send + Sync {
 /// Smoothed interpolated n-gram probability for `candidate` given `context`,
 /// using uniform per-order weights and count=1 smoothing for unseen n-grams.
 ///
-/// Mirrors [`crate::spellcheck::suggest::interpolate_score`]; shared here so
-/// future engines (`android.rs`) reuse it instead of duplicating it.
+/// Mirrors the private `interpolate_score` in `spellcheck::suggest`; shared
+/// here so future engines (`android.rs`) reuse it instead of duplicating it.
 ///
 /// Currently unused by the transplanted prefix engine.
 #[allow(dead_code)]

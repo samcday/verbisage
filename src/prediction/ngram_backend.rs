@@ -3,6 +3,17 @@
 /// Implementors provide raw counts and candidate words without any scoring
 /// logic.  The [`SmoothedPredictor`](crate::prediction::smoothed::SmoothedPredictor)
 /// consumes this trait to compute interpolated probabilities.
+///
+/// Key conventions, shared with
+/// [`DictionaryBackend`](crate::dictionary::DictionaryBackend):
+///
+/// * Counts are raw native units (`u64`); normalization to probabilities
+///   happens in consumers, dividing by [`unigram_total`](Self::unigram_total)
+///   or the relevant context count.
+/// * Keys are matched exactly. N‑gram stores are expected to hold pre-folded
+///   (typically lowercased) keys; callers fold context and lookup words with
+///   the store's configured normalization before calling. All text is NFC
+///   (see the text conventions on the dictionary module).
 pub trait NgramBackend: Send + Sync {
     /// Maximum n‑gram order supported (e.g., 3 for a trigram model).
     fn max_order(&self) -> usize;
@@ -31,6 +42,9 @@ pub trait NgramBackend: Send + Sync {
     /// `ngram` is the full sequence including context and next word
     /// (e.g., `["hello", "world"]` for bigram "hello world").
     /// For unigrams, `ngram` is `["world"]`.
+    ///
+    /// `delta` is in native count units. Integer stores round to nearest
+    /// rather than truncating fractional deltas.
     ///
     /// `save_unknown`: if true, create the n-gram with frequency = `delta`
     /// when it doesn't exist; if false, return Err for unknown n-grams.

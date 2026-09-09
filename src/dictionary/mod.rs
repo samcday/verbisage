@@ -33,14 +33,31 @@ pub mod sqlite;
 pub use sqlite::PresageSqliteBackend;
 
 // ---------------------------------------------------------------------------
+// Text conventions
+// ---------------------------------------------------------------------------
+//
+// The library-wide internal text default is NFC. All text crossing backend
+// API boundaries — queries, lookups, stored keys, returned words — is NFC.
+// Caller input is assumed NFC; backends convert at ingest (text-built
+// backends normalize words on load) and assume NFC on hot query paths
+// without re-normalizing per call.
+//
+// Matching is exact (case-sensitive) by default. Backends perform no
+// implicit case folding or other normalization; any normalization
+// (lowercasing, transliteration, accent handling) is configured at backend
+// construction time, never applied silently inside a query. Normalization
+// pipelines, where used, start with an NFC stage.
+
+// ---------------------------------------------------------------------------
 // Query types
 // ---------------------------------------------------------------------------
 
 /// Constraint set for filtering dictionary entries.
 ///
-/// Every field is optional — omitted fields are unconstrained.  All string
-/// comparison is case-sensitive; callers should normalise to lowercase before
-/// building a query if case-insensitive matching is desired.
+/// Every field is optional — omitted fields are unconstrained. All string
+/// comparison is exact and case-sensitive (see the text conventions above);
+/// callers that want case-insensitive matching normalize both sides
+/// explicitly before building a query.
 #[derive(Debug, Clone)]
 pub struct DictionaryQuery {
     pub prefix: Option<String>,
@@ -53,8 +70,10 @@ pub struct DictionaryQuery {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DictionaryResult {
     pub word: String,
-    /// Normalised frequency in 0.0–1.0, or -1.0 when the backend has no
-    /// frequency information for this entry.
+    /// Normalized frequency in 0.0–1.0 (the word's share of the backend's
+    /// unigram mass), or -1.0 when the backend has no frequency information
+    /// for this entry. Backends keep native raw counts in storage and
+    /// convert at this boundary.
     pub confidence: f64,
 }
 
@@ -86,10 +105,13 @@ pub trait DictionaryBackend: Send + Sync {
         results
     }
 
-    /// Retrieve the normalised frequency for a word (0.0–1.0).
+    /// Retrieve the normalized frequency for a word: its 0.0–1.0 share of
+    /// the backend's unigram mass, or -1.0 when the word is unknown or the
+    /// backend carries no frequency data. The lookup itself is exact.
     fn get_frequency(&self, word: &str) -> f64;
 
-    /// Return `true` when the word exists in the dictionary.
+    /// Return `true` when the word exists in the dictionary, compared
+    /// exactly (no case folding or normalization).
     fn contains(&self, word: &str) -> bool;
 
     /// Whether this backend supports write operations.
@@ -99,9 +121,9 @@ pub trait DictionaryBackend: Send + Sync {
 
     /// Add a word to the dictionary.
     ///
-    /// For backends that store frequency, `frequency` is used.
-    /// For backends that only track membership (MARISA, Hunspell),
-    /// `frequency` is ignored.
+    /// `frequency` is in the backend's native count units and is normalized
+    /// on read (see `get_frequency`). For backends that only track
+    /// membership (MARISA, Hunspell), `frequency` is ignored.
     ///
     /// `allow_existing`: if true, overwrite when the word exists;
     /// if false, return Err when the word already exists.
