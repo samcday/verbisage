@@ -8,6 +8,7 @@ use verbisage::config::{default_config_path, load_config};
 use verbisage::debug;
 use verbisage::dictionary::paths::expand_tilde;
 use verbisage::dictionary::{DictionaryQuery, DictionaryResult};
+use verbisage::veprintln;
 
 #[cfg(feature = "dbus")]
 use verbisage::clients::DbusClient;
@@ -331,13 +332,26 @@ fn main() {
 fn load_optional_layout(value: Option<&str>) -> Option<keyboard_layout::physical::RowLayout> {
     let value = value?;
     let path = std::path::Path::new(value);
-    let result = if path.is_file() {
+    let is_file = path.is_file();
+    veprintln!(
+        "layout: loading {} '{}'",
+        if is_file { "layout file" } else { "xkb layout" },
+        value
+    );
+    let result = if is_file {
         load_layout_rows(path)
     } else {
         load_xkb_layout(value)
     };
     match result {
-        Ok(rows) => Some(rows),
+        Ok(rows) => {
+            let keys: usize = rows.rows.iter().map(|row| row.keys.len()).sum();
+            veprintln!(
+                "layout: loaded {} rows, {keys} keys",
+                rows.rows.len()
+            );
+            Some(rows)
+        }
         Err(error) => {
             eprintln!("layout error: {error}");
             std::process::exit(1);
@@ -349,7 +363,20 @@ fn load_xkb_layout(name: &str) -> Result<keyboard_layout::physical::RowLayout, S
     use std::str::FromStr;
     let source = keyboard_layout::readers::xkb::XkbSource::from_str(name)
         .map_err(|error| error.to_string())?;
-    keyboard_layout::readers::xkb::parse(&source).map_err(|error| error.to_string())
+    veprintln!(
+        "layout: xkb layout='{}' variant={:?} model={:?} rules='{}'",
+        source.layout,
+        source.variant,
+        source.model,
+        source.rules
+    );
+    let rows = keyboard_layout::readers::xkb::parse(&source).map_err(|error| error.to_string())?;
+    veprintln!(
+        "layout: xkb '{}' resolved ({} rows)",
+        name,
+        rows.rows.len()
+    );
+    Ok(rows)
 }
 
 fn load_layout_rows(
@@ -357,13 +384,23 @@ fn load_layout_rows(
 ) -> Result<keyboard_layout::physical::RowLayout, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let trimmed = text.trim_start();
-    let parsed = if trimmed.starts_with('<') {
-        keyboard_layout::readers::unicode::parse(&text)
+    let (format, parsed) = if trimmed.starts_with('<') {
+        ("Keyboard3 XML", keyboard_layout::readers::unicode::parse(&text))
     } else if trimmed.starts_with('[') || trimmed.starts_with('{') {
-        keyboard_layout::readers::heli_json::parse(&text)
+        (
+            "HeliBoard/FlorisBoard JSON",
+            keyboard_layout::readers::heli_json::parse(&text),
+        )
     } else {
-        keyboard_layout::readers::heli_simple::parse(&text)
+        (
+            "HeliBoard simple",
+            keyboard_layout::readers::heli_simple::parse(&text),
+        )
     };
+    veprintln!(
+        "layout: file '{}' detected as {format}",
+        path.display()
+    );
     parsed.map_err(|error| error.to_string())
 }
 

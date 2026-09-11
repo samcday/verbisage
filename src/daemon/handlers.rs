@@ -424,7 +424,9 @@ impl DaemonHandler {
             .layouts
             .lock()
             .map_err(|_| "layout cache poisoned".to_string())?;
-        crate::layout::register(&mut layouts, upload)
+        let token = crate::layout::register(&mut layouts, upload)?;
+        crate::veprintln!("layout: registered token {token}");
+        Ok(token)
     }
 
     pub fn forget_layout(&self, token: &str) -> Result<bool, String> {
