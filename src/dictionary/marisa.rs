@@ -44,7 +44,7 @@ impl DictionaryBackend for MarisaDictionaryBackend {
         for query in queries {
             let prefix = match &query.prefix {
                 Some(p) => p.clone(),
-                None => continue,
+                None => String::new(),
             };
 
             let min_len = query.min_length.unwrap_or(0);
@@ -55,7 +55,7 @@ impl DictionaryBackend for MarisaDictionaryBackend {
 
             while self.trie.predictive_search(&mut agent) {
                 let word = agent.key().as_str().to_string();
-                let word_len = word.len();
+                let word_len = word.chars().count();
                 if word_len < min_len || word_len > max_len {
                     continue;
                 }
@@ -73,11 +73,11 @@ impl DictionaryBackend for MarisaDictionaryBackend {
 
         results.sort_by(|a, b| {
             b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.confidence)
                 .then_with(|| a.word.cmp(&b.word))
         });
 
+        results.dedup_by(|a, b| a.word == b.word);
         results
     }
 

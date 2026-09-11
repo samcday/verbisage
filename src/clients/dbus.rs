@@ -244,7 +244,7 @@ mod tests {
 
         let freq = client.frequency("hello", "en_US").unwrap();
         assert!(freq > 0.0);
-        assert_eq!(client.frequency("nonexistent", "en_US").unwrap(), 0.0);
+        assert_eq!(client.frequency("nonexistent", "en_US").unwrap(), -1.0);
 
         let hel: &[String] = &[String::from("hel")];
         let results = client.query(hel, &[], 0, 0, "en_US").unwrap();

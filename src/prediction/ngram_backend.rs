@@ -18,6 +18,11 @@ pub trait NgramBackend: Send + Sync {
     /// Maximum n‑gram order supported (e.g., 3 for a trigram model).
     fn max_order(&self) -> usize;
 
+    /// Whether this store understands the explicit sentence-start marker.
+    fn supports_sentence_start(&self) -> bool {
+        false
+    }
+
     /// Total sum of all unigram counts (for the unigram denominator).
     fn unigram_total(&self) -> u64;
 
@@ -61,6 +66,10 @@ pub trait NgramBackend: Send + Sync {
 impl<T: NgramBackend + ?Sized> NgramBackend for std::sync::Arc<T> {
     fn max_order(&self) -> usize {
         self.as_ref().max_order()
+    }
+
+    fn supports_sentence_start(&self) -> bool {
+        self.as_ref().supports_sentence_start()
     }
 
     fn unigram_total(&self) -> u64 {

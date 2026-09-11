@@ -6,6 +6,7 @@
 /// n-gram orders.
 pub mod frequency;
 pub mod ngram_backend;
+pub mod scoring;
 pub mod smoothed;
 
 #[cfg(feature = "marisa")]
@@ -26,6 +27,14 @@ pub struct Prediction {
 pub trait Predictor: Send + Sync {
     /// Return up to `max_suggestions` likely continuations for `context`.
     fn predict_next(&self, context: &[&str], max_suggestions: usize) -> Vec<Prediction>;
+
+    /// Score an individual candidate with the same language model used by
+    /// prediction. Probability-backed dictionaries override this directly.
+    fn candidate_score(&self, context: &[&str], candidate: &str) -> Option<f64> {
+        self.ngram_backend().map(|backend| {
+            scoring::interpolate_score(backend.as_ref(), context, candidate, backend.max_order())
+        })
+    }
 
     /// Increase the frequency of an n-gram by `delta`.
     ///
