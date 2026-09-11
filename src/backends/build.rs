@@ -661,53 +661,11 @@ fn build_patricia(
     lang: &str,
     lp: &LanguagePaths,
 ) -> (Box<dyn DictionaryBackend>, Option<Box<dyn SpellChecker>>, Option<Box<dyn Predictor>>) {
-    use crate::dictionary::paths::PathOverride;
-    let path = if let Some(path) = &def.path {
-        expand_tilde(&path.replace("{lang}", lang))
-    } else {
-        // Normalise the resolved directories (config/CLI dirs are already
-        // expanded; the defaults may still be a literal `~`). Keep the
-        // historical Patricia default directory when none was configured.
-        let configured_system =
-            expand_tilde(&lp.system_dir.to_string_lossy())
-                != expand_tilde(crate::dictionary::paths::SYSTEM_DATA_DIR);
-        let system_dir = if configured_system {
-            expand_tilde(&lp.system_dir.to_string_lossy())
-        } else {
-            PathBuf::from("/usr/share/android-patricia-dictionaries")
-        };
-        let user_dir = expand_tilde(&lp.user_dir.to_string_lossy());
-
-        // Interleave the layers: system first, then user, honouring each
-        // layer's `File` override or `Skip`. Patricia wraps a single file, so
-        // the first existing candidate wins.
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        match &lp.system_file_override {
-            PathOverride::File(path) => {
-                candidates.push(expand_tilde(path.to_str().unwrap_or("")));
-            }
-            PathOverride::Skip => {}
-            PathOverride::Default => {
-                candidates.push(system_dir.join(format!("{lang}.dict")));
-            }
-        }
-        match &lp.user_file_override {
-            PathOverride::File(path) => {
-                candidates.push(expand_tilde(path.to_str().unwrap_or("")));
-            }
-            PathOverride::Skip => {}
-            PathOverride::Default => {
-                candidates.push(user_dir.join(format!("{lang}.dict")));
-            }
-        }
-        if candidates.is_empty() {
-            return (Box::new(FileDictionaryBackend::new()), None, None);
-        }
-        candidates
-            .iter()
-            .find(|candidate| candidate.exists())
-            .cloned()
-            .unwrap_or_else(|| candidates[0].clone())
+    let candidates = patricia_candidates(def, lang, lp);
+    let path = match candidates.iter().find(|candidate| candidate.exists()) {
+        Some(path) => path.clone(),
+        None if !candidates.is_empty() => candidates[0].clone(),
+        None => return (Box::new(FileDictionaryBackend::new()), None, None),
     };
     match crate::dictionary::patricia::PatriciaDictionaryBackend::open(&path) {
         Ok(backend) => {
@@ -719,6 +677,49 @@ fn build_patricia(
             (Box::new(FileDictionaryBackend::new()), None, None)
         }
     }
+}
+
+/// Candidate Patricia dictionary files, system layer first then user.
+///
+/// When a directory was not explicitly configured, the global data dir gets a
+/// `patricia` namespace (`/usr/share/verbisage/patricia`,
+/// `~/.local/share/verbisage/patricia`).
+#[cfg(feature = "patricia")]
+fn patricia_candidates(def: &ResolvedBackendDef, lang: &str, lp: &LanguagePaths) -> Vec<PathBuf> {
+    use crate::dictionary::paths::{PathOverride, SYSTEM_DATA_DIR, USER_DATA_DIR_REL};
+
+    if let Some(path) = &def.path {
+        return vec![expand_tilde(&path.replace("{lang}", lang))];
+    }
+
+    let system_base = if lp.system_dir == PathBuf::from(SYSTEM_DATA_DIR) {
+        PathBuf::from(SYSTEM_DATA_DIR).join("patricia")
+    } else {
+        lp.system_dir.clone()
+    };
+    let user_base = if lp.user_dir == PathBuf::from(USER_DATA_DIR_REL) {
+        PathBuf::from(USER_DATA_DIR_REL).join("patricia")
+    } else {
+        lp.user_dir.clone()
+    };
+    let system_dir = expand_tilde(&system_base.to_string_lossy());
+    let user_dir = expand_tilde(&user_base.to_string_lossy());
+
+    // Interleave the layers: system first, then user, honouring each layer's
+    // `File` override or `Skip`. Patricia wraps a single file, so the first
+    // existing candidate wins.
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    match &lp.system_file_override {
+        PathOverride::File(path) => candidates.push(expand_tilde(path.to_str().unwrap_or(""))),
+        PathOverride::Skip => {}
+        PathOverride::Default => candidates.push(system_dir.join(format!("{lang}.dict"))),
+    }
+    match &lp.user_file_override {
+        PathOverride::File(path) => candidates.push(expand_tilde(path.to_str().unwrap_or(""))),
+        PathOverride::Skip => {}
+        PathOverride::Default => candidates.push(user_dir.join(format!("{lang}.dict"))),
+    }
+    candidates
 }
 
 #[cfg(not(feature = "patricia"))]
@@ -749,6 +750,30 @@ mod tests {
         let lp = LanguagePaths::new("en_US").with_system_dir(temp.path().to_path_buf());
         let (dict, _, _) = build_patricia(def, "en_US", &lp);
         assert!(!dict.is_empty());
+    }
+
+    #[test]
+    fn patricia_default_dirs_are_namespaced() {
+        let (assignment, _) =
+            crate::backends::resolve_chain_with_backcompat("patricia", None).unwrap();
+        let def = &assignment.segments[0].def;
+        let lp = LanguagePaths::new("en_US");
+        let rendered: Vec<String> = patricia_candidates(def, "en_US", &lp)
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            rendered
+                .iter()
+                .any(|path| path.ends_with("/verbisage/patricia/en_US.dict")),
+            "{rendered:?}"
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|path| path.contains(".local/share/verbisage/patricia/en_US.dict")),
+            "{rendered:?}"
+        );
     }
 
     #[test]
