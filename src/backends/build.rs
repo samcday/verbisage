@@ -665,8 +665,8 @@ fn build_patricia(
     let path = if let Some(path) = &def.path {
         expand_tilde(&path.replace("{lang}", lang))
     } else {
-        // Normalise the resolved system directory (config/CLI dirs are already
-        // expanded; the default may still be a literal `~`). Keep the
+        // Normalise the resolved directories (config/CLI dirs are already
+        // expanded; the defaults may still be a literal `~`). Keep the
         // historical Patricia default directory when none was configured.
         let configured_system =
             expand_tilde(&lp.system_dir.to_string_lossy())
@@ -676,11 +676,38 @@ fn build_patricia(
         } else {
             PathBuf::from("/usr/share/android-patricia-dictionaries")
         };
+        let user_dir = expand_tilde(&lp.user_dir.to_string_lossy());
+
+        // Interleave the layers: system first, then user, honouring each
+        // layer's `File` override or `Skip`. Patricia wraps a single file, so
+        // the first existing candidate wins.
+        let mut candidates: Vec<PathBuf> = Vec::new();
         match &lp.system_file_override {
-            PathOverride::File(path) => expand_tilde(path.to_str().unwrap_or("")),
-            PathOverride::Skip => return (Box::new(FileDictionaryBackend::new()), None, None),
-            PathOverride::Default => system_dir.join(format!("{lang}.dict")),
+            PathOverride::File(path) => {
+                candidates.push(expand_tilde(path.to_str().unwrap_or("")));
+            }
+            PathOverride::Skip => {}
+            PathOverride::Default => {
+                candidates.push(system_dir.join(format!("{lang}.dict")));
+            }
         }
+        match &lp.user_file_override {
+            PathOverride::File(path) => {
+                candidates.push(expand_tilde(path.to_str().unwrap_or("")));
+            }
+            PathOverride::Skip => {}
+            PathOverride::Default => {
+                candidates.push(user_dir.join(format!("{lang}.dict")));
+            }
+        }
+        if candidates.is_empty() {
+            return (Box::new(FileDictionaryBackend::new()), None, None);
+        }
+        candidates
+            .iter()
+            .find(|candidate| candidate.exists())
+            .cloned()
+            .unwrap_or_else(|| candidates[0].clone())
     };
     match crate::dictionary::patricia::PatriciaDictionaryBackend::open(&path) {
         Ok(backend) => {
@@ -720,6 +747,28 @@ mod tests {
             crate::backends::resolve_chain_with_backcompat("patricia", None).unwrap();
         let def = &assignment.segments[0].def;
         let lp = LanguagePaths::new("en_US").with_system_dir(temp.path().to_path_buf());
+        let (dict, _, _) = build_patricia(def, "en_US", &lp);
+        assert!(!dict.is_empty());
+    }
+
+    #[test]
+    fn patricia_falls_back_to_the_user_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let system = temp.path().join("system");
+        let user = temp.path().join("user");
+        std::fs::create_dir_all(&system).unwrap();
+        std::fs::create_dir_all(&user).unwrap();
+        let dict_path = user.join("en_US.dict");
+        let mut native = patricia_dict::Dictionary::create_empty_v403(&dict_path, "en_US").unwrap();
+        native.append("fixtureword", 200).unwrap();
+        drop(native);
+
+        let (assignment, _) =
+            crate::backends::resolve_chain_with_backcompat("patricia", None).unwrap();
+        let def = &assignment.segments[0].def;
+        let lp = LanguagePaths::new("en_US")
+            .with_system_dir(system)
+            .with_user_dir(user);
         let (dict, _, _) = build_patricia(def, "en_US", &lp);
         assert!(!dict.is_empty());
     }
