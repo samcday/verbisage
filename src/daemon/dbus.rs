@@ -234,10 +234,23 @@ impl VerbisageDbus {
     /// @param lang  Language tag.
     /// @return      Ordered list of spelling suggestions (may be empty).
     #[zbus(out_args("result"))]
-    async fn suggest(&self, word: &str, max: u32, lang: &str) -> Result<Vec<String>, FdoError> {
-        crate::veprintln!("[dbus-server] Suggest({}, {}, {})", word, max, lang);
+    async fn suggest(
+        &self,
+        word: &str,
+        max: u32,
+        lang: &str,
+        layout: &str,
+    ) -> Result<Vec<String>, FdoError> {
+        crate::veprintln!("[dbus-server] Suggest({}, {}, {}, {})", word, max, lang, layout);
+        let layout = if layout.is_empty() {
+            None
+        } else {
+            Some(self.handler.layout(layout).ok_or_else(|| {
+                FdoError::InvalidArgs(format!("unknown layout token '{layout}'"))
+            })?)
+        };
         self.handler
-            .suggest(word, max as usize, lang)
+            .suggest_with(word, max as usize, lang, layout)
             .map_err(log_and_err)
     }
 

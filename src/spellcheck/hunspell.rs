@@ -110,6 +110,7 @@ impl SpellChecker for HunspellSpellChecker {
                 word,
                 context,
                 10,
+                None,
             )
         }
     }

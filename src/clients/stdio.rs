@@ -144,7 +144,21 @@ impl StdioClient {
 
     /// Request spelling suggestions for `word`.
     pub fn suggest(&mut self, word: &str, max: usize) -> Result<Vec<String>, ClientError> {
-        let v = self.send_request("suggest", json!({"word": word, "max": max}))?;
+        self.suggest_layout(word, max, "")
+    }
+
+    /// Like [`Self::suggest`] but with a registered layout token.
+    pub fn suggest_layout(
+        &mut self,
+        word: &str,
+        max: usize,
+        layout: &str,
+    ) -> Result<Vec<String>, ClientError> {
+        let mut params = json!({"word": word, "max": max});
+        if !layout.is_empty() {
+            params["layout"] = json!(layout);
+        }
+        let v = self.send_request("suggest", params)?;
         serde_json::from_value(v).map_err(ClientError::Json)
     }
 

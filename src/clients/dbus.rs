@@ -67,7 +67,18 @@ impl DbusClient {
 
     /// Request spelling suggestions for `word` in the given `lang`.
     pub fn suggest(&self, word: &str, max: u32, lang: &str) -> zbus::Result<Vec<String>> {
-        let msg = self.call("Suggest", self.dest(), &(word, max, lang))?;
+        self.suggest_layout(word, max, lang, "")
+    }
+
+    /// Like [`Self::suggest`] but with a registered layout token.
+    pub fn suggest_layout(
+        &self,
+        word: &str,
+        max: u32,
+        lang: &str,
+        layout: &str,
+    ) -> zbus::Result<Vec<String>> {
+        let msg = self.call("Suggest", self.dest(), &(word, max, lang, layout))?;
         msg.body().deserialize()
     }
 

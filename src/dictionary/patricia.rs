@@ -176,6 +176,7 @@ impl SpellChecker for Arc<PatriciaDictionaryBackend> {
             word,
             context,
             usize::MAX,
+            None,
         );
         let keys: Vec<_> = suggestions
             .iter()

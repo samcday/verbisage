@@ -54,6 +54,9 @@ pub struct SuggestParams {
     pub word: String,
     #[serde(default = "default_max")]
     pub max: usize,
+    /// Optional registered keyboard-layout token.
+    #[serde(default)]
+    pub layout: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

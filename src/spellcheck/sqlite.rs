@@ -26,6 +26,7 @@ impl SpellChecker for SqliteSpellChecker {
             word,
             context,
             10,
+            None,
         )
     }
 }

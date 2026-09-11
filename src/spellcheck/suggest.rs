@@ -1,5 +1,6 @@
 use crate::dictionary::DictionaryBackend;
 use crate::prediction::ngram_backend::NgramBackend;
+use crate::spellcheck::edits::EditSource;
 
 /// Generate spelling suggestions using single-edit-distance candidates.
 ///
@@ -24,6 +25,7 @@ pub fn suggest_edits(
     word: &str,
     context: &[&str],
     max: usize,
+    source: Option<&dyn EditSource>,
 ) -> Vec<String> {
     let word_lower = word.to_lowercase();
 
@@ -31,18 +33,17 @@ pub fn suggest_edits(
         return vec![word_lower];
     }
 
+    let latin = super::edits::LatinAlphabet;
+    let source: &dyn EditSource = source.unwrap_or(&latin);
+
     let mut candidates = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    super::edits::visit_edits(
-        &word_lower,
-        &super::edits::LatinAlphabet,
-        |word, _weight| {
-            if word != word_lower && backend.contains(&word) && seen.insert(word.clone()) {
-                candidates.push(word);
-            }
-            true
-        },
-    );
+    super::edits::visit_edits(&word_lower, source, |word, _weight| {
+        if word != word_lower && backend.contains(&word) && seen.insert(word.clone()) {
+            candidates.push(word);
+        }
+        true
+    });
 
     // Score candidates using best available strategy
     let use_context = ngram_backend.is_some() && !context.is_empty();

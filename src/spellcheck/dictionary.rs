@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use crate::dictionary::DictionaryBackend;
-use crate::spellcheck::SpellChecker;
+use crate::spellcheck::edits::{EditSource, LayoutEdits};
+use crate::spellcheck::{SpellChecker, SuggestionInput};
 
 /// Generic [`SpellChecker`] implementation backed by any [`DictionaryBackend`].
 ///
@@ -35,14 +36,71 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
     }
 
     fn suggest(&self, word: &str, context: &[&str]) -> Vec<String> {
-        crate::spellcheck::suggest::suggest_edits(&*self.backend, None, word, context, 10)
+        crate::spellcheck::suggest::suggest_edits(&*self.backend, None, word, context, 10, None)
+    }
+
+    fn suggest_with(&self, input: &SuggestionInput<'_>, max: usize) -> Vec<String> {
+        let layout_edits = input.layout.as_deref().map(LayoutEdits::new);
+        let source = layout_edits.as_ref().map(|edits| edits as &dyn EditSource);
+        crate::spellcheck::suggest::suggest_edits(
+            &*self.backend,
+            None,
+            input.word,
+            input.context,
+            max,
+            source,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use keyboard_layout::{RectKey, RectKeyLayout};
     use std::sync::Arc;
+
+    #[test]
+    fn layout_restricts_spelling_corrections() {
+        let mut dict = crate::dictionary::FileDictionaryBackend::new();
+        dict.add_word_mut("cat".to_string(), 10.0);
+        dict.add_word_mut("cay".to_string(), 10.0);
+        let checker = DictionarySpellChecker::new(Arc::new(dict));
+
+        let no_layout = checker.suggest_with(
+            &SuggestionInput {
+                word: "caz",
+                context: &[],
+                layout: None,
+            },
+            10,
+        );
+        assert!(no_layout.contains(&"cat".to_string()), "{no_layout:?}");
+        assert!(no_layout.contains(&"cay".to_string()), "{no_layout:?}");
+
+        let layout = Arc::new(RectKeyLayout::new(
+            vec![
+                RectKey::from_rect(Some("c".into()), vec![], 0.0, 0.0, 10.0, 10.0),
+                RectKey::from_rect(Some("a".into()), vec![], 10.0, 0.0, 10.0, 10.0),
+                RectKey::from_rect(Some("t".into()), vec![], 20.0, 0.0, 10.0, 10.0),
+                RectKey::from_rect(Some("z".into()), vec![], 20.0, 10.0, 10.0, 10.0),
+                RectKey::from_rect(Some("y".into()), vec![], 90.0, 0.0, 10.0, 10.0),
+            ],
+            &[],
+        ));
+        let with_layout = checker.suggest_with(
+            &SuggestionInput {
+                word: "caz",
+                context: &[],
+                layout: Some(layout),
+            },
+            10,
+        );
+        assert!(with_layout.contains(&"cat".to_string()), "{with_layout:?}");
+        assert!(
+            !with_layout.contains(&"cay".to_string()),
+            "a far-key correction must be pruned: {with_layout:?}"
+        );
+    }
 
     #[test]
     fn basic_spellcheck_with_file_backend() {

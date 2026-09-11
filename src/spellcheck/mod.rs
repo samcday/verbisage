@@ -1,3 +1,12 @@
+/// A per-request suggestion input, optionally carrying a registered layout.
+#[derive(Debug, Clone, Default)]
+pub struct SuggestionInput<'a> {
+    pub word: &'a str,
+    pub context: &'a [&'a str],
+    /// A registered keyboard layout used to weight corrections by proximity.
+    pub layout: Option<std::sync::Arc<keyboard_layout::RectKeyLayout>>,
+}
+
 /// Spell‑checking trait analogous to the Hunspell API.
 ///
 /// Every implementor must be [`Send`] + [`Sync`] so it can be shared across
@@ -10,6 +19,14 @@ pub trait SpellChecker: Send + Sync {
     /// (most likely first).  `context` is optional preceding words that
     /// can be used to boost candidates that form common n‑grams.
     fn suggest(&self, word: &str, context: &[&str]) -> Vec<String>;
+
+    /// Suggest with optional layout context. The default ignores the layout
+    /// and honours `max`.
+    fn suggest_with(&self, input: &SuggestionInput<'_>, max: usize) -> Vec<String> {
+        let mut suggestions = self.suggest(input.word, input.context);
+        suggestions.truncate(max);
+        suggestions
+    }
 
     /// Whether this spellchecker can benefit from an attached n-gram backend.
     /// Returns `false` for spellcheckers that use their own internal

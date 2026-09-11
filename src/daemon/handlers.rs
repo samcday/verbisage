@@ -170,12 +170,27 @@ impl DaemonHandler {
     }
 
     pub fn suggest(&self, word: &str, max: usize, lang: &str) -> Result<Vec<String>, String> {
+        self.suggest_with(word, max, lang, None)
+    }
+
+    pub fn suggest_with(
+        &self,
+        word: &str,
+        max: usize,
+        lang: &str,
+        layout: Option<Arc<keyboard_layout::RectKeyLayout>>,
+    ) -> Result<Vec<String>, String> {
         let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
         }
+        let input = crate::spellcheck::SuggestionInput {
+            word,
+            context: &[],
+            layout,
+        };
         let mut suggestions = match &backend.spellchecker {
-            Some(sc) => sc.suggest(word, &[]),
+            Some(sc) => sc.suggest_with(&input, max),
             None => {
                 let results = backend.dictionary.query_prefixes(&[DictionaryQuery {
                     prefix: Some(word.to_string()),
@@ -440,7 +455,20 @@ impl DaemonHandler {
                     Ok(p) => p,
                     Err(e) => return DaemonResponse::error(id, format!("bad params: {}", e)),
                 };
-                match self.suggest(&params.word, params.max, lang) {
+                let layout = if let Some(token) = &params.layout {
+                    match self.layout(token) {
+                        Some(layout) => Some(layout),
+                        None => {
+                            return DaemonResponse::error(
+                                id,
+                                format!("unknown layout token '{token}'"),
+                            );
+                        }
+                    }
+                } else {
+                    None
+                };
+                match self.suggest_with(&params.word, params.max, lang, layout) {
                     Ok(v) => DaemonResponse::success(id, json!(v)),
                     Err(e) => DaemonResponse::error(id, e),
                 }
