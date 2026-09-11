@@ -124,6 +124,9 @@ enum Command {
         /// Misspelled word to correct.
         #[arg(long)]
         word: String,
+        /// Optional keyboard layout file (HeliBoard simple/JSON or Keyboard3 XML).
+        #[arg(long)]
+        layout: Option<std::path::PathBuf>,
     },
 
     /// Complete an unfinished word using committed context.
@@ -134,6 +137,9 @@ enum Command {
         context: Option<String>,
         #[arg(long, default_value_t = 10)]
         max: usize,
+        /// Optional keyboard layout file (HeliBoard simple/JSON or Keyboard3 XML).
+        #[arg(long)]
+        layout: Option<std::path::PathBuf>,
         #[command(flatten)]
         text: TextOptions,
     },
@@ -243,7 +249,10 @@ fn main() {
 
     match cli.command {
         Command::Check { word } => run_check(&shared, named_backends, client_mode, &word),
-        Command::Correct { word } => run_correct(&shared, named_backends, client_mode, &word),
+        Command::Correct { word, layout } => {
+            let rows = load_optional_layout(layout.as_deref());
+            run_correct(&shared, named_backends, client_mode, &word, rows.as_ref())
+        }
         Command::ConfigDump => run_config_dump(&cli.global.shared, config.as_ref()),
         Command::Predict { context, max, text } => run_complete(
             &shared,
@@ -253,21 +262,27 @@ fn main() {
             context.as_deref(),
             max,
             &text,
+            None,
         ),
         Command::Complete {
             word,
             context,
             max,
+            layout,
             text,
-        } => run_complete(
-            &shared,
-            named_backends,
-            client_mode,
-            &word,
-            context.as_deref(),
-            max,
-            &text,
-        ),
+        } => {
+            let rows = load_optional_layout(layout.as_deref());
+            run_complete(
+                &shared,
+                named_backends,
+                client_mode,
+                &word,
+                context.as_deref(),
+                max,
+                &text,
+                rows.as_ref(),
+            )
+        }
         Command::Query {
             prefix,
             suffix,
@@ -311,6 +326,42 @@ fn main() {
 
 // ── Mode dispatchers ───────────────────────────────────────────────────────
 
+// ── Layout loading ─────────────────────────────────────────────────────────
+
+fn load_optional_layout(
+    path: Option<&std::path::Path>,
+) -> Option<keyboard_layout::physical::RowLayout> {
+    let path = path?;
+    match load_layout_rows(path) {
+        Ok(rows) => Some(rows),
+        Err(error) => {
+            eprintln!("layout error: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn load_layout_rows(
+    path: &std::path::Path,
+) -> Result<keyboard_layout::physical::RowLayout, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let trimmed = text.trim_start();
+    let parsed = if trimmed.starts_with('<') {
+        keyboard_layout::readers::unicode::parse(&text)
+    } else if trimmed.starts_with('[') || trimmed.starts_with('{') {
+        keyboard_layout::readers::heli_json::parse(&text)
+    } else {
+        keyboard_layout::readers::heli_simple::parse(&text)
+    };
+    parsed.map_err(|error| error.to_string())
+}
+
+fn rect_layout(
+    rows: &keyboard_layout::physical::RowLayout,
+) -> std::sync::Arc<keyboard_layout::RectKeyLayout> {
+    std::sync::Arc::new(rows.to_rect_key_layout(&keyboard_layout::physical::RowMetrics::default()))
+}
+
 fn run_check(
     shared: &SharedArgs,
     named_backends: Option<&HashMap<String, BackendDef>>,
@@ -344,14 +395,23 @@ fn run_correct(
     named_backends: Option<&HashMap<String, BackendDef>>,
     client_mode: ClientMode,
     word: &str,
+    layout: Option<&keyboard_layout::physical::RowLayout>,
 ) {
     let lang = shared.lang();
     let suggestions: Vec<String> = if client_mode == ClientMode::Dbus {
-        dbus_suggest(word, 10, lang)
+        let token = layout.and_then(dbus_register_layout);
+        dbus_suggest(word, 10, lang, token.as_deref())
     } else {
         let (_, sc, _) = open_backend(shared, lang, named_backends);
         match &sc {
-            Some(s) => s.suggest(word, &[]),
+            Some(checker) => {
+                let input = verbisage::spellcheck::SuggestionInput {
+                    word,
+                    context: &[],
+                    layout: layout.map(rect_layout),
+                };
+                checker.suggest_with(&input, 10)
+            }
             None => {
                 eprintln!("warning: no dictionary loaded for '{}'", lang);
                 Vec::new()
@@ -376,6 +436,7 @@ fn run_complete(
     context: Option<&str>,
     max: usize,
     text: &TextOptions,
+    layout: Option<&keyboard_layout::physical::RowLayout>,
 ) {
     use verbisage::completion::{AndroidCompleter, CompletionEngine, CompletionInput};
     use verbisage::text::TextPrep;
@@ -386,7 +447,7 @@ fn run_complete(
         input_prep: TextPrep::from_names(&text.normalize, &text.fold).unwrap(),
         context_prep: TextPrep::from_names(&text.context_normalize, &text.context_fold).unwrap(),
         case_preference: serde_json::from_value(serde_json::json!(text.case_preference)).unwrap(),
-        layout: None,
+        layout: layout.map(rect_layout),
     };
     for prep in [input.input_prep, input.context_prep] {
         if let Some(warning) = prep.warning() {
@@ -394,7 +455,8 @@ fn run_complete(
         }
     }
     let rows: Vec<(String, f64)> = if client_mode == ClientMode::Dbus {
-        dbus_complete_with(&input, max, shared.lang())
+        let token = layout.and_then(dbus_register_layout);
+        dbus_complete_with(&input, max, shared.lang(), token.as_deref())
     } else {
         let (dict, _, predictor) = open_backend(shared, shared.lang(), named_backends);
         match AndroidCompleter::new(dict.as_ref())
@@ -662,12 +724,33 @@ fn dbus_is_correct(_word: &str, _lang: &str) -> bool {
 }
 
 #[cfg(feature = "dbus")]
-fn dbus_suggest(word: &str, max: usize, lang: &str) -> Vec<String> {
-    dbus_call(|client| Ok(client.suggest(word, max as u32, lang)?))
+fn dbus_register_layout(rows: &keyboard_layout::physical::RowLayout) -> Option<String> {
+    let upload = verbisage::layout::LayoutUpload {
+        keys: None,
+        rows: Some(rows.clone()),
+        ignored_labels: Vec::new(),
+    };
+    Some(dbus_call(|client| Ok(client.register_layout(&upload)?)))
 }
 
 #[cfg(not(feature = "dbus"))]
-fn dbus_suggest(_word: &str, _max: usize, _lang: &str) -> Vec<String> {
+fn dbus_register_layout(_rows: &keyboard_layout::physical::RowLayout) -> Option<String> {
+    eprintln!("dbus feature not enabled; rebuild with --features dbus");
+    std::process::exit(1);
+}
+
+#[cfg(feature = "dbus")]
+fn dbus_suggest(word: &str, max: usize, lang: &str, layout: Option<&str>) -> Vec<String> {
+    dbus_call(|client| {
+        Ok(match layout {
+            Some(token) => client.suggest_layout(word, max as u32, lang, token)?,
+            None => client.suggest(word, max as u32, lang)?,
+        })
+    })
+}
+
+#[cfg(not(feature = "dbus"))]
+fn dbus_suggest(_word: &str, _max: usize, _lang: &str, _layout: Option<&str>) -> Vec<String> {
     dbus_call(|| Err("dbus not enabled".into()))
 }
 
@@ -676,10 +759,14 @@ fn dbus_complete_with(
     input: &verbisage::completion::CompletionInput<'_>,
     max: usize,
     lang: &str,
+    layout: Option<&str>,
 ) -> Vec<(String, f64)> {
     dbus_call(|client| {
         let max = u32::try_from(max).map_err(|_| "requested max exceeds D-Bus integer range")?;
-        Ok(client.complete_with(input, max, lang)?)
+        Ok(match layout {
+            Some(token) => client.complete_with_layout(input, max, lang, token)?,
+            None => client.complete_with(input, max, lang)?,
+        })
     })
 }
 #[cfg(not(feature = "dbus"))]
@@ -687,6 +774,7 @@ fn dbus_complete_with(
     _input: &verbisage::completion::CompletionInput<'_>,
     _max: usize,
     _lang: &str,
+    _layout: Option<&str>,
 ) -> Vec<(String, f64)> {
     dbus_call(|| Err("dbus not enabled".into()))
 }
