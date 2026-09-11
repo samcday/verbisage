@@ -110,10 +110,10 @@ discussion, ask which is meant.
   weight × normalized prior); frequency first, then `android.rs`.
 - Completion engines: transplant frozen (`prefix.rs` folds internally
   already); `android.rs` consumes registries + `CasePreference` natively.
-- Layout milestone: neighbour-weighted substitution plugs into the shared
-  edit generator's alphabet source; layout handles are global tokens +
-  documented client responsibility, session-only (no disk writes, ever),
-  server-side in-memory cache with eviction.
+- Layout milestone (implemented, see `plan_layout.md`): neighbour-weighted
+  substitution lives behind the shared edit generator's `EditSource` seam;
+  layout handles are content-hash tokens with a session-only in-memory cache
+  and LRU eviction (no disk writes). XKB is the remaining reader.
 - BOS marker (`plan_bos.md`): wire `"<s>"`, internal U+FFFF, backend-owned
   conversion, truncate-to-after-BOS fallback, absent-BOS is status quo.
 

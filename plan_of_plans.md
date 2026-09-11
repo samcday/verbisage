@@ -54,8 +54,10 @@ committed on `main`; everything else is queued.
 
 ## Explicitly later / never (all locked)
 
-- Layouts upload, touch mode, per-language pipelines beyond registry+map,
-  FFI helpers — layout/correction threads (deferred).
+- Layout upload/registry, layout-aware completion and correction, and the
+  HeliBoard simple/JSON + Unicode Keyboard3 readers are implemented
+  (`plan_layout.md`); XKB layouts, touch-coordinate spatial scoring, and
+  per-language pipelines/FFI helpers remain deferred.
 - `[languages.*]` config, per-language caps, construction-time folders,
   `folder()`-on-trait, engine synthesis for BOS, dual-form NFC fallback —
   rejected in `plan_caps.md` §9 / `plan_bos.md`.
