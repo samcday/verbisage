@@ -48,3 +48,5 @@ pub use sqlite::SqliteSpellChecker;
 
 #[cfg(feature = "hunspell")]
 pub use hunspell::HunspellSpellChecker;
+
+pub mod edits;

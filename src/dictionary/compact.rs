@@ -20,6 +20,7 @@ pub struct CompactDictionary {
     first_letter_cache: HashMap<char, Vec<WordIndex>>,
     length_cache: HashMap<usize, Vec<WordIndex>>,
     frequencies: Vec<f64>,
+    total_frequency: f64,
 }
 
 impl CompactDictionary {
@@ -30,10 +31,10 @@ impl CompactDictionary {
         let reader = BufReader::new(file);
 
         let mut words = Vec::new();
-        let mut word_to_index = HashMap::new();
+        let mut word_to_index: HashMap<String, WordIndex> = HashMap::new();
         let mut first_letter_cache: HashMap<char, Vec<WordIndex>> = HashMap::new();
         let mut length_cache: HashMap<usize, Vec<WordIndex>> = HashMap::new();
-        let mut frequencies = Vec::new();
+        let mut frequencies: Vec<f64> = Vec::new();
 
         for line in reader.lines() {
             let line = line?;
@@ -42,7 +43,10 @@ impl CompactDictionary {
                 continue;
             }
 
-            let word = word.to_string();
+            let word = crate::text::nfc(word);
+            if word_to_index.contains_key(&word) {
+                continue;
+            }
             let index = words.len() as WordIndex;
 
             words.push(word.clone());
@@ -57,12 +61,18 @@ impl CompactDictionary {
             length_cache.entry(word.len()).or_default().push(index);
         }
 
+        let total_frequency = frequencies
+            .iter()
+            .copied()
+            .filter(|f| f.is_finite() && *f > 0.0)
+            .sum();
         Ok(Self {
             words,
             word_to_index,
             first_letter_cache,
             length_cache,
             frequencies,
+            total_frequency,
         })
     }
 
@@ -72,10 +82,10 @@ impl CompactDictionary {
         let reader = BufReader::new(file);
 
         let mut words = Vec::new();
-        let mut word_to_index = HashMap::new();
+        let mut word_to_index: HashMap<String, WordIndex> = HashMap::new();
         let mut first_letter_cache: HashMap<char, Vec<WordIndex>> = HashMap::new();
         let mut length_cache: HashMap<usize, Vec<WordIndex>> = HashMap::new();
-        let mut frequencies = Vec::new();
+        let mut frequencies: Vec<f64> = Vec::new();
 
         for line in reader.lines() {
             let line = line?;
@@ -91,6 +101,11 @@ impl CompactDictionary {
                 (parts[0].to_string(), 1.0)
             };
 
+            let word = crate::text::nfc(&word);
+            if let Some(&index) = word_to_index.get(&word) {
+                frequencies[index as usize] = frequency;
+                continue;
+            }
             let index = words.len() as WordIndex;
             words.push(word.clone());
             frequencies.push(frequency);
@@ -104,12 +119,18 @@ impl CompactDictionary {
             length_cache.entry(word.len()).or_default().push(index);
         }
 
+        let total_frequency = frequencies
+            .iter()
+            .copied()
+            .filter(|f| f.is_finite() && *f > 0.0)
+            .sum();
         Ok(Self {
             words,
             word_to_index,
             first_letter_cache,
             length_cache,
             frequencies,
+            total_frequency,
         })
     }
 
@@ -216,7 +237,7 @@ impl DictionaryBackend for CompactDictionary {
                 let min_len = query.min_length.unwrap_or(0);
                 let max_len = query.max_length.unwrap_or(usize::MAX);
 
-                if word.len() < min_len || word.len() > max_len {
+                if word.chars().count() < min_len || word.chars().count() > max_len {
                     continue;
                 }
 
@@ -224,7 +245,10 @@ impl DictionaryBackend for CompactDictionary {
                     if seen.insert(word.clone()) {
                         all_results.push(DictionaryResult {
                             word: word.clone(),
-                            confidence: if confidence > 0.0 { confidence } else { -1.0 },
+                            confidence: super::normalized_frequency(
+                                confidence,
+                                self.total_frequency,
+                            ),
                         });
                     }
                     break;
@@ -234,8 +258,7 @@ impl DictionaryBackend for CompactDictionary {
 
         all_results.sort_by(|a, b| {
             b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.confidence)
                 .then_with(|| a.word.cmp(&b.word))
         });
 
@@ -246,7 +269,8 @@ impl DictionaryBackend for CompactDictionary {
         self.word_to_index
             .get(word)
             .and_then(|&idx| self.frequencies.get(idx as usize).copied())
-            .unwrap_or(0.5)
+            .map(|count| super::normalized_frequency(count, self.total_frequency))
+            .unwrap_or(-1.0)
     }
 
     fn contains(&self, word: &str) -> bool {

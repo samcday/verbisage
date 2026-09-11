@@ -60,48 +60,5 @@ pub trait CompletionEngine: Send + Sync {
     fn complete(&self, prefix: Option<&str>, max: usize) -> Vec<CompletionCandidate>;
 }
 
-/// Smoothed interpolated n-gram probability for `candidate` given `context`,
-/// using uniform per-order weights and count=1 smoothing for unseen n-grams.
-///
-/// Mirrors the private `interpolate_score` in `spellcheck::suggest`; shared
-/// here so future engines (`android.rs`) reuse it instead of duplicating it.
-///
-/// Currently unused by the transplanted prefix engine.
-#[allow(dead_code)]
-pub fn interpolate_score(
-    backend: &dyn crate::prediction::ngram_backend::NgramBackend,
-    context: &[&str],
-    candidate: &str,
-    max_order: usize,
-) -> f64 {
-    let effective_order = max_order.min(context.len() + 1);
-    if effective_order == 0 {
-        return 0.0;
-    }
-
-    let delta = 1.0 / effective_order as f64;
-    let mut prob = 0.0;
-
-    for k in 0..effective_order {
-        let order = k + 1;
-        let ctx_start = context.len().saturating_sub(order - 1);
-        let ctx_slice = &context[ctx_start..];
-
-        let mut ngram: Vec<&str> = ctx_slice.to_vec();
-        ngram.push(candidate);
-
-        let numerator = backend.ngram_count(&ngram).max(1);
-
-        let denominator = if k == 0 {
-            backend.unigram_total().max(1)
-        } else if ctx_slice.is_empty() {
-            1
-        } else {
-            backend.ngram_count(ctx_slice).max(1)
-        };
-
-        prob += delta * numerator as f64 / denominator as f64;
-    }
-
-    prob
-}
+// Kept as a public re-export for existing library users.
+pub use crate::prediction::scoring::interpolate_score;

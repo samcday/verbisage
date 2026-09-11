@@ -32,11 +32,7 @@ impl PatriciaDictionaryBackend {
     }
 
     fn attributes(&self, word: &str) -> Option<WordAttributes> {
-        self.dictionary
-            .query(word)
-            .or_else(|_| self.dictionary.query(&word.to_lowercase()))
-            .ok()
-            .filter(usable)
+        self.dictionary.query(word).ok().filter(usable)
     }
 
     fn search_params(query: &DictionaryQuery) -> SearchParams {
@@ -48,14 +44,10 @@ impl PatriciaDictionaryBackend {
                 query.max_length.unwrap_or(usize::MAX),
             );
         if let Some(prefix) = &query.prefix {
-            params = params
-                .with_prefix(prefix)
-                .with_prefix(prefix.to_lowercase());
+            params = params.with_prefix(prefix);
         }
         if let Some(suffix) = &query.suffix {
-            params = params
-                .with_suffix(suffix)
-                .with_suffix(suffix.to_lowercase());
+            params = params.with_suffix(suffix);
         }
         params
     }
@@ -80,7 +72,7 @@ impl DictionaryBackend for PatriciaDictionaryBackend {
 
     fn get_frequency(&self, word: &str) -> f64 {
         self.attributes(word)
-            .map_or(0.0, |a| f64::from(a.probability) / 255.0)
+            .map_or(-1.0, |a| f64::from(a.probability) / 255.0)
     }
 
     fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
@@ -249,6 +241,18 @@ impl SpellChecker for Arc<PatriciaDictionaryBackend> {
 }
 
 impl Predictor for Arc<PatriciaDictionaryBackend> {
+    fn candidate_score(&self, context: &[&str], candidate: &str) -> Option<f64> {
+        self.attributes(candidate)?;
+        let context = crate::text::after_boundary(context);
+        let scores = self.dictionary.ngram_scores(candidate, context).ok()?;
+        crate::prediction::scoring::interpolate_probabilities(&[
+            Some(f64::from(scores.unigram) / 255.0),
+            scores.bigram.map(|p| f64::from(p) / 255.0),
+            scores.trigram.map(|p| f64::from(p) / 255.0),
+            scores.quadgram.map(|p| f64::from(p) / 255.0),
+        ])
+    }
+
     fn predict_next(&self, context: &[&str], max_suggestions: usize) -> Vec<Prediction> {
         if context.is_empty() || max_suggestions == 0 {
             return Vec::new();
@@ -257,7 +261,8 @@ impl Predictor for Arc<PatriciaDictionaryBackend> {
         for (word, _) in self.dictionary.ngrams_for(context).unwrap_or_default() {
             if let Ok(attributes) = self.dictionary.query_with_context(&word, context) {
                 if usable(&attributes) {
-                    candidates.insert(word, f64::from(attributes.probability) / 255.0);
+                    let score = self.candidate_score(context, &word).unwrap_or(0.0);
+                    candidates.insert(word, score);
                 }
             }
         }

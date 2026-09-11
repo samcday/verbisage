@@ -28,14 +28,11 @@ impl DictionaryBackend for MergedDictionary {
 
         for backend in &self.backends {
             for r in backend.query_prefixes(queries) {
-                let entry = acc.entry(r.word).or_insert(0.0);
-                // Treat -1.0 (no frequency info) as 0 for accumulation.
-                let conf = if r.confidence > 0.0 {
-                    r.confidence
-                } else {
-                    0.0
-                };
-                *entry = (*entry + conf).min(1.0);
+                let entry = acc.entry(r.word).or_insert(-1.0);
+                let conf = crate::dictionary::usable_frequency(r.confidence);
+                if conf >= 0.0 {
+                    *entry = (entry.max(0.0) + conf).min(1.0);
+                }
             }
         }
 
@@ -46,8 +43,7 @@ impl DictionaryBackend for MergedDictionary {
 
         results.sort_by(|a, b| {
             b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.confidence)
                 .then_with(|| a.word.cmp(&b.word))
         });
 
@@ -59,11 +55,17 @@ impl DictionaryBackend for MergedDictionary {
     }
 
     fn get_frequency(&self, word: &str) -> f64 {
-        let mut sum = 0.0;
-        for backend in &self.backends {
-            sum += backend.get_frequency(word);
+        let values: Vec<_> = self
+            .backends
+            .iter()
+            .map(|b| crate::dictionary::usable_frequency(b.get_frequency(word)))
+            .filter(|f| *f >= 0.0)
+            .collect();
+        if values.is_empty() {
+            -1.0
+        } else {
+            values.iter().sum::<f64>().min(1.0)
         }
-        sum
     }
 
     fn is_writable(&self) -> bool {
@@ -119,8 +121,7 @@ impl Predictor for MergedPredictor {
 
         results.sort_by(|a, b| {
             b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.confidence)
                 .then_with(|| a.word.cmp(&b.word))
         });
 
@@ -173,8 +174,8 @@ mod tests {
 
     #[test]
     fn merged_confidence_accumulates() {
-        let a = make_dict(&[("hello", 0.3)]);
-        let b = make_dict(&[("hello", 0.5)]);
+        let a = make_dict(&[("hello", 0.3), ("other", 0.7)]);
+        let b = make_dict(&[("hello", 0.5), ("other", 0.5)]);
         let merged = MergedDictionary::new(vec![a, b]);
         let results = merged.query_prefixes(&[DictionaryQuery {
             prefix: Some("hel".into()),
@@ -189,8 +190,8 @@ mod tests {
 
     #[test]
     fn merged_confidence_caps_at_one() {
-        let a = make_dict(&[("hello", 0.8)]);
-        let b = make_dict(&[("hello", 0.6)]);
+        let a = make_dict(&[("hello", 0.8), ("other", 0.2)]);
+        let b = make_dict(&[("hello", 0.6), ("other", 0.4)]);
         let merged = MergedDictionary::new(vec![a, b]);
         let results = merged.query_prefixes(&[DictionaryQuery {
             prefix: Some("hel".into()),
@@ -205,8 +206,8 @@ mod tests {
 
     #[test]
     fn merged_frequency_sums() {
-        let a = make_dict(&[("hello", 0.3)]);
-        let b = make_dict(&[("hello", 0.5)]);
+        let a = make_dict(&[("hello", 0.3), ("other", 0.7)]);
+        let b = make_dict(&[("hello", 0.5), ("other", 0.5)]);
         let merged = MergedDictionary::new(vec![a, b]);
         // Frequencies sum across all backends
         assert_eq!(merged.get_frequency("hello"), 0.8);

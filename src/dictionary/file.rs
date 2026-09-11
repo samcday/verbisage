@@ -27,6 +27,7 @@ pub struct FileDictionaryBackend {
 
 struct FileDictionaryInner {
     words: HashMap<String, f64>,
+    total_frequency: f64,
     words_sorted: Vec<String>,
     prefixes: HashSet<String>,
     length_buckets: HashMap<usize, Vec<String>>,
@@ -46,6 +47,7 @@ impl Clone for FileDictionaryInner {
     fn clone(&self) -> Self {
         Self {
             words: self.words.clone(),
+            total_frequency: self.total_frequency,
             words_sorted: self.words_sorted.clone(),
             prefixes: self.prefixes.clone(),
             length_buckets: self.length_buckets.clone(),
@@ -130,8 +132,15 @@ fn build_inner_from_reader<R: BufRead>(
     }
 
     words_sorted.sort_unstable();
+    words_sorted.dedup();
+    let total_frequency = words
+        .values()
+        .copied()
+        .filter(|f| f.is_finite() && *f > 0.0)
+        .sum();
     Ok(FileDictionaryInner {
         words,
+        total_frequency,
         words_sorted,
         prefixes,
         length_buckets,
@@ -158,7 +167,8 @@ fn insert_into(
     word: String,
     frequency: f64,
 ) {
-    let len = word.len();
+    let word = crate::text::nfc(&word);
+    let len = word.chars().count();
     words.insert(word.clone(), frequency);
     words_sorted.push(word.clone());
 
@@ -194,6 +204,7 @@ impl FileDictionaryBackend {
         Self {
             inner: RwLock::new(FileDictionaryInner {
                 words: HashMap::new(),
+                total_frequency: 0.0,
                 words_sorted: Vec::new(),
                 prefixes: HashSet::new(),
                 length_buckets: HashMap::new(),
@@ -207,6 +218,7 @@ impl FileDictionaryBackend {
         Self {
             inner: RwLock::new(FileDictionaryInner {
                 words: HashMap::new(),
+                total_frequency: 0.0,
                 words_sorted: Vec::new(),
                 prefixes: HashSet::new(),
                 length_buckets: HashMap::new(),
@@ -291,11 +303,7 @@ impl FileDictionaryBackend {
     /// Return the frequency for `word` or 0.0 if absent.
     pub fn frequency(&self, word: &str) -> f64 {
         let inner = self.inner.read().unwrap();
-        inner
-            .words
-            .get(&word.to_lowercase())
-            .copied()
-            .unwrap_or(0.0)
+        inner.words.get(word).copied().unwrap_or(0.0)
     }
 
     /// Subsequence-based fuzzy matching, useful for spelling suggestions.
@@ -324,8 +332,15 @@ impl FileDictionaryBackend {
 }
 
 fn insert_word(inner: &mut FileDictionaryInner, word: String, frequency: f64) {
-    let len = word.len();
-    inner.words.insert(word.clone(), frequency);
+    let word = crate::text::nfc(&word);
+    let len = word.chars().count();
+    let old = inner.words.insert(word.clone(), frequency).unwrap_or(0.0);
+    if old.is_finite() && old > 0.0 {
+        inner.total_frequency -= old;
+    }
+    if frequency.is_finite() && frequency > 0.0 {
+        inner.total_frequency += frequency;
+    }
 
     if let Err(pos) = inner.words_sorted.binary_search(&word) {
         inner.words_sorted.insert(pos, word.clone());
@@ -355,37 +370,35 @@ impl DictionaryBackend for FileDictionaryBackend {
                 let min_len = query.min_length.unwrap_or(0);
                 let max_len = query.max_length.unwrap_or(usize::MAX);
 
-                if word.len() < min_len || word.len() > max_len {
+                if word.chars().count() < min_len || word.chars().count() > max_len {
                     continue;
                 }
 
                 if SharedQueryCache::result_matches_query(word, query) {
                     all_results.push(DictionaryResult {
                         word: word.clone(),
-                        confidence: if confidence > 0.0 { confidence } else { -1.0 },
+                        confidence: super::normalized_frequency(confidence, inner.total_frequency),
                     });
                     break;
                 }
             }
         }
 
-        all_results.sort_by(|a, b| {
-            b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.word.cmp(&b.word))
-        });
+        all_results.sort_by(super::rank_results);
 
         all_results
     }
 
     fn get_frequency(&self, word: &str) -> f64 {
-        self.frequency(word)
+        let inner = self.inner.read().unwrap();
+        inner.words.get(word).map_or(-1.0, |count| {
+            super::normalized_frequency(*count, inner.total_frequency)
+        })
     }
 
     fn contains(&self, word: &str) -> bool {
         let inner = self.inner.read().unwrap();
-        inner.words.contains_key(&word.to_lowercase())
+        inner.words.contains_key(word)
     }
 
     fn is_writable(&self) -> bool {
@@ -403,7 +416,7 @@ impl DictionaryBackend for FileDictionaryBackend {
         }
 
         let mut inner = self.inner.write().unwrap();
-        let key = word.to_lowercase();
+        let key = crate::text::nfc(word);
 
         if !allow_existing && inner.words.contains_key(&key) {
             return Err(format!("word '{}' already exists", word).into());
@@ -436,7 +449,7 @@ mod tests {
         dict.add_word_mut("help".to_string(), 75.0);
 
         assert!(dict.contains("hello"));
-        assert!(dict.contains("HELLO"));
+        assert!(!dict.contains("HELLO"));
         assert!(!dict.contains("foo"));
 
         let results = dict.query_prefixes(&[DictionaryQuery {

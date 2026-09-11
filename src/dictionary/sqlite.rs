@@ -16,6 +16,7 @@ pub struct PresageSqliteBackend {
     created_new_file: bool,
     schema_initialized: Mutex<bool>,
     cache: SharedQueryCache,
+    total_cache: Mutex<Option<(i64, u64, u64)>>,
     ngrams_level_max: usize,
 }
 
@@ -39,6 +40,7 @@ impl PresageSqliteBackend {
             created_new_file: !file_existed,
             schema_initialized: Mutex::new(false),
             cache: SharedQueryCache::new(),
+            total_cache: Mutex::new(None),
             ngrams_level_max,
         })
     }
@@ -63,6 +65,7 @@ impl PresageSqliteBackend {
             created_new_file,
             schema_initialized: Mutex::new(false),
             cache: SharedQueryCache::new(),
+            total_cache: Mutex::new(None),
             ngrams_level_max,
         }
     }
@@ -78,6 +81,7 @@ impl PresageSqliteBackend {
             created_new_file: true,
             schema_initialized: Mutex::new(false),
             cache: SharedQueryCache::new(),
+            total_cache: Mutex::new(None),
             ngrams_level_max,
         }
     }
@@ -124,97 +128,38 @@ impl PresageSqliteBackend {
 
 impl DictionaryBackend for PresageSqliteBackend {
     fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
-        self.cache.get_or_compute(queries, |queries| {
-            if queries.is_empty() {
-                return Vec::new();
-            }
-
-            let mut clauses = Vec::new();
-            for q in queries {
-                let mut cond = Vec::new();
-                if let Some(ref prefix) = q.prefix {
-                    cond.push(format!("word LIKE '{}%'", prefix));
-                }
-                if let Some(ref suffix) = q.suffix {
-                    cond.push(format!("word LIKE '%{}'", suffix));
-                }
-                if let Some(min) = q.min_length {
-                    cond.push(format!("LENGTH(word) >= {}", min));
-                }
-                if let Some(max) = q.max_length {
-                    if max != usize::MAX {
-                        cond.push(format!("LENGTH(word) <= {}", max));
-                    }
-                }
-                let clause = if cond.is_empty() {
-                    "1".to_string()
-                } else {
-                    cond.join(" AND ")
-                };
-                clauses.push(format!("({})", clause));
-            }
-
-            let sql = format!(
-                "SELECT word, count FROM _1_gram WHERE {}",
-                clauses.join(" OR ")
-            );
-
-            let mut all_results = Vec::new();
-            let conn = self.conn.lock();
-            match conn.prepare(&sql) {
-                Ok(mut stmt) => {
-                    if let Ok(rows) = stmt.query_map([], |row| {
-                        let word: String = row.get(0)?;
-                        let count: i64 = row.get(1)?;
-                        Ok(DictionaryResult {
-                            word,
-                            confidence: if count > 0 { count as f64 } else { -1.0 },
-                        })
-                    }) {
-                        for row in rows.flatten() {
-                            all_results.push(row);
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("warning: sqlite query failed — {}", e);
-                }
-            }
-
-            all_results.sort_by(|a, b| {
-                b.confidence
-                    .partial_cmp(&a.confidence)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.word.cmp(&b.word))
-            });
-
-            all_results
-        })
+        self.unigram_total(); // Invalidate cached results after any database change.
+        self.cache
+            .get_or_compute(queries, |q| self.query_limited(q, usize::MAX))
     }
 
-    // Bound the database result and treat user prefixes/suffixes as literal
-    // text. The legacy unbounded query API remains unchanged.
+    // GLOB is case-sensitive; escape its syntax so constraints remain literal.
     fn query_limited(&self, queries: &[DictionaryQuery], max: usize) -> Vec<DictionaryResult> {
         use rusqlite::types::Value;
         if max == 0 || queries.is_empty() {
             return Vec::new();
         }
         let literal = |text: &str| {
-            text.replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
+            text.chars()
+                .map(|ch| match ch {
+                    '*' => "[*]".into(),
+                    '?' => "[?]".into(),
+                    '[' => "[[]".into(),
+                    _ => ch.to_string(),
+                })
+                .collect::<String>()
         };
         let mut values = Vec::<Value>::new();
         let mut clauses = Vec::new();
         for query in queries {
             let mut terms = Vec::new();
             if let Some(prefix) = &query.prefix {
-                values.push(Value::Text(format!("{}%", literal(prefix))));
-                terms.push(format!("word LIKE ?{} ESCAPE '\\'", values.len()));
+                values.push(Value::Text(format!("{}*", literal(prefix))));
+                terms.push(format!("word GLOB ?{}", values.len()));
             }
             if let Some(suffix) = &query.suffix {
-                values.push(Value::Text(format!("%{}", literal(suffix))));
-                terms.push(format!("word LIKE ?{} ESCAPE '\\'", values.len()));
+                values.push(Value::Text(format!("*{}", literal(suffix))));
+                terms.push(format!("word GLOB ?{}", values.len()));
             }
             if let Some(min) = query.min_length {
                 values.push(Value::Integer(min.try_into().unwrap_or(i64::MAX)));
@@ -236,6 +181,7 @@ impl DictionaryBackend for PresageSqliteBackend {
             clauses.join(" OR "),
             values.len()
         );
+        let total = self.unigram_total() as f64;
         let conn = self.conn.lock();
         let mut statement = match conn.prepare(&sql) {
             Ok(statement) => statement,
@@ -248,7 +194,7 @@ impl DictionaryBackend for PresageSqliteBackend {
             let count: i64 = row.get(1)?;
             Ok(DictionaryResult {
                 word: row.get(0)?,
-                confidence: if count > 0 { count as f64 } else { -1.0 },
+                confidence: super::normalized_frequency(count as f64, total),
             })
         }) {
             Ok(rows) => rows.filter_map(Result::ok).collect(),
@@ -260,19 +206,15 @@ impl DictionaryBackend for PresageSqliteBackend {
     }
 
     fn get_frequency(&self, word: &str) -> f64 {
-        let sql = "SELECT count FROM _1_gram WHERE word = ?1 LIMIT 1";
+        let total = self.unigram_total() as f64;
         let conn = self.conn.lock();
-        if let Ok(mut stmt) = conn.prepare(sql) {
-            if let Ok(mut rows) = stmt.query_map([word], |row| {
-                let count: i64 = row.get(0)?;
-                Ok(count as f64)
-            }) {
-                if let Some(result) = rows.next() {
-                    return result.unwrap_or(0.0);
-                }
-            }
-        }
-        0.0
+        conn.query_row(
+            "SELECT count FROM _1_gram WHERE word = ?1 LIMIT 1",
+            [word],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| super::normalized_frequency(count as f64, total))
+        .unwrap_or(-1.0)
     }
 
     fn contains(&self, word: &str) -> bool {
@@ -299,7 +241,11 @@ impl DictionaryBackend for PresageSqliteBackend {
 
         self.ensure_schema();
 
-        let count = frequency as i64;
+        if !frequency.is_finite() || frequency < 0.0 || frequency > i64::MAX as f64 {
+            return Err("frequency must be a finite nonnegative count".into());
+        }
+        let word = crate::text::nfc(word);
+        let count = frequency.round() as i64;
         let conn = self.conn.lock();
 
         if allow_existing {
@@ -311,7 +257,7 @@ impl DictionaryBackend for PresageSqliteBackend {
             let exists_sql = "SELECT 1 FROM _1_gram WHERE word = ?1";
             let exists: bool = conn
                 .prepare(exists_sql)
-                .and_then(|mut stmt| stmt.exists([word]))
+                .and_then(|mut stmt| stmt.exists([word.as_str()]))
                 .unwrap_or(false);
             if exists {
                 return Err(format!("word '{}' already exists", word).into());
@@ -325,24 +271,35 @@ impl DictionaryBackend for PresageSqliteBackend {
 }
 
 impl NgramBackend for PresageSqliteBackend {
+    fn supports_sentence_start(&self) -> bool {
+        true
+    }
     fn max_order(&self) -> usize {
         self.ngrams_level_max
     }
 
     fn unigram_total(&self) -> u64 {
-        let sql = "SELECT COALESCE(SUM(count), 0) FROM _1_gram";
         let conn = self.conn.lock();
-        if let Ok(mut stmt) = conn.prepare(sql) {
-            if let Ok(mut rows) = stmt.query_map((), |row| {
-                let val: i64 = row.get(0)?;
-                Ok(val as u64)
-            }) {
-                if let Some(result) = rows.next() {
-                    return result.unwrap_or(0);
-                }
+        let version = conn
+            .query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(-1);
+        let changes = conn.total_changes();
+        let mut cache = self.total_cache.lock().unwrap();
+        if let Some((v, c, total)) = *cache {
+            if v == version && c == changes {
+                return total;
             }
         }
-        0
+        let total = conn
+            .query_row(
+                "SELECT COALESCE(SUM(CASE WHEN count > 0 THEN count ELSE 0 END), 0) FROM _1_gram",
+                [],
+                |r| r.get::<_, u64>(0),
+            )
+            .unwrap_or(0);
+        self.cache.clear();
+        *cache = Some((version, changes, total));
+        total
     }
 
     fn ngram_count(&self, ngram: &[&str]) -> u64 {
@@ -446,13 +403,13 @@ impl NgramBackend for PresageSqliteBackend {
         if ngram.is_empty() || ngram.len() > self.ngrams_level_max {
             return Err(format!("ngram order must be 1-{}", self.ngrams_level_max).into());
         }
-        if delta < 0.0 {
+        if !delta.is_finite() || delta < 0.0 || delta > i64::MAX as f64 {
             return Err("delta must be non-negative".into());
         }
 
         self.ensure_schema();
 
-        let delta_int = delta as i64;
+        let delta_int = delta.round() as i64;
         let order = ngram.len();
         let table = format!("_{}_gram", order);
 
@@ -489,7 +446,7 @@ impl NgramBackend for PresageSqliteBackend {
 
         let params: Vec<Box<dyn rusqlite::types::ToSql>> = ngram
             .iter()
-            .map(|w| Box::new(*w) as Box<dyn rusqlite::types::ToSql>)
+            .map(|w| Box::new(crate::text::nfc(w)) as Box<dyn rusqlite::types::ToSql>)
             .chain(std::iter::once(
                 Box::new(delta_int) as Box<dyn rusqlite::types::ToSql>
             ))
@@ -519,6 +476,7 @@ impl Clone for PresageSqliteBackend {
             created_new_file: self.created_new_file,
             schema_initialized: Mutex::new(false),
             cache: SharedQueryCache::new(),
+            total_cache: Mutex::new(None),
             ngrams_level_max: self.ngrams_level_max,
         }
     }
@@ -564,9 +522,9 @@ mod tests {
         let shared = SharedSqliteConnection::new(conn);
         let backend = PresageSqliteBackend::from_shared(shared, true, false);
 
-        assert_eq!(backend.get_frequency("hello"), 100.0);
-        assert_eq!(backend.get_frequency("world"), 50.0);
-        assert_eq!(backend.get_frequency("nonexistent"), 0.0);
+        assert_eq!(backend.get_frequency("hello"), 100.0 / 230.0);
+        assert_eq!(backend.get_frequency("world"), 50.0 / 230.0);
+        assert_eq!(backend.get_frequency("nonexistent"), -1.0);
     }
 
     #[test]
@@ -647,13 +605,15 @@ mod tests {
         let backend = PresageSqliteBackend::open(&db_path, true).unwrap();
         backend.add_word("hello", 10.0, false).unwrap();
         assert!(backend.contains("hello"));
-        assert_eq!(backend.get_frequency("hello"), 10.0);
+        assert_eq!(backend.get_frequency("hello"), 1.0);
+        assert_eq!(backend.ngram_count(&["hello"]), 10);
 
         let err = backend.add_word("hello", 20.0, false);
         assert!(err.is_err());
 
         backend.add_word("hello", 20.0, true).unwrap();
-        assert_eq!(backend.get_frequency("hello"), 20.0);
+        assert_eq!(backend.get_frequency("hello"), 1.0);
+        assert_eq!(backend.ngram_count(&["hello"]), 20);
     }
 
     #[test]

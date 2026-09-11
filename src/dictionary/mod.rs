@@ -43,10 +43,9 @@ pub use sqlite::PresageSqliteBackend;
 // without re-normalizing per call.
 //
 // Matching is exact (case-sensitive) by default. Backends perform no
-// implicit case folding or other normalization; any normalization
-// (lowercasing, transliteration, accent handling) is configured at backend
-// construction time, never applied silently inside a query. Normalization
-// pipelines, where used, start with an NFC stage.
+// implicit case folding or other normalization. Text preparation belongs to
+// each request; text-built stores normalize at ingestion. Stored casing is
+// retained for display.
 
 // ---------------------------------------------------------------------------
 // Query types
@@ -75,6 +74,30 @@ pub struct DictionaryResult {
     /// for this entry. Backends keep native raw counts in storage and
     /// convert at this boundary.
     pub confidence: f64,
+}
+
+/// Convert native nonnegative counts without allowing malformed data into
+/// ranking. Patricia already stores probabilities and must not use this helper.
+pub fn normalized_frequency(count: f64, total: f64) -> f64 {
+    if count.is_finite() && count >= 0.0 && total.is_finite() && total > 0.0 {
+        (count / total).clamp(0.0, 1.0)
+    } else {
+        -1.0
+    }
+}
+
+pub fn usable_frequency(value: f64) -> f64 {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        value
+    } else {
+        -1.0
+    }
+}
+
+pub fn rank_results(a: &DictionaryResult, b: &DictionaryResult) -> std::cmp::Ordering {
+    usable_frequency(b.confidence)
+        .total_cmp(&usable_frequency(a.confidence))
+        .then_with(|| a.word.cmp(&b.word))
 }
 
 // ---------------------------------------------------------------------------
@@ -300,17 +323,16 @@ impl SharedQueryCache {
 
     /// Verify that a single word satisfies every constraint in `query`.
     pub fn result_matches_query(word: &str, query: &DictionaryQuery) -> bool {
-        let word_len = word.len();
-        let lower = word.to_lowercase();
+        let word_len = word.chars().count();
 
         if let Some(prefix) = &query.prefix {
-            if !lower.starts_with(&prefix.to_lowercase()) {
+            if !word.starts_with(prefix) {
                 return false;
             }
         }
 
         if let Some(suffix) = &query.suffix {
-            if !lower.ends_with(&suffix.to_lowercase()) {
+            if !word.ends_with(suffix) {
                 return false;
             }
         }
@@ -432,11 +454,7 @@ impl SharedQueryCache {
             }
         }
 
-        filtered.sort_by(|a, b| {
-            b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        filtered.sort_by(rank_results);
         filtered.dedup_by(|a, b| a.word == b.word);
         filtered
     }

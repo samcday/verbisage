@@ -350,7 +350,7 @@ mod tests {
         let freq = client.frequency("hello").unwrap();
         assert!(freq > 0.0);
         let freq_missing = client.frequency("nonexistent").unwrap();
-        assert_eq!(freq_missing, 0.0);
+        assert_eq!(freq_missing, -1.0);
 
         // query — prefix only
         let results = client

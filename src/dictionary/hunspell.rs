@@ -44,12 +44,13 @@ impl HunspellDictionaryBackend {
                 continue;
             }
 
-            let word = word.to_lowercase();
+            let word = crate::text::nfc(word);
             words.insert(word.clone(), 1.0);
             words_sorted.push(word);
         }
 
         words_sorted.sort_unstable();
+        words_sorted.dedup();
 
         Ok(Self {
             words,
@@ -83,20 +84,18 @@ impl DictionaryBackend for HunspellDictionaryBackend {
         let mut all_results = Vec::new();
 
         for word in &self.words_sorted {
-            let confidence = self.words.get(word).copied().unwrap_or(0.0);
-
             for query in queries {
                 let min_len = query.min_length.unwrap_or(0);
                 let max_len = query.max_length.unwrap_or(usize::MAX);
 
-                if word.len() < min_len || word.len() > max_len {
+                if word.chars().count() < min_len || word.chars().count() > max_len {
                     continue;
                 }
 
                 if SharedQueryCache::result_matches_query(word, query) {
                     all_results.push(DictionaryResult {
                         word: word.clone(),
-                        confidence: if confidence > 0.0 { confidence } else { -1.0 },
+                        confidence: -1.0,
                     });
                     break;
                 }
@@ -105,8 +104,7 @@ impl DictionaryBackend for HunspellDictionaryBackend {
 
         all_results.sort_by(|a, b| {
             b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.confidence)
                 .then_with(|| a.word.cmp(&b.word))
         });
 
@@ -114,11 +112,14 @@ impl DictionaryBackend for HunspellDictionaryBackend {
     }
 
     fn get_frequency(&self, word: &str) -> f64 {
-        self.words.get(&word.to_lowercase()).copied().unwrap_or(0.0)
+        {
+            let _ = word;
+            -1.0
+        }
     }
 
     fn contains(&self, word: &str) -> bool {
-        self.words.contains_key(&word.to_lowercase())
+        self.words.contains_key(word)
     }
 
     fn is_writable(&self) -> bool {

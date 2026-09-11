@@ -30,7 +30,7 @@ impl SmoothedPredictor {
     pub fn new(backend: std::sync::Arc<dyn NgramBackend>) -> Self {
         Self {
             backend,
-            deltas: vec![0.01, 0.1, 0.89],
+            deltas: Vec::new(),
             count_threshold: 1,
             candidate_limit: 100,
         }
@@ -97,37 +97,13 @@ impl SmoothedPredictor {
 
     /// Phase 2: score each candidate with full interpolation.
     fn score_candidate(&self, context: &[&str], candidate: &str) -> f64 {
-        let max_order = self.backend.max_order().min(self.deltas.len());
-        let mut prob = 0.0;
-
-        for k in 0..max_order {
-            let order = k + 1;
-            let ctx_start = context.len().saturating_sub(order - 1);
-            let ctx_slice = &context[ctx_start..];
-
-            let mut ngram: Vec<&str> = ctx_slice.to_vec();
-            ngram.push(candidate);
-
-            let numerator = self.backend.ngram_count(&ngram);
-
-            let denominator = if k == 0 {
-                self.backend.unigram_total()
-            } else if ctx_slice.is_empty() {
-                0
-            } else {
-                self.backend.ngram_count(ctx_slice)
-            };
-
-            let freq = if denominator > 0 && denominator >= numerator {
-                numerator as f64 / denominator as f64
-            } else {
-                0.0
-            };
-
-            prob += self.deltas[k] * freq;
-        }
-
-        prob
+        super::scoring::interpolate_with_weights(
+            self.backend.as_ref(),
+            context,
+            candidate,
+            self.backend.max_order(),
+            &self.deltas,
+        )
     }
 }
 
@@ -148,17 +124,17 @@ impl Predictor for SmoothedPredictor {
             .filter(|(_, prob)| *prob > 0.0)
             .collect();
 
-        scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
         scored
             .into_iter()
             .take(max_suggestions)
             .map(|(word, confidence)| Prediction { word, confidence })
             .collect()
+    }
+
+    fn candidate_score(&self, context: &[&str], candidate: &str) -> Option<f64> {
+        Some(self.score_candidate(context, candidate))
     }
 
     fn increase_ngram_frequency(
