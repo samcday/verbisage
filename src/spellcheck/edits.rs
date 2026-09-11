@@ -1,6 +1,6 @@
 //! Shared one-edit generator. Callers own matching, budgets, and ranking.
 
-use keyboard_layout::{Key, KeyboardLayout, RectKey, RectKeyLayout};
+use keyboard_layout::{Key, KeyboardLayout, RectKeyLayout};
 
 /// A source of substitution candidates for a character.
 ///
@@ -142,6 +142,7 @@ pub fn visit_edits(word: &str, source: &dyn EditSource, mut visit: impl FnMut(St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use keyboard_layout::RectKey;
 
     struct Extra;
     impl EditSource for Extra {

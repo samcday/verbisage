@@ -58,6 +58,7 @@ impl VerbisageDbus {
                     input_prep: params.options.input_prep,
                     context_prep: params.options.context_prep,
                     case_preference: params.options.case_preference,
+                    layout: None,
                 },
                 params.max,
             )
@@ -272,6 +273,7 @@ impl VerbisageDbus {
                 context: vec![],
                 max: max as usize,
                 options: Default::default(),
+                layout: None,
             },
             lang.into(),
         )
@@ -290,6 +292,7 @@ impl VerbisageDbus {
         input_prep: (String, String),
         context_prep: (String, String),
         case_preference: String,
+        layout: String,
     ) -> Result<Vec<(String, f64)>, FdoError> {
         let options = super::protocol::CompletionOptions {
             input_prep: crate::text::TextPrep::from_names(&input_prep.0, &input_prep.1)
@@ -305,6 +308,7 @@ impl VerbisageDbus {
                 context,
                 max: max as usize,
                 options,
+                layout: (!layout.is_empty()).then_some(layout),
             },
             lang,
         )
@@ -331,6 +335,7 @@ impl VerbisageDbus {
                     context_prep: prep,
                     ..Default::default()
                 },
+                layout: None,
             },
             lang,
         )
@@ -434,6 +439,7 @@ impl VerbisageDbus {
                 context,
                 max: max as usize,
                 options: Default::default(),
+                layout: None,
             },
             lang.into(),
         )

@@ -96,6 +96,17 @@ impl DbusClient {
         max: u32,
         lang: &str,
     ) -> zbus::Result<Vec<(String, f64)>> {
+        self.complete_with_layout(input, max, lang, "")
+    }
+
+    /// Like [`Self::complete_with`] but with a registered layout token.
+    pub fn complete_with_layout(
+        &self,
+        input: &crate::completion::CompletionInput<'_>,
+        max: u32,
+        lang: &str,
+        layout: &str,
+    ) -> zbus::Result<Vec<(String, f64)>> {
         let case = serde_json::to_value(input.case_preference).unwrap();
         let message = self.call(
             "CompleteWith",
@@ -108,6 +119,7 @@ impl DbusClient {
                 input.input_prep.names(),
                 input.context_prep.names(),
                 case.as_str().unwrap(),
+                layout,
             ),
         )?;
         message.body().deserialize()

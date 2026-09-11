@@ -182,8 +182,22 @@ impl StdioClient {
         input: &crate::completion::CompletionInput<'_>,
         max: usize,
     ) -> Result<Vec<DictionaryResult>, ClientError> {
-        let value = self.send_request("complete_with",json!({"word":input.input,"context":input.context,"max":max,
-            "options":{"input_prep":input.input_prep,"context_prep":input.context_prep,"case_preference":input.case_preference}}))?;
+        self.complete_with_layout(input, max, "")
+    }
+
+    /// Like [`Self::complete_with`] but with a registered layout token.
+    pub fn complete_with_layout(
+        &mut self,
+        input: &crate::completion::CompletionInput<'_>,
+        max: usize,
+        layout: &str,
+    ) -> Result<Vec<DictionaryResult>, ClientError> {
+        let mut params = json!({"word":input.input,"context":input.context,"max":max,
+            "options":{"input_prep":input.input_prep,"context_prep":input.context_prep,"case_preference":input.case_preference}});
+        if !layout.is_empty() {
+            params["layout"] = json!(layout);
+        }
+        let value = self.send_request("complete_with", params)?;
         serde_json::from_value(value).map_err(ClientError::Json)
     }
     pub fn predict_with(

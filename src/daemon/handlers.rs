@@ -272,6 +272,13 @@ impl DaemonHandler {
         lang: &str,
     ) -> Result<Vec<DictionaryResult>, String> {
         let context: Vec<_> = params.context.iter().map(String::as_str).collect();
+        let layout = match &params.layout {
+            Some(token) => Some(
+                self.layout(token)
+                    .ok_or_else(|| format!("unknown layout token '{token}'"))?,
+            ),
+            None => None,
+        };
         self.complete_with(
             &CompletionInput {
                 input: &params.word,
@@ -279,7 +286,7 @@ impl DaemonHandler {
                 input_prep: params.options.input_prep,
                 context_prep: params.options.context_prep,
                 case_preference: params.options.case_preference,
-                layout: None,
+                layout,
             },
             params.max,
             lang,
@@ -516,6 +523,7 @@ impl DaemonHandler {
                         context: params.context,
                         max: params.max,
                         options: params.options,
+                        layout: None,
                     },
                     lang,
                 ) {
@@ -792,5 +800,52 @@ mod tests {
         assert!(response.error.is_none(), "{:?}", response.error);
         assert_eq!(response.result.unwrap(), json!(true));
         assert!(handler.layout(&token).is_none());
+    }
+
+    #[test]
+    fn complete_resolves_registered_layout_token() {
+        let mut dict = FileDictionaryBackend::new();
+        dict.add_word_mut("hello".into(), 100.0);
+        let handler = DaemonHandler::new(Box::new(dict), None, None, "en_US".into());
+
+        let register = DaemonRequest {
+            id: Some(1),
+            method: "register_layout".into(),
+            params: json!({ "layout": { "rows": { "rows": [{ "keys": [
+                { "main": "h", "secondary": [], "width": 1.0, "stretch": false, "rect": null },
+                { "main": "e", "secondary": [], "width": 1.0, "stretch": false, "rect": null },
+                { "main": "l", "secondary": [], "width": 1.0, "stretch": false, "rect": null },
+                { "main": "o", "secondary": [], "width": 1.0, "stretch": false, "rect": null }
+            ] }], "ignored_labels": [] } } }),
+            lang: None,
+        };
+        let token = handler
+            .handle(register)
+            .result
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let response = handler.handle(DaemonRequest {
+            id: Some(2),
+            method: "complete_with".into(),
+            params: json!({ "word": "helo", "context": [], "max": 6, "layout": token }),
+            lang: None,
+        });
+        assert!(response.error.is_none(), "{:?}", response.error);
+
+        let response = handler.handle(DaemonRequest {
+            id: Some(3),
+            method: "complete_with".into(),
+            params: json!({ "word": "helo", "context": [], "max": 6, "layout": "deadbeef" }),
+            lang: None,
+        });
+        assert!(
+            response
+                .error
+                .unwrap_or_default()
+                .contains("unknown layout token")
+        );
     }
 }

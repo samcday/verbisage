@@ -386,6 +386,7 @@ fn run_complete(
         input_prep: TextPrep::from_names(&text.normalize, &text.fold).unwrap(),
         context_prep: TextPrep::from_names(&text.context_normalize, &text.context_fold).unwrap(),
         case_preference: serde_json::from_value(serde_json::json!(text.case_preference)).unwrap(),
+        layout: None,
     };
     for prep in [input.input_prep, input.context_prep] {
         if let Some(warning) = prep.warning() {

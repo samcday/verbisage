@@ -119,6 +119,9 @@ pub struct CompleteParams {
     pub max: usize,
     #[serde(default)]
     pub options: CompletionOptions,
+    /// Optional registered keyboard-layout token.
+    #[serde(default)]
+    pub layout: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
