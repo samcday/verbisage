@@ -5,8 +5,12 @@ use super::{CompletionCandidate, CompletionConfig, CompletionEngine, CompletionI
 use crate::dictionary::search::{WordSearch, check_deadline};
 use crate::dictionary::{DictionaryBackend, usable_frequency};
 use crate::prediction::Predictor;
-use crate::spellcheck::edits::{EditSource, LatinAlphabet, visit_edits};
-use crate::spatial::PhysicalEdits;
+use crate::spellcheck::edits::visit_edits;
+use crate::spatial::{
+    DISTANCE_WEIGHT_LANGUAGE, DISTANCE_WEIGHT_LENGTH,
+    NORMALIZED_SPATIAL_DISTANCE_THRESHOLD_FOR_EDIT, SpatialInput,
+    TYPING_MAX_OUTPUT_SCORE_PER_INPUT,
+};
 use crate::text::{CaseFold, CasePreference, LangDb, prepare_context};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -80,15 +84,10 @@ impl CompletionEngine for AndroidCompleter<'_> {
             self.lang,
         );
         let context: Vec<_> = context.iter().map(String::as_str).collect();
-        let latin = LatinAlphabet;
-        let layout_edits = input.layout.as_deref().map(PhysicalEdits::new);
-        let source: &dyn EditSource = match &layout_edits {
-            Some(edits) => edits,
-            None => &latin,
-        };
+        let source = input.spatial.edit_source();
         let mut edits = HashMap::<String, f64>::new();
         if folded.chars().count() >= self.config.min_correction_chars {
-            visit_edits(&folded, source, |word, weight| {
+            visit_edits(&folded, &source, |word, weight| {
                 edits
                     .entry(word)
                     .and_modify(|v| *v = v.max(weight))
@@ -148,25 +147,28 @@ impl CompletionEngine for AndroidCompleter<'_> {
             Some(p) => p.score_candidates(&context, &key_refs, deadline)?,
             None => vec![None; candidates.len()],
         };
+        let spatial_active = !input.spatial.is_none();
+        let input_len = folded.chars().count();
+        // HeliBoard gates error corrections on how accurately the user touched
+        // the intended keys. Only meaningful when touch points are present.
+        let corrections_allowed = match &input.spatial {
+            SpatialInput::Touch { .. } => input
+                .spatial
+                .input_distance(&folded)
+                .map(|distance| distance < NORMALIZED_SPATIAL_DISTANCE_THRESHOLD_FOR_EDIT)
+                .unwrap_or(false),
+            _ => true,
+        };
         let mut results = Vec::with_capacity(candidates.len());
         for ((row, prepared, exact, weight), model) in candidates.into_iter().zip(scores) {
             check_deadline(deadline)?;
             let probability = model
                 .filter(|p| p.is_finite() && (0.0..=1.0).contains(p))
                 .unwrap_or_else(|| usable_frequency(row.confidence).max(0.0));
-            // Lower language/spatial distance must improve the score. Scale
-            // the resulting quality (not distance), preserving finite 0..1.
-            // Treat the edit likelihood as a joint factor. An additive-only
-            // adaptation regressed helo -> hello by favoring common unrelated
-            // substitutions; this keeps the existing correction tradeoff.
-            let mut quality = ((1.1214 * probability + 0.1524) * weight) / (1.1214 + 0.1524);
-            if input.input_prep.fold != CaseFold::None
+            let case_bonus = input.input_prep.fold != CaseFold::None
                 && input.case_preference == CasePreference::PreferMatched
                 && input.input.chars().any(|c| c.is_uppercase())
-                && row.word.starts_with(input.input)
-            {
-                quality += 0.01;
-            }
+                && row.word.starts_with(input.input);
             let mut promotion = 1.0;
             if !folded.is_empty() && prepared == folded {
                 promotion *= 1.1;
@@ -174,9 +176,39 @@ impl CompletionEngine for AndroidCompleter<'_> {
             if !input.input.is_empty() && row.word == input.input {
                 promotion *= 1.1;
             }
+
+            let score = if spatial_active {
+                // HeliBoard's additive model over distances. Corrections are
+                // suppressed when the touch accuracy gate is not met.
+                if !exact && !corrections_allowed {
+                    continue;
+                }
+                let spatial_distance =
+                    input.spatial.word_distance(&folded, &prepared).unwrap_or(0.0);
+                let language_distance = 1.0 - probability;
+                let compound = spatial_distance * DISTANCE_WEIGHT_LENGTH
+                    + language_distance * DISTANCE_WEIGHT_LANGUAGE;
+                let max_distance = DISTANCE_WEIGHT_LANGUAGE
+                    + input_len as f64 * TYPING_MAX_OUTPUT_SCORE_PER_INPUT;
+                let base = (1.0 - compound / max_distance).clamp(0.0, 1.0);
+                let base = if case_bonus { base + 0.01 } else { base };
+                (base * promotion).clamp(0.0, 1.0)
+            } else {
+                // Geometry-free/legacy path: lower language/spatial quality must
+                // improve the score, treating the edit weight as a joint factor.
+                // An additive-only adaptation regressed helo -> hello.
+                let mut quality = ((DISTANCE_WEIGHT_LANGUAGE * probability
+                    + DISTANCE_WEIGHT_LENGTH)
+                    * weight)
+                    / (DISTANCE_WEIGHT_LANGUAGE + DISTANCE_WEIGHT_LENGTH);
+                if case_bonus {
+                    quality += 0.01;
+                }
+                (quality * promotion / (1.01 * 1.21)).clamp(0.0, 1.0)
+            };
             results.push(CompletionCandidate {
                 word: row.word,
-                score: (quality * promotion / (1.01 * 1.21)).clamp(0.0, 1.0),
+                score,
                 is_exact: exact,
             });
         }
@@ -189,5 +221,56 @@ impl CompletionEngine for AndroidCompleter<'_> {
         results.truncate(max);
         check_deadline(deadline)?;
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dictionary::FileDictionaryBackend;
+    use crate::spatial::{SpatialInput, TouchPoint};
+    use keyboard_layout::{RectKey, RectKeyLayout};
+    use std::sync::Arc;
+
+    fn layout() -> Arc<RectKeyLayout> {
+        Arc::new(RectKeyLayout::new(
+            vec![
+                RectKey::from_rect(Some("c".into()), vec![], 0.0, 0.0, 10.0, 10.0),
+                RectKey::from_rect(Some("a".into()), vec![], 10.0, 0.0, 10.0, 10.0),
+                RectKey::from_rect(Some("z".into()), vec![], 20.0, 0.0, 10.0, 10.0),
+                RectKey::from_rect(Some("t".into()), vec![], 20.0, 10.0, 10.0, 10.0),
+                RectKey::from_rect(Some("r".into()), vec![], 10.0, 10.0, 10.0, 10.0),
+            ],
+            &[],
+        ))
+    }
+
+    #[test]
+    fn touch_proximity_prefers_the_nearer_candidate() {
+        let mut dict = FileDictionaryBackend::new();
+        dict.add_word_mut("cat".into(), 10.0);
+        dict.add_word_mut("car".into(), 10.0);
+
+        // Touches at the centres of the typed c, a, z keys.
+        let points = vec![
+            TouchPoint::new(5.0, 5.0),
+            TouchPoint::new(15.0, 5.0),
+            TouchPoint::new(25.0, 5.0),
+        ];
+        let input = CompletionInput {
+            input: "caz",
+            spatial: SpatialInput::from_parts(Some(layout()), points),
+            ..Default::default()
+        };
+
+        let completer = AndroidCompleter::new(&dict);
+        let results = completer.complete_with(&input, 10).unwrap();
+        let cat = results.iter().position(|c| c.word == "cat");
+        let car = results.iter().position(|c| c.word == "car");
+        assert!(cat.is_some() && car.is_some(), "{results:?}");
+        assert!(
+            cat < car,
+            "the correction nearer the touch should rank first: {results:?}"
+        );
     }
 }

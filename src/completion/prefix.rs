@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use crate::dictionary::{DictionaryBackend, DictionaryQuery, DictionaryResult};
 
-use super::{CompletionCandidate, CompletionConfig, CompletionEngine};
+use super::{CompletionCandidate, CompletionConfig, CompletionEngine, CompletionInput};
 
 /// Merge intact prefixes with all usable one-edit candidates before truncating.
 /// Intact prefixes share one weight, so max+1 rows suffice before removing
@@ -165,6 +165,32 @@ impl CompletionEngine for PrefixCompleter<'_> {
                 }
             })
             .collect()
+    }
+
+    /// Apply the spatial term as a joint factor. The transplanted `complete()`
+    /// ranking is left untouched; with no spatial input the result is identical.
+    fn complete_with(
+        &self,
+        input: &CompletionInput<'_>,
+        max: usize,
+    ) -> Result<Vec<CompletionCandidate>, String> {
+        let mut candidates = self.complete(Some(input.input), max);
+        if !input.spatial.is_none() {
+            for candidate in &mut candidates {
+                let distance = input
+                    .spatial
+                    .word_distance(input.input, &candidate.word)
+                    .unwrap_or(0.0);
+                let factor = (1.0 - distance).clamp(0.1, 0.9);
+                candidate.score = (candidate.score * factor).clamp(0.0, 1.0);
+            }
+            candidates.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then_with(|| a.word.cmp(&b.word))
+            });
+        }
+        Ok(candidates)
     }
 }
 

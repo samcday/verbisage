@@ -301,7 +301,7 @@ impl DaemonHandler {
                 input_prep: params.options.input_prep,
                 context_prep: params.options.context_prep,
                 case_preference: params.options.case_preference,
-                layout,
+                spatial: crate::spatial::SpatialInput::from_parts(layout, Vec::new()),
             },
             params.max,
             lang,

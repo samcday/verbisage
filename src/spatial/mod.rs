@@ -103,6 +103,32 @@ impl SpatialInput {
         Some(f64::from(origin.distance(target)) / Self::key_diameter(layout))
     }
 
+    /// Mean normalised distance from the touch points to the key centres of the
+    /// typed input characters (the touch-accuracy gate metric).
+    pub fn input_distance(&self, input: &str) -> Option<f64> {
+        let layout = self.layout()?;
+        let points = self.points()?;
+        let diameter = Self::key_diameter(layout);
+        let chars: Vec<char> = input.chars().collect();
+        if chars.is_empty() {
+            return None;
+        }
+        let mut total = 0.0;
+        let mut counted = 0usize;
+        for (index, ch) in chars.iter().enumerate() {
+            let Some(point) = points.get(index) else {
+                continue;
+            };
+            let Some(target) = layout.location_of(&ch.to_string()) else {
+                continue;
+            };
+            let origin = layout.normalise(Point::new(point.x, point.y));
+            total += f64::from(origin.distance(target)) / diameter;
+            counted += 1;
+        }
+        (counted > 0).then(|| total / counted as f64)
+    }
+
     /// Mean normalised spatial distance between the input and a candidate,
     /// aligned by position, or `None` when there is no spatial context.
     pub fn word_distance(&self, input: &str, candidate: &str) -> Option<f64> {
