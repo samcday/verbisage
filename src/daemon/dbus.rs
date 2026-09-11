@@ -505,6 +505,23 @@ impl VerbisageDbus {
             .map(|_| true)
             .map_err(log_and_err)
     }
+
+    /// Register a keyboard layout and return its content-hash token. The
+    /// layout is a JSON-encoded `LayoutUpload`.
+    #[zbus(out_args("result"))]
+    async fn register_layout(&self, layout: &str) -> Result<String, FdoError> {
+        crate::veprintln!("[dbus-server] RegisterLayout(...)");
+        let upload: crate::layout::LayoutUpload = serde_json::from_str(layout)
+            .map_err(|error| FdoError::InvalidArgs(error.to_string()))?;
+        self.handler.register_layout(&upload).map_err(log_and_err)
+    }
+
+    /// Forget a previously registered keyboard layout.
+    #[zbus(out_args("result"))]
+    async fn forget_layout(&self, token: &str) -> Result<bool, FdoError> {
+        crate::veprintln!("[dbus-server] ForgetLayout({})", token);
+        self.handler.forget_layout(token).map_err(log_and_err)
+    }
 }
 
 /// Register on the session bus and serve forever.

@@ -148,6 +148,22 @@ impl StdioClient {
         serde_json::from_value(v).map_err(ClientError::Json)
     }
 
+    /// Register a keyboard layout, returning its content-hash token.
+    pub fn register_layout(
+        &mut self,
+        upload: &crate::layout::LayoutUpload,
+    ) -> Result<String, ClientError> {
+        let layout = serde_json::to_value(upload).map_err(ClientError::Json)?;
+        let v = self.send_request("register_layout", json!({ "layout": layout }))?;
+        serde_json::from_value(v).map_err(ClientError::Json)
+    }
+
+    /// Forget a previously registered layout.
+    pub fn forget_layout(&mut self, token: &str) -> Result<bool, ClientError> {
+        let v = self.send_request("forget_layout", json!({ "token": token }))?;
+        serde_json::from_value(v).map_err(ClientError::Json)
+    }
+
     pub fn complete(
         &mut self,
         word: &str,

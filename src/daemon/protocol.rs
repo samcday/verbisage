@@ -160,6 +160,16 @@ pub struct NgramBumpParams {
     pub save_unknown: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RegisterLayoutParams {
+    pub layout: crate::layout::LayoutUpload,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ForgetLayoutParams {
+    pub token: String,
+}
+
 fn default_max() -> usize {
     10
 }

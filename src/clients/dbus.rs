@@ -71,6 +71,19 @@ impl DbusClient {
         msg.body().deserialize()
     }
 
+    /// Register a keyboard layout, returning its content-hash token.
+    pub fn register_layout(&self, upload: &crate::layout::LayoutUpload) -> zbus::Result<String> {
+        let layout = serde_json::to_string(upload).expect("layout upload serializes");
+        let msg = self.call("RegisterLayout", self.dest(), &(layout,))?;
+        msg.body().deserialize()
+    }
+
+    /// Forget a previously registered layout.
+    pub fn forget_layout(&self, token: &str) -> zbus::Result<bool> {
+        let msg = self.call("ForgetLayout", self.dest(), &(token,))?;
+        msg.body().deserialize()
+    }
+
     /// Rank current-word completions and corrections in one bounded response.
     pub fn complete(&self, word: &str, max: u32, lang: &str) -> zbus::Result<Vec<(String, f64)>> {
         let message = self.call("Complete", self.dest(), &(word, max, lang))?;

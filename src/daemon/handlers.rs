@@ -14,8 +14,9 @@ use crate::spellcheck::SpellChecker;
 
 use super::config::DaemonConfig;
 use super::protocol::{
-    CompleteParams, DaemonRequest, DaemonResponse, FrequencyParams, IsCorrectParams,
-    LimitedQueryParams, NgramBumpParams, PredictParams, QueryParams, SuggestParams, WordAddParams,
+    CompleteParams, DaemonRequest, DaemonResponse, ForgetLayoutParams, FrequencyParams,
+    IsCorrectParams, LimitedQueryParams, NgramBumpParams, PredictParams, QueryParams,
+    RegisterLayoutParams, SuggestParams, WordAddParams,
 };
 
 struct CachedBackend {
@@ -28,6 +29,7 @@ struct CachedBackend {
 pub struct DaemonHandler {
     config: DaemonConfig,
     cache: Mutex<HashMap<String, Arc<CachedBackend>>>,
+    layouts: Mutex<crate::layout::LayoutCache>,
     pub default_lang: String,
 }
 
@@ -52,6 +54,7 @@ impl DaemonHandler {
         Self {
             config: DaemonConfig::default_for(&default_lang),
             cache: Mutex::new(cache),
+            layouts: Mutex::new(crate::layout::LayoutCache::default()),
             default_lang,
         }
     }
@@ -62,6 +65,7 @@ impl DaemonHandler {
         Self {
             config,
             cache: Mutex::new(HashMap::new()),
+            layouts: Mutex::new(crate::layout::LayoutCache::default()),
             default_lang,
         }
     }
@@ -382,6 +386,28 @@ impl DaemonHandler {
         }
     }
 
+    // ── Layout registry ───────────────────────────────────────────────────
+
+    pub fn register_layout(&self, upload: &crate::layout::LayoutUpload) -> Result<String, String> {
+        let mut layouts = self
+            .layouts
+            .lock()
+            .map_err(|_| "layout cache poisoned".to_string())?;
+        crate::layout::register(&mut layouts, upload)
+    }
+
+    pub fn forget_layout(&self, token: &str) -> Result<bool, String> {
+        let mut layouts = self
+            .layouts
+            .lock()
+            .map_err(|_| "layout cache poisoned".to_string())?;
+        Ok(layouts.forget(token))
+    }
+
+    pub fn layout(&self, token: &str) -> Option<Arc<keyboard_layout::RectKeyLayout>> {
+        self.layouts.lock().ok()?.get(token)
+    }
+
     // ── JSON-protocol dispatch ────────────────────────────────────────────
 
     pub fn handle(&self, req: DaemonRequest) -> DaemonResponse {
@@ -541,6 +567,28 @@ impl DaemonHandler {
                 }
             }
 
+            "register_layout" => {
+                let params: RegisterLayoutParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => return DaemonResponse::error(id, format!("bad params: {e}")),
+                };
+                match self.register_layout(&params.layout) {
+                    Ok(token) => DaemonResponse::success(id, json!(token)),
+                    Err(e) => DaemonResponse::error(id, e),
+                }
+            }
+
+            "forget_layout" => {
+                let params: ForgetLayoutParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => return DaemonResponse::error(id, format!("bad params: {e}")),
+                };
+                match self.forget_layout(&params.token) {
+                    Ok(removed) => DaemonResponse::success(id, json!(removed)),
+                    Err(e) => DaemonResponse::error(id, e),
+                }
+            }
+
             _ => DaemonResponse::error(id, format!("unknown method: {}", req.method)),
         }
     }
@@ -696,5 +744,52 @@ mod tests {
         };
         let err = handler.query_limited(&[query], "en_US", 6).unwrap_err();
         assert!(err.contains("exceeds"), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn handler_registers_and_forgets_layouts() {
+        let handler = DaemonHandler::new(
+            Box::new(FileDictionaryBackend::new()),
+            None,
+            None,
+            "en_US".into(),
+        );
+        let register = DaemonRequest {
+            id: Some(1),
+            method: "register_layout".into(),
+            params: json!({
+                "layout": { "rows": {
+                    "rows": [{ "keys": [{
+                        "main": "q",
+                        "secondary": [],
+                        "width": 1.0,
+                        "stretch": false,
+                        "rect": null
+                    }] }],
+                    "ignored_labels": []
+                } }
+            }),
+            lang: None,
+        };
+        let response = handler.handle(register);
+        assert!(response.error.is_none(), "{:?}", response.error);
+        let token = response
+            .result
+            .unwrap()
+            .as_str()
+            .expect("token is a string")
+            .to_string();
+        assert!(handler.layout(&token).is_some());
+
+        let forget = DaemonRequest {
+            id: Some(2),
+            method: "forget_layout".into(),
+            params: json!({ "token": token }),
+            lang: None,
+        };
+        let response = handler.handle(forget);
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert_eq!(response.result.unwrap(), json!(true));
+        assert!(handler.layout(&token).is_none());
     }
 }
