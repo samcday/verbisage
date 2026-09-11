@@ -2,13 +2,11 @@
 //! not corpus counts. Context prediction uses Patricia's probability API directly.
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 
 use patricia_dict::{Dictionary, SearchParams, WordAttributes};
 
 use super::{DictionaryBackend, DictionaryQuery, DictionaryResult};
-use crate::prediction::{Prediction, Predictor};
-use crate::spellcheck::SpellChecker;
+use crate::prediction::ngram_backend::NgramBackend;
 
 pub struct PatriciaDictionaryBackend {
     dictionary: Dictionary,
@@ -162,124 +160,94 @@ impl DictionaryBackend for PatriciaDictionaryBackend {
     }
 }
 
-impl SpellChecker for Arc<PatriciaDictionaryBackend> {
-    fn is_correct(&self, word: &str) -> bool {
-        self.contains(word)
+impl NgramBackend for PatriciaDictionaryBackend {
+    fn supports_sentence_start(&self) -> bool {
+        true
     }
 
-    fn suggest(&self, word: &str, context: &[&str]) -> Vec<String> {
-        // Keep Verbisage's current English single-edit generator; Patricia
-        // supplies membership and frequency instead of Hunspell expansion.
-        let suggestions = crate::spellcheck::suggest::suggest_edits(
-            self.as_ref(),
-            None,
-            word,
-            context,
-            usize::MAX,
-            None,
-        );
-        let keys: Vec<_> = suggestions
-            .iter()
-            .map(|word| (word.as_str(), word.as_str()))
-            .collect();
-        let scores = self.score_candidates(
-            context,
-            &keys,
-            std::time::Instant::now() + std::time::Duration::from_secs(5),
-        );
-        let Ok(scores) = scores else {
-            return Vec::new();
+    fn max_order(&self) -> usize {
+        4
+    }
+
+    /// Patricia stores quantized probabilities, not counts; `255` is the
+    /// denominator used by the stored `u8` probabilities.
+    fn unigram_total(&self) -> u64 {
+        255
+    }
+
+    fn ngram_count(&self, ngram: &[&str]) -> u64 {
+        let order = ngram.len();
+        if order == 0 || order > self.max_order() {
+            return 0;
+        }
+        let candidate = ngram[order - 1];
+        let context = &ngram[..order - 1];
+        let Ok(scores) = self.dictionary.ngram_scores(candidate, context) else {
+            return 0;
         };
-        let mut ranked: Vec<_> = suggestions.into_iter().zip(scores).collect();
-        ranked.sort_by(|(a, a_score), (b, b_score)| {
-            b_score
-                .unwrap_or(0.0)
-                .total_cmp(&a_score.unwrap_or(0.0))
-                .then_with(|| a.cmp(b))
-        });
-        ranked.into_iter().take(10).map(|(word, _)| word).collect()
+        let value = match order {
+            1 => Some(scores.unigram),
+            2 => scores.bigram,
+            3 => scores.trigram,
+            _ => scores.quadgram,
+        };
+        value.map(u64::from).unwrap_or(0)
     }
-}
 
-impl Predictor for Arc<PatriciaDictionaryBackend> {
-    fn score_candidates(
-        &self,
-        context: &[&str],
-        candidates: &[(&str, &str)],
-        deadline: std::time::Instant,
-    ) -> Result<Vec<Option<f64>>, String> {
+    fn probability(&self, ngram: &[&str]) -> Option<f64> {
+        let order = ngram.len();
+        if order == 0 || order > self.max_order() {
+            return None;
+        }
+        let candidate = ngram[order - 1];
+        let context = &ngram[..order - 1];
         let prepared = self.dictionary.prepare_context(context);
         let available = prepared.available_order();
-        let mut results = Vec::with_capacity(candidates.len());
-        for (candidate, _) in candidates {
-            super::search::check_deadline(deadline)?;
-            results.push(
-                self.dictionary
-                    .ngram_scores_prepared(candidate, &prepared)
-                    .ok()
-                    .and_then(|s| {
-                        crate::prediction::scoring::interpolate_probabilities(&[
-                            Some(f64::from(s.unigram) / 255.0),
-                            s.bigram
-                                .map(|p| f64::from(p) / 255.0)
-                                .or_else(|| (available >= 2).then_some(0.0)),
-                            s.trigram
-                                .map(|p| f64::from(p) / 255.0)
-                                .or_else(|| (available >= 3).then_some(0.0)),
-                            s.quadgram
-                                .map(|p| f64::from(p) / 255.0)
-                                .or_else(|| (available >= 4).then_some(0.0)),
-                        ])
-                    }),
-            );
-        }
-        super::search::check_deadline(deadline)?;
-        Ok(results)
+        let scores = self
+            .dictionary
+            .ngram_scores_prepared(candidate, &prepared)
+            .ok()?;
+        let value = match order {
+            1 => Some(scores.unigram),
+            2 => scores.bigram,
+            3 => scores.trigram,
+            _ => scores.quadgram,
+        };
+        let probability = match value {
+            Some(value) => value,
+            // The context had this order available but the specific n-gram is
+            // absent: back off to zero rather than dropping the order.
+            None if order <= available => 0,
+            None => return None,
+        };
+        Some(f64::from(probability) / 255.0)
     }
 
-    fn candidate_score(&self, context: &[&str], candidate: &str) -> Option<f64> {
-        self.attributes(candidate)?;
-        self.score_candidates(
-            context,
-            &[(candidate, candidate)],
-            std::time::Instant::now() + std::time::Duration::from_secs(5),
-        )
-        .ok()?
-        .into_iter()
-        .next()
-        .flatten()
-    }
-
-    fn predict_next(&self, context: &[&str], max_suggestions: usize) -> Vec<Prediction> {
-        if context.is_empty() || max_suggestions == 0 {
-            return Vec::new();
-        }
-        let mut candidates = HashMap::new();
-        for (word, _) in self.dictionary.ngrams_for(context).unwrap_or_default() {
-            if let Ok(attributes) = self.dictionary.query_with_context(&word, context) {
-                if usable(&attributes) {
-                    let score = self.candidate_score(context, &word).unwrap_or(0.0);
-                    candidates.insert(word, score);
-                }
-            }
-        }
-        let mut results: Vec<_> = candidates
+    fn candidates(&self, context: &[&str], max_candidates: usize) -> Vec<(String, u64)> {
+        let mut candidates: Vec<(String, u64)> = self
+            .dictionary
+            .ngrams_for(context)
+            .unwrap_or_default()
             .into_iter()
-            .map(|(word, confidence)| Prediction { word, confidence })
+            .map(|(word, score)| (word, u64::from(score)))
             .collect();
-        results.sort_by(|a, b| {
-            b.confidence
-                .total_cmp(&a.confidence)
-                .then_with(|| a.word.cmp(&b.word))
-        });
-        results.truncate(max_suggestions);
-        results
+        candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        candidates.truncate(max_candidates);
+        candidates
+    }
+
+    fn is_writable(&self) -> bool {
+        false
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prediction::Predictor;
+    use crate::prediction::smoothed::SmoothedPredictor;
+    use crate::spellcheck::{DictionarySpellChecker, SpellChecker};
+    use std::sync::Arc;
 
     #[test]
     fn spelling_ranks_context_before_truncating_unigram_candidates() {
@@ -295,8 +263,10 @@ mod tests {
         dictionary.add_ngram("zat", &["see"], 250).unwrap();
         drop(dictionary);
         let backend = Arc::new(PatriciaDictionaryBackend::open(&path).unwrap());
-        assert!(!backend.suggest("xat", &[]).contains(&"zat".into()));
-        let suggestions = backend.suggest("xat", &["see"]);
+        let checker = DictionarySpellChecker::new(backend.clone())
+            .with_predictor(Some(Arc::new(SmoothedPredictor::new(backend.clone()))));
+        assert!(!checker.suggest("xat", &[]).contains(&"zat".into()));
+        let suggestions = checker.suggest("xat", &["see"]);
         assert_eq!(suggestions.len(), 10);
         assert_eq!(suggestions[0], "zat");
     }
@@ -314,6 +284,9 @@ mod tests {
         dictionary.add_ngram("world", &["hello"], 230).unwrap();
         drop(dictionary);
         let backend = Arc::new(PatriciaDictionaryBackend::open(&path).unwrap());
+        let predictor = SmoothedPredictor::new(backend.clone());
+        let checker = DictionarySpellChecker::new(backend.clone())
+            .with_predictor(Some(Arc::new(SmoothedPredictor::new(backend.clone()))));
         assert!(backend.contains("hello"));
         assert!(!backend.contains("helo"));
         assert!((backend.get_frequency("hello") - 200.0 / 255.0).abs() < 0.001);
@@ -325,11 +298,11 @@ mod tests {
         };
         assert_eq!(backend.query_limited(&[query.clone()], 1)[0].word, "hello");
         assert_eq!(backend.query_prefixes(&[query]).len(), 2);
-        assert!(backend.suggest("helo", &[]).contains(&"hello".into()));
+        assert!(checker.suggest("helo", &[]).contains(&"hello".into()));
         assert!(crate::completion::complete(backend.as_ref(), "linux", 6).is_empty());
-        assert_eq!(backend.predict_next(&["hello"], 1)[0].word, "world");
-        assert!(backend.predict_next(&["unrecognized"], 3).is_empty());
-        assert!(backend.predict_next(&["hello"], 0).is_empty());
-        assert!(!backend.is_writable());
+        assert_eq!(predictor.predict_next(&["hello"], 1)[0].word, "world");
+        assert!(predictor.predict_next(&["unrecognized"], 3).is_empty());
+        assert!(predictor.predict_next(&["hello"], 0).is_empty());
+        assert!(!crate::dictionary::DictionaryBackend::is_writable(backend.as_ref()));
     }
 }

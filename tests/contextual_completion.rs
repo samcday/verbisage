@@ -39,6 +39,7 @@ fn daemon_uses_explicit_patricia_path_and_respects_skip() {
 fn native_sentence_start_resolves_integer_sentinel_and_missing_data_backs_off() {
     use std::sync::Arc;
     use verbisage::dictionary::patricia::PatriciaDictionaryBackend;
+    use verbisage::prediction::smoothed::SmoothedPredictor;
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("bos");
     let mut native = patricia_dict::Dictionary::create_empty_v403(&path, "en_US").unwrap();
@@ -73,7 +74,8 @@ fn native_sentence_start_resolves_integer_sentinel_and_missing_data_backs_off() 
         Some(250)
     );
     let backend = Arc::new(PatriciaDictionaryBackend::open(&path).unwrap());
-    let engine = AndroidCompleter::new(backend.as_ref()).with_predictor(Some(&backend));
+    let predictor = SmoothedPredictor::new(backend.clone());
+    let engine = AndroidCompleter::new(backend.as_ref()).with_predictor(Some(&predictor));
     assert_eq!(engine.complete(None, 6)[0].word, "world");
     let rows = engine
         .complete_with(
@@ -99,7 +101,8 @@ fn native_sentence_start_resolves_integer_sentinel_and_missing_data_backs_off() 
     native.add_ngram("hello", &["world"], 250).unwrap();
     drop(native);
     let backend = Arc::new(PatriciaDictionaryBackend::open(&path).unwrap());
-    let engine = AndroidCompleter::new(backend.as_ref()).with_predictor(Some(&backend));
+    let predictor = SmoothedPredictor::new(backend.clone());
+    let engine = AndroidCompleter::new(backend.as_ref()).with_predictor(Some(&predictor));
     assert_eq!(
         engine.complete(None, 6),
         engine
@@ -370,6 +373,7 @@ fn sqlite_contextual_prediction_prefix_chain_and_bos_use_one_ranking() {
 fn patricia_probability_context_uses_same_ranking_and_search_keeps_rare_matches() {
     use std::sync::Arc;
     use verbisage::dictionary::patricia::PatriciaDictionaryBackend;
+    use verbisage::prediction::smoothed::SmoothedPredictor;
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("words.dict");
     let mut native = patricia_dict::Dictionary::create_empty_v403(&path, "en_US").unwrap();
@@ -387,7 +391,8 @@ fn patricia_probability_context_uses_same_ranking_and_search_keeps_rare_matches(
     native.add_ngram("later", &["you"], 250).unwrap();
     drop(native);
     let dict = Arc::new(PatriciaDictionaryBackend::open(&path).unwrap());
-    let engine = AndroidCompleter::new(dict.as_ref()).with_predictor(Some(&dict));
+    let predictor = SmoothedPredictor::new(dict.clone());
+    let engine = AndroidCompleter::new(dict.as_ref()).with_predictor(Some(&predictor));
     let input = CompletionInput {
         input: "l",
         context: &["see", "you"],

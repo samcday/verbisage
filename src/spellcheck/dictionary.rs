@@ -1,32 +1,34 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::dictionary::DictionaryBackend;
+use crate::prediction::Predictor;
+use crate::spatial::SpatialInput;
 use crate::spellcheck::edits::EditSource;
 use crate::spellcheck::{SpellChecker, SuggestionInput};
 
 /// Generic [`SpellChecker`] implementation backed by any [`DictionaryBackend`].
 ///
-/// * `is_correct` — delegates to [`DictionaryBackend::contains`].
-/// * `suggest` — uses subsequence matching via the dictionary's
-///   `query_prefixes` to find words that share a common subsequence with the
-///   input.  This gives a quick (though not edit‑distance‑aware) set of
-///   candidates.
-///
-/// # Attention points for the implementor
-///
-/// * The current suggestion strategy is naive (subsequence matching).
-///   Replace with a full Levenshtein / Damerau‑Levenshtein sweep for
-///   production use.
-/// * Subsequence matching is done via the standard `query_prefixes` path,
-///   which works with any [`DictionaryBackend`] without needing backend‑
-///   specific code.
+/// This owns the suggestion algorithm: one-edit candidate generation (optionally
+/// layout/touch aware) plus frequency or language-model ranking. Backends only
+/// supply dictionary data; an optional [`Predictor`] supplies context scores.
 pub struct DictionarySpellChecker<B: DictionaryBackend> {
     backend: Arc<B>,
+    predictor: Option<Arc<dyn Predictor>>,
 }
 
 impl<B: DictionaryBackend> DictionarySpellChecker<B> {
     pub fn new(backend: Arc<B>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            predictor: None,
+        }
+    }
+
+    /// Attach a shared language model for context-aware ranking.
+    pub fn with_predictor(mut self, predictor: Option<Arc<dyn Predictor>>) -> Self {
+        self.predictor = predictor;
+        self
     }
 }
 
@@ -36,32 +38,67 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
     }
 
     fn suggest(&self, word: &str, context: &[&str]) -> Vec<String> {
-        crate::spellcheck::suggest::suggest_edits(&*self.backend, None, word, context, 10, None)
+        self.suggest_with(
+            &SuggestionInput {
+                word,
+                context,
+                spatial: SpatialInput::None,
+            },
+            10,
+        )
     }
 
     fn suggest_with(&self, input: &SuggestionInput<'_>, max: usize) -> Vec<String> {
+        let word_lower = input.word.to_lowercase();
+        if self.backend.contains(&word_lower) {
+            return vec![word_lower];
+        }
+
         let source = input.spatial.edit_source();
         let source_ref: Option<&dyn EditSource> = if input.spatial.is_none() {
             None
         } else {
             Some(&source)
         };
-        let mut suggestions = crate::spellcheck::suggest::suggest_edits(
+        let mut candidates = crate::spellcheck::suggest::edit_candidates(
             &*self.backend,
-            None,
-            input.word,
-            input.context,
-            max,
+            &word_lower,
             source_ref,
         );
+
+        let mut ranked_by_model = false;
+        if let Some(predictor) = &self.predictor {
+            let keys: Vec<_> = candidates
+                .iter()
+                .map(|word| (word.as_str(), word.as_str()))
+                .collect();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            if let Ok(scores) = predictor.score_candidates(input.context, &keys, deadline) {
+                let mut ranked: Vec<_> = candidates.into_iter().zip(scores).collect();
+                ranked.sort_by(|(a, a_score), (b, b_score)| {
+                    b_score
+                        .unwrap_or(0.0)
+                        .total_cmp(&a_score.unwrap_or(0.0))
+                        .then_with(|| a.cmp(b))
+                });
+                candidates = ranked.into_iter().map(|(word, _)| word).collect();
+                ranked_by_model = true;
+            }
+        }
+        if !ranked_by_model {
+            crate::spellcheck::suggest::sort_by_frequency(&*self.backend, &mut candidates);
+        }
+
         if !input.spatial.is_none() {
-            suggestions.sort_by(|a, b| {
+            candidates.sort_by(|a, b| {
                 let distance_a = input.spatial.word_distance(input.word, a).unwrap_or(0.0);
                 let distance_b = input.spatial.word_distance(input.word, b).unwrap_or(0.0);
                 distance_a.total_cmp(&distance_b).then_with(|| a.cmp(b))
             });
         }
-        suggestions
+
+        candidates.truncate(max);
+        candidates
     }
 }
 

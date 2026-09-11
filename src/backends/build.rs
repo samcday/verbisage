@@ -670,7 +670,15 @@ fn build_patricia(
     match crate::dictionary::patricia::PatriciaDictionaryBackend::open(&path) {
         Ok(backend) => {
             let backend = Arc::new(backend);
-            (Box::new(backend.clone()), Some(Box::new(backend.clone())), Some(Box::new(backend)))
+            // Patricia is a data-only n-gram store; the shared smoothed
+            // predictor owns scoring, and the generic spellchecker owns
+            // suggestions (including layout/touch spatial).
+            let predictor: Arc<dyn Predictor> = Arc::new(SmoothedPredictor::new(backend.clone()));
+            let checker: Box<dyn SpellChecker> = Box::new(
+                DictionarySpellChecker::new(backend.clone()).with_predictor(Some(predictor)),
+            );
+            let model: Box<dyn Predictor> = Box::new(SmoothedPredictor::new(backend.clone()));
+            (Box::new(backend), Some(checker), Some(model))
         }
         Err(error) => {
             eprintln!("warning: cannot load Patricia dictionary '{}': {error}", path.display());

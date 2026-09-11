@@ -33,17 +33,7 @@ pub fn suggest_edits(
         return vec![word_lower];
     }
 
-    let latin = super::edits::LatinAlphabet;
-    let source: &dyn EditSource = source.unwrap_or(&latin);
-
-    let mut candidates = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    super::edits::visit_edits(&word_lower, source, |word, _weight| {
-        if word != word_lower && backend.contains(&word) && seen.insert(word.clone()) {
-            candidates.push(word);
-        }
-        true
-    });
+    let mut candidates = edit_candidates(backend, &word_lower, source);
 
     // Score candidates using best available strategy
     let use_context = ngram_backend.is_some() && !context.is_empty();
@@ -54,15 +44,41 @@ pub fn suggest_edits(
         }
     } else {
         // Fallback: rank by dictionary frequency
-        candidates.sort_by(|a, b| {
-            let a_freq = backend.get_frequency(a);
-            let b_freq = backend.get_frequency(b);
-            b_freq.total_cmp(&a_freq).then_with(|| a.cmp(b))
-        });
+        sort_by_frequency(backend, &mut candidates);
     }
 
     candidates.truncate(max);
     candidates
+}
+
+/// One-edit candidates present in the dictionary, unranked. Callers handle the
+/// "input is already correct" case and choose a ranking policy.
+pub fn edit_candidates(
+    backend: &dyn DictionaryBackend,
+    word_lower: &str,
+    source: Option<&dyn EditSource>,
+) -> Vec<String> {
+    let latin = super::edits::LatinAlphabet;
+    let source: &dyn EditSource = source.unwrap_or(&latin);
+
+    let mut candidates = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    super::edits::visit_edits(word_lower, source, |word, _weight| {
+        if word != word_lower && backend.contains(&word) && seen.insert(word.clone()) {
+            candidates.push(word);
+        }
+        true
+    });
+    candidates
+}
+
+/// Rank existing candidates by descending dictionary frequency, lexical tie-break.
+pub fn sort_by_frequency(backend: &dyn DictionaryBackend, candidates: &mut [String]) {
+    candidates.sort_by(|a, b| {
+        let a_freq = backend.get_frequency(a);
+        let b_freq = backend.get_frequency(b);
+        b_freq.total_cmp(&a_freq).then_with(|| a.cmp(b))
+    });
 }
 
 /// Score candidates using the same linear-interpolation smoothed n-gram
