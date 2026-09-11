@@ -509,7 +509,7 @@ impl VerbisageDbus {
 
 /// Register on the session bus and serve forever.
 pub async fn run(handler: DaemonHandler) -> zbus::Result<()> {
-    let dbus_obj = VerbisageDbus { handler };
+    let dbus_obj = VerbisageDbus::new(handler);
     crate::veprintln!("[daemon] connecting to dbus...");
     let _conn = zbus::connection::Builder::session()?
         .name("org.verbisage.Dictionary")?
