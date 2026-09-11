@@ -85,18 +85,11 @@ fn build_file(
         );
     }
 
-    let user_dir = lp.user_dir.as_os_str().to_str().unwrap_or("").to_string();
-    let user_files: Vec<_> = if user_dir.is_empty() {
+    let user_dir = expand_tilde(&lp.user_dir.to_string_lossy());
+    let user_files: Vec<_> = if user_dir.as_os_str().is_empty() {
         Vec::new()
     } else {
-        files
-            .iter()
-            .filter(|f| {
-                f.to_str()
-                    .map(|p| p.starts_with(&user_dir))
-                    .unwrap_or(false)
-            })
-            .collect()
+        files.iter().filter(|f| f.starts_with(&user_dir)).collect()
     };
     let writable = user_files.len() == files.len() && !files.is_empty();
 
@@ -672,11 +665,21 @@ fn build_patricia(
     let path = if let Some(path) = &def.path {
         expand_tilde(&path.replace("{lang}", lang))
     } else {
+        // Normalise the resolved system directory (config/CLI dirs are already
+        // expanded; the default may still be a literal `~`). Keep the
+        // historical Patricia default directory when none was configured.
+        let configured_system =
+            expand_tilde(&lp.system_dir.to_string_lossy())
+                != expand_tilde(crate::dictionary::paths::SYSTEM_DATA_DIR);
+        let system_dir = if configured_system {
+            expand_tilde(&lp.system_dir.to_string_lossy())
+        } else {
+            PathBuf::from("/usr/share/android-patricia-dictionaries")
+        };
         match &lp.system_file_override {
             PathOverride::File(path) => expand_tilde(path.to_str().unwrap_or("")),
             PathOverride::Skip => return (Box::new(FileDictionaryBackend::new()), None, None),
-            PathOverride::Default => PathBuf::from(def.system_dir.as_deref()
-                .unwrap_or("/usr/share/android-patricia-dictionaries")).join(format!("{lang}.dict")),
+            PathOverride::Default => system_dir.join(format!("{lang}.dict")),
         }
     };
     match crate::dictionary::patricia::PatriciaDictionaryBackend::open(&path) {
@@ -699,4 +702,25 @@ fn build_patricia(
 ) -> (Box<dyn DictionaryBackend>, Option<Box<dyn SpellChecker>>, Option<Box<dyn Predictor>>) {
     eprintln!("warning: patricia feature not enabled");
     (Box::new(FileDictionaryBackend::new()), None, None)
+}
+
+#[cfg(all(test, feature = "patricia"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn patricia_resolves_from_language_path_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let dict_path = temp.path().join("en_US.dict");
+        let mut native = patricia_dict::Dictionary::create_empty_v403(&dict_path, "en_US").unwrap();
+        native.append("fixtureword", 200).unwrap();
+        drop(native);
+
+        let (assignment, _) =
+            crate::backends::resolve_chain_with_backcompat("patricia", None).unwrap();
+        let def = &assignment.segments[0].def;
+        let lp = LanguagePaths::new("en_US").with_system_dir(temp.path().to_path_buf());
+        let (dict, _, _) = build_patricia(def, "en_US", &lp);
+        assert!(!dict.is_empty());
+    }
 }

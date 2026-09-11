@@ -49,6 +49,11 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     }
 }
 
+/// Expand a `Path` that may begin with `~` (see [`expand_tilde`]).
+fn expand_dir(dir: &Path) -> PathBuf {
+    expand_tilde(&dir.to_string_lossy())
+}
+
 // ---------------------------------------------------------------------------
 // Path-override semantics
 // ---------------------------------------------------------------------------
@@ -112,7 +117,6 @@ pub struct LanguagePaths {
 
 impl LanguagePaths {
     pub fn new(language: &str) -> Self {
-        let _home = || std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         Self {
             system_dir: PathBuf::from(SYSTEM_DATA_DIR),
             user_dir: PathBuf::from(USER_DATA_DIR_REL),
@@ -391,7 +395,7 @@ impl LanguagePaths {
         let fallbacks = language_fallbacks(&self.language);
         let pattern = self.user_sqlite_patterns.first()?;
         let lang = fallbacks.first().unwrap_or(&self.language);
-        Some(self.user_dir.join(pattern.replace("{lang}", lang)))
+        Some(expand_dir(&self.user_dir).join(pattern.replace("{lang}", lang)))
     }
 }
 
@@ -418,6 +422,7 @@ fn language_fallbacks(tag: &str) -> Vec<String> {
 /// fallback in order.  Returns the first match per pattern (most specific
 /// language wins). Only returns existing files.
 fn find_files(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
+    let dir = expand_dir(dir);
     let fallbacks = language_fallbacks(language);
     let mut files = Vec::new();
 
@@ -438,6 +443,7 @@ fn find_files(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
 /// Generate all candidate paths for `dir` matching any `pattern`, trying each
 /// language fallback in order. Returns ALL candidates regardless of existence.
 fn find_all_candidates(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
+    let dir = expand_dir(dir);
     let fallbacks = language_fallbacks(language);
     let mut files = Vec::new();
 
@@ -476,6 +482,20 @@ mod tests {
     fn plain_path_unchanged() {
         let p = expand_tilde("/usr/share/dict/words");
         assert_eq!(p.to_str().unwrap(), "/usr/share/dict/words");
+    }
+
+    #[test]
+    fn default_dirs_keep_the_literal_tilde_but_expand_on_use() {
+        // Display/config surfaces keep the literal `~`.
+        let lp = LanguagePaths::new("en_US");
+        assert!(
+            lp.user_dir.to_string_lossy().starts_with('~'),
+            "default user dir should stay verbose: {:?}",
+            lp.user_dir
+        );
+        // Resolution expands it.
+        let expanded = expand_dir(&lp.user_dir);
+        assert!(!expanded.to_string_lossy().starts_with('~'));
     }
 
     #[test]
