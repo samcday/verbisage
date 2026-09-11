@@ -124,9 +124,9 @@ enum Command {
         /// Misspelled word to correct.
         #[arg(long)]
         word: String,
-        /// Optional keyboard layout file (HeliBoard simple/JSON or Keyboard3 XML).
+        /// Keyboard layout file (HeliBoard simple/JSON or Keyboard3 XML) or XKB layout name.
         #[arg(long)]
-        layout: Option<std::path::PathBuf>,
+        layout: Option<String>,
     },
 
     /// Complete an unfinished word using committed context.
@@ -137,9 +137,9 @@ enum Command {
         context: Option<String>,
         #[arg(long, default_value_t = 10)]
         max: usize,
-        /// Optional keyboard layout file (HeliBoard simple/JSON or Keyboard3 XML).
+        /// Keyboard layout file (HeliBoard simple/JSON or Keyboard3 XML) or XKB layout name.
         #[arg(long)]
-        layout: Option<std::path::PathBuf>,
+        layout: Option<String>,
         #[command(flatten)]
         text: TextOptions,
     },
@@ -328,17 +328,28 @@ fn main() {
 
 // ── Layout loading ─────────────────────────────────────────────────────────
 
-fn load_optional_layout(
-    path: Option<&std::path::Path>,
-) -> Option<keyboard_layout::physical::RowLayout> {
-    let path = path?;
-    match load_layout_rows(path) {
+fn load_optional_layout(value: Option<&str>) -> Option<keyboard_layout::physical::RowLayout> {
+    let value = value?;
+    let path = std::path::Path::new(value);
+    let result = if path.is_file() {
+        load_layout_rows(path)
+    } else {
+        load_xkb_layout(value)
+    };
+    match result {
         Ok(rows) => Some(rows),
         Err(error) => {
             eprintln!("layout error: {error}");
             std::process::exit(1);
         }
     }
+}
+
+fn load_xkb_layout(name: &str) -> Result<keyboard_layout::physical::RowLayout, String> {
+    use std::str::FromStr;
+    let source = keyboard_layout::readers::xkb::XkbSource::from_str(name)
+        .map_err(|error| error.to_string())?;
+    keyboard_layout::readers::xkb::parse(&source).map_err(|error| error.to_string())
 }
 
 fn load_layout_rows(

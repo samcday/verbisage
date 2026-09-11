@@ -59,11 +59,14 @@ is written to disk. An unknown token is an explicit error.
 
 An upload carries either explicit key rectangles (`keys`: label, alt labels,
 left/top/width/height) for touch layouts, or `rows` (the shared `RowLayout`
-intermediary) for physical layouts. The CLI accepts `--layout <file>` on
-`complete` and `correct`, auto-detecting HeliBoard simple rows, HeliBoard/
-FlorisBoard JSON, and Unicode Keyboard3 XML. When a layout is present,
-correction candidates are limited to nearby keys and weighted by key distance;
-without one the geometry-free a–z alphabet is used, preserving prior output.
+intermediary) for physical layouts. The CLI accepts `--layout <value>` on
+`complete` and `correct`. A file path is auto-detected as HeliBoard simple rows,
+HeliBoard/FlorisBoard JSON, or Unicode Keyboard3 XML; a non-path value is
+treated as an XKB layout name (e.g. `us`, `us(intl)`, `de(nodeadkeys)`),
+resolved from the system/user XKB data with geometry when available. When a
+layout is present, correction candidates are limited to nearby keys and
+weighted by key distance; without one the geometry-free a–z alphabet is used,
+preserving prior output.
 
 ## Stdio
 
