@@ -34,15 +34,15 @@ Name `org.verbisage.Dictionary`, path `/org/verbisage/Dictionary`, interface
 `org.verbisage.Dictionary1`:
 
 * `CompleteWith(s word, as context, u max, s lang, (ss) input_prep,
-  (ss) context_prep, s case_preference, s layout) -> a(sd)`
+  (ss) context_prep, s case_preference, s layout, a(dd) points) -> a(sd)`
 * `PredictWith(as context, u max, s lang, (ss) context_prep) -> a(sd)`
 * `RegisterLayout(s layoutJson) -> s token`
 * `ForgetLayout(s token) -> b`
 
 Each prep tuple is `(normalization, fold)`. Empty current input requests
 next-word candidates. Existing methods remain available; legacy `Complete`
-retains its empty/whitespace-input empty-result convention. `Suggest` also
-takes a trailing `s layout` token.
+retains its empty/whitespace-input empty-result convention. `Suggest` takes
+trailing `s layout` and `a(dd) points` arguments.
 
 `DbusClient::complete_with` and `predict_with` expose typed Rust wrappers.
 `DbusClient::{register_layout, forget_layout, complete_with_layout,
@@ -56,6 +56,14 @@ A client may register a keyboard layout and receive a content-hash token, then
 reference that token on completion (`CompleteWith`) and correction (`Suggest`)
 requests. Layouts are held in a bounded session-only in-memory cache; nothing
 is written to disk. An unknown token is an explicit error.
+
+The spatial model is selected per request from the available data: no layout
+uses the geometry-free alphabet; a layout token alone uses key-to-key
+proximity; a layout token plus `points` uses touch. `points` are `[x, y]` pairs,
+one per input character; a non-empty list whose length differs from the input
+length is an error. Touch requests use HeliBoard's additive spatial/language
+model with an edit-accuracy gate, while layout-only requests use key proximity;
+without either, the previous geometry-free output is unchanged.
 
 An upload carries either explicit key rectangles (`keys`: label, alt labels,
 left/top/width/height) for touch layouts, or `rows` (the shared `RowLayout`
