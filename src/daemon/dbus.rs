@@ -240,6 +240,7 @@ impl VerbisageDbus {
         max: u32,
         lang: &str,
         layout: &str,
+        points: Vec<(f64, f64)>,
     ) -> Result<Vec<String>, FdoError> {
         crate::veprintln!("[dbus-server] Suggest({}, {}, {}, {})", word, max, lang, layout);
         let layout = if layout.is_empty() {
@@ -249,8 +250,12 @@ impl VerbisageDbus {
                 FdoError::InvalidArgs(format!("unknown layout token '{layout}'"))
             })?)
         };
+        let points = points
+            .into_iter()
+            .map(|(x, y)| crate::spatial::TouchPoint::new(x as f32, y as f32))
+            .collect();
         self.handler
-            .suggest_with(word, max as usize, lang, layout)
+            .suggest_with(word, max as usize, lang, layout, points)
             .map_err(log_and_err)
     }
 
@@ -287,6 +292,7 @@ impl VerbisageDbus {
                 max: max as usize,
                 options: Default::default(),
                 layout: None,
+                points: Vec::new(),
             },
             lang.into(),
         )
@@ -306,6 +312,7 @@ impl VerbisageDbus {
         context_prep: (String, String),
         case_preference: String,
         layout: String,
+        points: Vec<(f64, f64)>,
     ) -> Result<Vec<(String, f64)>, FdoError> {
         let options = super::protocol::CompletionOptions {
             input_prep: crate::text::TextPrep::from_names(&input_prep.0, &input_prep.1)
@@ -322,6 +329,10 @@ impl VerbisageDbus {
                 max: max as usize,
                 options,
                 layout: (!layout.is_empty()).then_some(layout),
+                points: points
+                    .into_iter()
+                    .map(|(x, y)| [x as f32, y as f32])
+                    .collect(),
             },
             lang,
         )
@@ -349,6 +360,7 @@ impl VerbisageDbus {
                     ..Default::default()
                 },
                 layout: None,
+                points: Vec::new(),
             },
             lang,
         )
@@ -453,6 +465,7 @@ impl VerbisageDbus {
                 max: max as usize,
                 options: Default::default(),
                 layout: None,
+                points: Vec::new(),
             },
             lang.into(),
         )

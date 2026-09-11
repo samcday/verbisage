@@ -170,7 +170,7 @@ impl DaemonHandler {
     }
 
     pub fn suggest(&self, word: &str, max: usize, lang: &str) -> Result<Vec<String>, String> {
-        self.suggest_with(word, max, lang, None)
+        self.suggest_with(word, max, lang, None, Vec::new())
     }
 
     pub fn suggest_with(
@@ -179,7 +179,9 @@ impl DaemonHandler {
         max: usize,
         lang: &str,
         layout: Option<Arc<keyboard_layout::RectKeyLayout>>,
+        points: Vec<crate::spatial::TouchPoint>,
     ) -> Result<Vec<String>, String> {
+        validate_points(&points, word)?;
         let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
@@ -187,7 +189,7 @@ impl DaemonHandler {
         let input = crate::spellcheck::SuggestionInput {
             word,
             context: &[],
-            spatial: crate::spatial::SpatialInput::from_parts(layout, Vec::new()),
+            spatial: crate::spatial::SpatialInput::from_parts(layout, points),
         };
         let mut suggestions = match &backend.spellchecker {
             Some(sc) => sc.suggest_with(&input, max),
@@ -294,6 +296,12 @@ impl DaemonHandler {
             ),
             None => None,
         };
+        let points: Vec<_> = params
+            .points
+            .iter()
+            .map(|point| crate::spatial::TouchPoint::new(point[0], point[1]))
+            .collect();
+        validate_points(&points, &params.word)?;
         self.complete_with(
             &CompletionInput {
                 input: &params.word,
@@ -301,7 +309,7 @@ impl DaemonHandler {
                 input_prep: params.options.input_prep,
                 context_prep: params.options.context_prep,
                 case_preference: params.options.case_preference,
-                spatial: crate::spatial::SpatialInput::from_parts(layout, Vec::new()),
+                spatial: crate::spatial::SpatialInput::from_parts(layout, points),
             },
             params.max,
             lang,
@@ -468,7 +476,15 @@ impl DaemonHandler {
                 } else {
                     None
                 };
-                match self.suggest_with(&params.word, params.max, lang, layout) {
+                let points: Vec<_> = params
+                    .points
+                    .iter()
+                    .map(|point| crate::spatial::TouchPoint::new(point[0], point[1]))
+                    .collect();
+                if let Err(error) = validate_points(&points, &params.word) {
+                    return DaemonResponse::error(id, error);
+                }
+                match self.suggest_with(&params.word, params.max, lang, layout, points) {
                     Ok(v) => DaemonResponse::success(id, json!(v)),
                     Err(e) => DaemonResponse::error(id, e),
                 }
@@ -552,6 +568,7 @@ impl DaemonHandler {
                         max: params.max,
                         options: params.options,
                         layout: None,
+                        points: Vec::new(),
                     },
                     lang,
                 ) {
@@ -629,6 +646,21 @@ impl DaemonHandler {
             _ => DaemonResponse::error(id, format!("unknown method: {}", req.method)),
         }
     }
+}
+
+/// Touch points, when present, must line up one-to-one with the input chars.
+fn validate_points(points: &[crate::spatial::TouchPoint], word: &str) -> Result<(), String> {
+    if points.is_empty() {
+        return Ok(());
+    }
+    let expected = word.chars().count();
+    if points.len() != expected {
+        return Err(format!(
+            "expected {expected} touch points for '{word}', got {}",
+            points.len()
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -875,5 +907,35 @@ mod tests {
                 .unwrap_or_default()
                 .contains("unknown layout token")
         );
+    }
+
+    #[test]
+    fn complete_accepts_and_validates_touch_points() {
+        let mut dict = FileDictionaryBackend::new();
+        dict.add_word_mut("hello".into(), 100.0);
+        let handler = DaemonHandler::new(Box::new(dict), None, None, "en_US".into());
+
+        let mismatch = handler.handle(DaemonRequest {
+            id: Some(1),
+            method: "complete_with".into(),
+            params: json!({ "word": "helo", "context": [], "max": 6, "points": [[1.0, 2.0]] }),
+            lang: None,
+        });
+        assert!(
+            mismatch
+                .error
+                .unwrap_or_default()
+                .contains("touch points"),
+            "a point/char mismatch must be rejected"
+        );
+
+        let points: Vec<[f32; 2]> = (0..4).map(|i| [i as f32, i as f32]).collect();
+        let aligned = handler.handle(DaemonRequest {
+            id: Some(2),
+            method: "complete_with".into(),
+            params: json!({ "word": "helo", "context": [], "max": 6, "points": points }),
+            lang: None,
+        });
+        assert!(aligned.error.is_none(), "{:?}", aligned.error);
     }
 }

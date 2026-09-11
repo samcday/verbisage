@@ -57,6 +57,9 @@ pub struct SuggestParams {
     /// Optional registered keyboard-layout token.
     #[serde(default)]
     pub layout: Option<String>,
+    /// Optional per-character touch points `[x, y]`.
+    #[serde(default)]
+    pub points: Vec<[f32; 2]>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +128,9 @@ pub struct CompleteParams {
     /// Optional registered keyboard-layout token.
     #[serde(default)]
     pub layout: Option<String>,
+    /// Optional per-character touch points `[x, y]`.
+    #[serde(default)]
+    pub points: Vec<[f32; 2]>,
 }
 
 #[derive(Debug, Deserialize)]

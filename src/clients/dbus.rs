@@ -67,18 +67,20 @@ impl DbusClient {
 
     /// Request spelling suggestions for `word` in the given `lang`.
     pub fn suggest(&self, word: &str, max: u32, lang: &str) -> zbus::Result<Vec<String>> {
-        self.suggest_layout(word, max, lang, "")
+        self.suggest_layout(word, max, lang, "", &[])
     }
 
-    /// Like [`Self::suggest`] but with a registered layout token.
+    /// Like [`Self::suggest`] but with a registered layout token and optional
+    /// per-character touch points.
     pub fn suggest_layout(
         &self,
         word: &str,
         max: u32,
         lang: &str,
         layout: &str,
+        points: &[(f64, f64)],
     ) -> zbus::Result<Vec<String>> {
-        let msg = self.call("Suggest", self.dest(), &(word, max, lang, layout))?;
+        let msg = self.call("Suggest", self.dest(), &(word, max, lang, layout, points.to_vec()))?;
         msg.body().deserialize()
     }
 
@@ -107,16 +109,18 @@ impl DbusClient {
         max: u32,
         lang: &str,
     ) -> zbus::Result<Vec<(String, f64)>> {
-        self.complete_with_layout(input, max, lang, "")
+        self.complete_with_layout(input, max, lang, "", &[])
     }
 
-    /// Like [`Self::complete_with`] but with a registered layout token.
+    /// Like [`Self::complete_with`] but with a registered layout token and
+    /// optional per-character touch points.
     pub fn complete_with_layout(
         &self,
         input: &crate::completion::CompletionInput<'_>,
         max: u32,
         lang: &str,
         layout: &str,
+        points: &[(f64, f64)],
     ) -> zbus::Result<Vec<(String, f64)>> {
         let case = serde_json::to_value(input.case_preference).unwrap();
         let message = self.call(
@@ -131,6 +135,7 @@ impl DbusClient {
                 input.context_prep.names(),
                 case.as_str().unwrap(),
                 layout,
+                points.to_vec(),
             ),
         )?;
         message.body().deserialize()

@@ -144,19 +144,24 @@ impl StdioClient {
 
     /// Request spelling suggestions for `word`.
     pub fn suggest(&mut self, word: &str, max: usize) -> Result<Vec<String>, ClientError> {
-        self.suggest_layout(word, max, "")
+        self.suggest_layout(word, max, "", &[])
     }
 
-    /// Like [`Self::suggest`] but with a registered layout token.
+    /// Like [`Self::suggest`] but with a registered layout token and optional
+    /// per-character touch points.
     pub fn suggest_layout(
         &mut self,
         word: &str,
         max: usize,
         layout: &str,
+        points: &[(f32, f32)],
     ) -> Result<Vec<String>, ClientError> {
         let mut params = json!({"word": word, "max": max});
         if !layout.is_empty() {
             params["layout"] = json!(layout);
+        }
+        if !points.is_empty() {
+            params["points"] = json!(points);
         }
         let v = self.send_request("suggest", params)?;
         serde_json::from_value(v).map_err(ClientError::Json)
@@ -196,20 +201,25 @@ impl StdioClient {
         input: &crate::completion::CompletionInput<'_>,
         max: usize,
     ) -> Result<Vec<DictionaryResult>, ClientError> {
-        self.complete_with_layout(input, max, "")
+        self.complete_with_layout(input, max, "", &[])
     }
 
-    /// Like [`Self::complete_with`] but with a registered layout token.
+    /// Like [`Self::complete_with`] but with a registered layout token and
+    /// optional per-character touch points.
     pub fn complete_with_layout(
         &mut self,
         input: &crate::completion::CompletionInput<'_>,
         max: usize,
         layout: &str,
+        points: &[(f32, f32)],
     ) -> Result<Vec<DictionaryResult>, ClientError> {
         let mut params = json!({"word":input.input,"context":input.context,"max":max,
             "options":{"input_prep":input.input_prep,"context_prep":input.context_prep,"case_preference":input.case_preference}});
         if !layout.is_empty() {
             params["layout"] = json!(layout);
+        }
+        if !points.is_empty() {
+            params["points"] = json!(points);
         }
         let value = self.send_request("complete_with", params)?;
         serde_json::from_value(value).map_err(ClientError::Json)

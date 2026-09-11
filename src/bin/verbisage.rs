@@ -757,7 +757,7 @@ fn dbus_register_layout(_rows: &keyboard_layout::physical::RowLayout) -> Option<
 fn dbus_suggest(word: &str, max: usize, lang: &str, layout: Option<&str>) -> Vec<String> {
     dbus_call(|client| {
         Ok(match layout {
-            Some(token) => client.suggest_layout(word, max as u32, lang, token)?,
+            Some(token) => client.suggest_layout(word, max as u32, lang, token, &[])?,
             None => client.suggest(word, max as u32, lang)?,
         })
     })
@@ -778,7 +778,7 @@ fn dbus_complete_with(
     dbus_call(|client| {
         let max = u32::try_from(max).map_err(|_| "requested max exceeds D-Bus integer range")?;
         Ok(match layout {
-            Some(token) => client.complete_with_layout(input, max, lang, token)?,
+            Some(token) => client.complete_with_layout(input, max, lang, token, &[])?,
             None => client.complete_with(input, max, lang)?,
         })
     })
