@@ -46,7 +46,7 @@ pub fn build_backend(
 ) {
     match def.backend_type {
         BackendType::File => build_file(def, lang, lp),
-        BackendType::Patricia => build_patricia(def, lang),
+        BackendType::Patricia => build_patricia(def, lang, lp),
         BackendType::Sqlite => build_sqlite(def, lang, lp),
         BackendType::Marisa => build_marisa(def, lang, lp),
         BackendType::Hunspell => build_hunspell(def, lang, lp),
@@ -666,10 +666,19 @@ pub fn compose_chain(
 fn build_patricia(
     def: &ResolvedBackendDef,
     lang: &str,
+    lp: &LanguagePaths,
 ) -> (Box<dyn DictionaryBackend>, Option<Box<dyn SpellChecker>>, Option<Box<dyn Predictor>>) {
-    let path = def.path.as_ref().map(|p| expand_tilde(&p.replace("{lang}", lang)))
-        .unwrap_or_else(|| PathBuf::from(def.system_dir.as_deref()
-            .unwrap_or("/usr/share/android-patricia-dictionaries")).join(format!("{lang}.dict")));
+    use crate::dictionary::paths::PathOverride;
+    let path = if let Some(path) = &def.path {
+        expand_tilde(&path.replace("{lang}", lang))
+    } else {
+        match &lp.system_file_override {
+            PathOverride::File(path) => expand_tilde(path.to_str().unwrap_or("")),
+            PathOverride::Skip => return (Box::new(FileDictionaryBackend::new()), None, None),
+            PathOverride::Default => PathBuf::from(def.system_dir.as_deref()
+                .unwrap_or("/usr/share/android-patricia-dictionaries")).join(format!("{lang}.dict")),
+        }
+    };
     match crate::dictionary::patricia::PatriciaDictionaryBackend::open(&path) {
         Ok(backend) => {
             let backend = Arc::new(backend);
@@ -686,6 +695,7 @@ fn build_patricia(
 fn build_patricia(
     _def: &ResolvedBackendDef,
     _lang: &str,
+    _lp: &LanguagePaths,
 ) -> (Box<dyn DictionaryBackend>, Option<Box<dyn SpellChecker>>, Option<Box<dyn Predictor>>) {
     eprintln!("warning: patricia feature not enabled");
     (Box::new(FileDictionaryBackend::new()), None, None)

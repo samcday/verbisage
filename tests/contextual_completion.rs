@@ -4,6 +4,128 @@ use verbisage::completion::{
 use verbisage::dictionary::{DictionaryBackend, FileDictionaryBackend};
 use verbisage::text::{BOS, CaseFold, CasePreference, Normalization, TextPrep};
 
+#[cfg(feature = "patricia")]
+#[test]
+fn daemon_uses_explicit_patricia_path_and_respects_skip() {
+    use verbisage::daemon::{DaemonConfig, DaemonHandler};
+    use verbisage::dictionary::paths::PathOverride;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("custom.dict");
+    let mut native = patricia_dict::Dictionary::create_empty_v403(&path, "en_US").unwrap();
+    native.append("fixtureword", 200).unwrap();
+    drop(native);
+    let mut config = DaemonConfig::default_for("en_US");
+    config.backend_chain = "patricia".into();
+    config.language_paths.system_file_override = PathOverride::File(path);
+    let handler = DaemonHandler::with_config(config);
+    let result = handler
+        .complete_with(&CompletionInput::default(), 6, "en_US")
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].word, "fixtureword");
+    let mut config = DaemonConfig::default_for("en_US");
+    config.backend_chain = "patricia".into();
+    config.language_paths.system_file_override = PathOverride::Skip;
+    let handler = DaemonHandler::with_config(config);
+    assert!(
+        handler
+            .complete_with(&CompletionInput::default(), 6, "en_US")
+            .is_err()
+    );
+}
+
+#[cfg(feature = "patricia")]
+#[test]
+fn native_sentence_start_resolves_integer_sentinel_and_missing_data_backs_off() {
+    use std::sync::Arc;
+    use verbisage::dictionary::patricia::PatriciaDictionaryBackend;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("bos");
+    let mut native = patricia_dict::Dictionary::create_empty_v403(&path, "en_US").unwrap();
+    native.append("hello", 20).unwrap();
+    native.append("world", 240).unwrap();
+    // The writer accepts Unicode words. Build a three-byte placeholder and
+    // replace that single trie code point with Android's integer-only marker.
+    // This tests native addressing rather than storing literal U+FFFF rows.
+    native.append("\u{10ffff}", 100).unwrap();
+    native.add_ngram("hello", &["\u{10ffff}"], 250).unwrap();
+    drop(native);
+    let body = path.join("bos.body");
+    let mut bytes = std::fs::read(&body).unwrap();
+    let trie_len = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
+    let matches: Vec<_> = bytes[4..4 + trie_len]
+        .windows(3)
+        .enumerate()
+        .filter(|(_, w)| *w == [0x10, 0xff, 0xff])
+        .map(|(i, _)| i + 4)
+        .collect();
+    assert_eq!(matches.len(), 1);
+    bytes[matches[0]..matches[0] + 3].copy_from_slice(&[0x11, 0, 0]);
+    std::fs::write(body, bytes).unwrap();
+    let native = patricia_dict::Dictionary::open(&path).unwrap();
+    let context = native.prepare_context(&[BOS]);
+    assert_eq!(context.available_order(), 2);
+    assert_eq!(
+        native
+            .ngram_scores_prepared("hello", &context)
+            .unwrap()
+            .bigram,
+        Some(250)
+    );
+    let backend = Arc::new(PatriciaDictionaryBackend::open(&path).unwrap());
+    let engine = AndroidCompleter::new(backend.as_ref()).with_predictor(Some(&backend));
+    assert_eq!(engine.complete(None, 6)[0].word, "world");
+    let rows = engine
+        .complete_with(
+            &CompletionInput {
+                context: &["old", "<s>"],
+                ..Default::default()
+            },
+            6,
+        )
+        .unwrap();
+    assert_eq!(rows[0].word, "hello");
+    assert_eq!(rows.len(), 2);
+    assert!(
+        words(&rows)
+            .iter()
+            .all(|word| !word.is_empty() && *word != BOS)
+    );
+
+    let path = temp.path().join("without-bos");
+    let mut native = patricia_dict::Dictionary::create_empty_v403(&path, "en_US").unwrap();
+    native.append("hello", 20).unwrap();
+    native.append("world", 240).unwrap();
+    native.add_ngram("hello", &["world"], 250).unwrap();
+    drop(native);
+    let backend = Arc::new(PatriciaDictionaryBackend::open(&path).unwrap());
+    let engine = AndroidCompleter::new(backend.as_ref()).with_predictor(Some(&backend));
+    assert_eq!(
+        engine.complete(None, 6),
+        engine
+            .complete_with(
+                &CompletionInput {
+                    context: &["<s>"],
+                    ..Default::default()
+                },
+                6
+            )
+            .unwrap()
+    );
+    let request = |context| {
+        engine
+            .complete_with(
+                &CompletionInput {
+                    context,
+                    ..Default::default()
+                },
+                6,
+            )
+            .unwrap()
+    };
+    assert_eq!(request(&["world"]), request(&["<s>", "world"]));
+}
+
 fn dictionary(rows: &[(&str, f64)]) -> FileDictionaryBackend {
     let mut dictionary = FileDictionaryBackend::new();
     for &(word, count) in rows {

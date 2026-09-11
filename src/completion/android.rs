@@ -100,12 +100,17 @@ impl CompletionEngine for AndroidCompleter<'_> {
         );
         let rows = self.backend.search_words(&search, search_deadline)?;
         check_deadline(search_deadline)?;
-        let known = self.config.suppress_known_corrections
+        let known = !folded.is_empty()
+            && self.config.suppress_known_corrections
             && rows.iter().any(|r| search.prepare(&r.word) == folded);
         let mut candidates = Vec::with_capacity(rows.len());
         for row in rows {
             check_deadline(deadline)?;
-            let prepared = search.prepare(&row.word);
+            let prepared = if folded.is_empty() {
+                String::new()
+            } else {
+                search.prepare(&row.word)
+            };
             let exact = prepared.starts_with(&folded);
             if !exact && known {
                 continue;

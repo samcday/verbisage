@@ -101,6 +101,124 @@ fn log_and_err(msg: String) -> FdoError {
     FdoError::Failed(msg)
 }
 
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    use crate::dictionary::{DictionaryBackend, DictionaryResult};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
+
+    struct BlockedDictionary {
+        release: Arc<AtomicBool>,
+        entered: Arc<AtomicUsize>,
+    }
+    impl DictionaryBackend for BlockedDictionary {
+        fn query_prefixes(&self, _: &[DictionaryQuery]) -> Vec<DictionaryResult> {
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            while !self.release.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            vec![]
+        }
+        fn get_frequency(&self, _: &str) -> f64 {
+            -1.0
+        }
+        fn contains(&self, _: &str) -> bool {
+            false
+        }
+    }
+    struct ReleaseOnDrop(Arc<AtomicBool>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timed_out_completion_keeps_both_worker_permits_until_exit() {
+        let release = Arc::new(AtomicBool::new(false));
+        let _release_on_failure = ReleaseOnDrop(release.clone());
+        let entered = Arc::new(AtomicUsize::new(0));
+        let service = Arc::new(VerbisageDbus::new(DaemonHandler::new(
+            Box::new(BlockedDictionary {
+                release: release.clone(),
+                entered: entered.clone(),
+            }),
+            None,
+            None,
+            "en_US".into(),
+        )));
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let service = service.clone();
+            requests.push(tokio::spawn(async move {
+                service.complete("h", 6, "en_US").await
+            }));
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while entered.load(Ordering::SeqCst) < 2 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            service
+                .complete("h", 6, "en_US")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("busy")
+        );
+        assert!(
+            !tokio::time::timeout(
+                Duration::from_millis(200),
+                service.is_correct("hello", "en_US")
+            )
+            .await
+            .unwrap()
+            .unwrap()
+        );
+        assert!(
+            service
+                .complete("h", 1001, "en_US")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("cap")
+        );
+        for request in requests {
+            assert!(
+                request
+                    .await
+                    .unwrap()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("deadline")
+            );
+        }
+        assert!(
+            service
+                .complete("h", 6, "en_US")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("busy")
+        );
+        assert_eq!(entered.load(Ordering::SeqCst), 2);
+        release.store(true, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while service.completion_slot.available_permits() != 2 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+}
+
 #[interface(name = "org.verbisage.Dictionary1", introspection_docs = true)]
 impl VerbisageDbus {
     /// Check whether a single word is recognised by the dictionary for the

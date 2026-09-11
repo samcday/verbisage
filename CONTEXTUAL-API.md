@@ -57,6 +57,8 @@ Requests are one JSON object per line. Results contain word/confidence objects:
 used). `complete` accepts the same parameters as `complete_with`; `predict`
 also accepts optional preparation options. `query_limited` accepts ordinary
 query constraints plus `max`. The Rust `StdioClient` has matching helpers.
+Completion and prediction use one worker with a response deadline; a timed-out
+worker remains occupied until it exits, and its late reply is discarded.
 
 ## Limits and status
 
@@ -71,7 +73,8 @@ SQLite also uses its VM progress callback. Third-party backends should override
 `DictionaryBackend::search_words` to cooperate with cancellation.
 
 A caller can explicitly pass `<s>` for sentence start; it is never inferred by
-the service or emitted as a suggestion. SQLite supports marker rows. Native
-Patricia sentinel support and Stevia prediction chaining are still pending.
-Broad next-word searches also need further performance work before device
-acceptance. See `CONTEXTUAL-WORK.md` for measured evidence and remaining work.
+the service or emitted as a suggestion. SQLite supports marker rows. Patricia
+resolves the native sentence-start sentinel in prepared context and backs off
+when no marker data exists. The paired Stevia branch refreshes predictions
+after accepted words and supports chained selections and Backspace undo.
+See `CONTEXTUAL-WORK.md` for measured evidence and device-trial limitations.

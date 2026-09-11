@@ -268,15 +268,33 @@ impl SpellChecker for Arc<PatriciaDictionaryBackend> {
     fn suggest(&self, word: &str, context: &[&str]) -> Vec<String> {
         // Keep Verbisage's current English single-edit generator; Patricia
         // supplies membership and frequency instead of Hunspell expansion.
-        let mut suggestions =
-            crate::spellcheck::suggest::suggest_edits(self.as_ref(), None, word, context, 10);
-        suggestions.sort_by(|a, b| {
-            self.candidate_score(context, b)
+        let suggestions = crate::spellcheck::suggest::suggest_edits(
+            self.as_ref(),
+            None,
+            word,
+            context,
+            usize::MAX,
+        );
+        let keys: Vec<_> = suggestions
+            .iter()
+            .map(|word| (word.as_str(), word.as_str()))
+            .collect();
+        let scores = self.score_candidates(
+            context,
+            &keys,
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+        );
+        let Ok(scores) = scores else {
+            return Vec::new();
+        };
+        let mut ranked: Vec<_> = suggestions.into_iter().zip(scores).collect();
+        ranked.sort_by(|(a, a_score), (b, b_score)| {
+            b_score
                 .unwrap_or(0.0)
-                .total_cmp(&self.candidate_score(context, a).unwrap_or(0.0))
+                .total_cmp(&a_score.unwrap_or(0.0))
                 .then_with(|| a.cmp(b))
         });
-        suggestions
+        ranked.into_iter().take(10).map(|(word, _)| word).collect()
     }
 }
 
@@ -287,9 +305,7 @@ impl Predictor for Arc<PatriciaDictionaryBackend> {
         candidates: &[(&str, &str)],
         deadline: std::time::Instant,
     ) -> Result<Vec<Option<f64>>, String> {
-        let prepared = self
-            .dictionary
-            .prepare_context(crate::text::after_boundary(context));
+        let prepared = self.dictionary.prepare_context(context);
         let available = prepared.available_order();
         let mut results = Vec::with_capacity(candidates.len());
         for (candidate, _) in candidates {
@@ -361,6 +377,26 @@ impl Predictor for Arc<PatriciaDictionaryBackend> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spelling_ranks_context_before_truncating_unigram_candidates() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("spelling.dict");
+        let mut dictionary = Dictionary::create_empty_v403(&path, "en_US").unwrap();
+        dictionary.append("see", 100).unwrap();
+        for letter in "bcdfghjklmnpqrstvwz".chars() {
+            dictionary
+                .append(&format!("{letter}at"), if letter == 'z' { 1 } else { 200 })
+                .unwrap();
+        }
+        dictionary.add_ngram("zat", &["see"], 250).unwrap();
+        drop(dictionary);
+        let backend = Arc::new(PatriciaDictionaryBackend::open(&path).unwrap());
+        assert!(!backend.suggest("xat", &[]).contains(&"zat".into()));
+        let suggestions = backend.suggest("xat", &["see"]);
+        assert_eq!(suggestions.len(), 10);
+        assert_eq!(suggestions[0], "zat");
+    }
 
     #[test]
     fn patricia_completion_correction_and_context() {

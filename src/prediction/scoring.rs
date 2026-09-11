@@ -86,12 +86,12 @@ impl<'a> CountScorer<'a> {
 /// Apply the same interpolation policy to already-quantized probabilities.
 /// Missing higher orders back off; there are no invented counts or totals.
 pub fn interpolate_probabilities(orders: &[Option<f64>]) -> Option<f64> {
-    let known: Vec<_> = orders
+    let (sum, count) = orders
         .iter()
         .filter_map(|p| *p)
         .filter(|p| p.is_finite() && (0.0..=1.0).contains(p))
-        .collect();
-    (!known.is_empty()).then(|| known.iter().sum::<f64>() / known.len() as f64)
+        .fold((0.0, 0usize), |(sum, count), p| (sum + p, count + 1));
+    (count != 0).then(|| sum / count as f64)
 }
 
 #[cfg(test)]

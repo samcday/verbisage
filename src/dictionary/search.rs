@@ -51,13 +51,17 @@ impl<'a> WordSearch<'a> {
         if word.is_empty() || word == BOS || word == BOS_WIRE {
             return false;
         }
+        if self.prefix.is_empty() {
+            return true;
+        }
         let folded = self.prepare(word);
         folded.starts_with(&self.prefix) || self.edits.contains_key(&folded)
     }
     /// Only prune prefixes whose preparation cannot depend on later characters.
     /// Non-ASCII branches and registered language transforms are conservative.
     pub fn may_descend(&self, prefix: &str) -> bool {
-        if !prefix.is_ascii() || self.prep.fold == CaseFold::LangSpecific {
+        if self.prefix.is_empty() || !prefix.is_ascii() || self.prep.fold == CaseFold::LangSpecific
+        {
             return true;
         }
         let prefix = self.prepare(prefix);
