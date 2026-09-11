@@ -9,6 +9,7 @@ pub mod dictionary;
 pub mod layout;
 pub mod prediction;
 pub mod spellcheck;
+pub mod spatial;
 pub mod text;
 
 pub use clients::{ClientError, StdioClient};

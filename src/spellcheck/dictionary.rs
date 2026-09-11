@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use crate::dictionary::DictionaryBackend;
-use crate::spellcheck::edits::{EditSource, LayoutEdits};
+use crate::spatial::PhysicalEdits;
+use crate::spellcheck::edits::EditSource;
 use crate::spellcheck::{SpellChecker, SuggestionInput};
 
 /// Generic [`SpellChecker`] implementation backed by any [`DictionaryBackend`].
@@ -40,7 +41,7 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
     }
 
     fn suggest_with(&self, input: &SuggestionInput<'_>, max: usize) -> Vec<String> {
-        let layout_edits = input.layout.as_deref().map(LayoutEdits::new);
+        let layout_edits = input.layout.as_deref().map(PhysicalEdits::new);
         let source = layout_edits.as_ref().map(|edits| edits as &dyn EditSource);
         crate::spellcheck::suggest::suggest_edits(
             &*self.backend,
