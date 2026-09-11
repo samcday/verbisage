@@ -5,7 +5,7 @@ use super::{CompletionCandidate, CompletionConfig, CompletionEngine, CompletionI
 use crate::dictionary::search::{WordSearch, check_deadline};
 use crate::dictionary::{DictionaryBackend, usable_frequency};
 use crate::prediction::Predictor;
-use crate::spellcheck::edits::{LatinAlphabet, visit_edits};
+use crate::spellcheck::edits::{EditSource, LatinAlphabet, LayoutEdits, visit_edits};
 use crate::text::{CaseFold, CasePreference, LangDb, prepare_context};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -79,9 +79,15 @@ impl CompletionEngine for AndroidCompleter<'_> {
             self.lang,
         );
         let context: Vec<_> = context.iter().map(String::as_str).collect();
+        let latin = LatinAlphabet;
+        let layout_edits = input.layout.as_deref().map(LayoutEdits::new);
+        let source: &dyn EditSource = match &layout_edits {
+            Some(edits) => edits,
+            None => &latin,
+        };
         let mut edits = HashMap::<String, f64>::new();
         if folded.chars().count() >= self.config.min_correction_chars {
-            visit_edits(&folded, &LatinAlphabet, |word, weight| {
+            visit_edits(&folded, source, |word, weight| {
                 edits
                     .entry(word)
                     .and_modify(|v| *v = v.max(weight))

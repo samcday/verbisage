@@ -20,6 +20,9 @@ pub struct CompletionInput<'a> {
     pub context: &'a [&'a str],
     pub context_prep: crate::text::TextPrep,
     pub case_preference: crate::text::CasePreference,
+    /// An optional registered keyboard layout used to weight corrections by
+    /// key proximity. When absent, the geometry-free alphabet is used.
+    pub layout: Option<std::sync::Arc<keyboard_layout::RectKeyLayout>>,
 }
 
 /// A single completion candidate returned to the caller.

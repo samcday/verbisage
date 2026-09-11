@@ -279,6 +279,7 @@ impl DaemonHandler {
                 input_prep: params.options.input_prep,
                 context_prep: params.options.context_prep,
                 case_preference: params.options.case_preference,
+                layout: None,
             },
             params.max,
             lang,
