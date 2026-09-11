@@ -6,6 +6,7 @@ pub mod config;
 pub mod daemon;
 pub mod debug;
 pub mod dictionary;
+pub mod layout;
 pub mod prediction;
 pub mod spellcheck;
 pub mod text;
