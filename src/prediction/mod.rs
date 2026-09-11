@@ -54,21 +54,30 @@ pub trait Predictor: Send + Sync {
         Ok(scores)
     }
 
-    /// Increase the frequency of an n-gram by `delta`.
+    /// Increase the count of an n-gram by `count`.
     ///
     /// `ngram` is the full sequence including context and next word
     /// (e.g., `["hello", "world"]` for bigram "hello world").
     /// For unigrams, `ngram` is `["world"]`.
     ///
-    /// `save_unknown`: if true, create the n-gram with frequency = `delta`
+    /// This is the transport-facing API: `count` is the number of observations
+    /// to add, forwarded to [`ngram_backend::NgramBackend::increase_ngram_count`].
+    /// Predictors without an n-gram store (or backed by a read-only store)
+    /// return `Err`; stores own the mapping from a count into their native
+    /// representation.
+    ///
+    /// `save_unknown`: if true, create the n-gram with count = `count`
     /// when it doesn't exist; if false, return Err for unknown n-grams.
-    fn increase_ngram_frequency(
+    fn increase_ngram_count(
         &self,
-        _ngram: &[&str],
-        _delta: f64,
-        _save_unknown: bool,
+        ngram: &[&str],
+        count: u64,
+        save_unknown: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        Err("not supported".into())
+        match self.ngram_backend() {
+            Some(backend) => backend.increase_ngram_count(ngram, count, save_unknown),
+            None => Err("not supported".into()),
+        }
     }
 
     /// Return the underlying n-gram backend if available.

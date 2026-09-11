@@ -430,10 +430,10 @@ impl NgramBackend for PresageSqliteBackend {
         self.writable
     }
 
-    fn increase_ngram_frequency(
+    fn increase_ngram_count(
         &self,
         ngram: &[&str],
-        delta: f64,
+        count: u64,
         save_unknown: bool,
     ) -> Result<(), SharedError> {
         if !self.writable {
@@ -442,13 +442,13 @@ impl NgramBackend for PresageSqliteBackend {
         if ngram.is_empty() || ngram.len() > self.ngrams_level_max {
             return Err(format!("ngram order must be 1-{}", self.ngrams_level_max).into());
         }
-        if !delta.is_finite() || delta < 0.0 || delta > i64::MAX as f64 {
-            return Err("delta must be non-negative".into());
+        if count > i64::MAX as u64 {
+            return Err("count too large".into());
         }
 
         self.ensure_schema();
 
-        let delta_int = delta.round() as i64;
+        let count_int = count as i64;
         let order = ngram.len();
         let table = format!("_{}_gram", order);
 
@@ -487,7 +487,7 @@ impl NgramBackend for PresageSqliteBackend {
             .iter()
             .map(|w| Box::new(crate::text::nfc(w)) as Box<dyn rusqlite::types::ToSql>)
             .chain(std::iter::once(
-                Box::new(delta_int) as Box<dyn rusqlite::types::ToSql>
+                Box::new(count_int) as Box<dyn rusqlite::types::ToSql>
             ))
             .collect();
         let params_ref: Vec<&dyn rusqlite::types::ToSql> = params
@@ -757,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn ngram_increase_frequency_unigram() {
+    fn ngram_increase_count_unigram() {
         let conn = Connection::open(":memory:").unwrap();
         setup_presage_db(&conn);
         let shared = SharedSqliteConnection::new(conn);
@@ -765,30 +765,30 @@ mod tests {
 
         assert!(DictionaryBackend::is_writable(&backend));
         backend
-            .increase_ngram_frequency(&["hello"], 5.0, false)
+            .increase_ngram_count(&["hello"], 5, false)
             .unwrap();
         assert_eq!(backend.ngram_count(&["hello"]), 105);
 
         backend
-            .increase_ngram_frequency(&["newword"], 10.0, true)
+            .increase_ngram_count(&["newword"], 10, true)
             .unwrap();
         assert_eq!(backend.ngram_count(&["newword"]), 10);
     }
 
     #[test]
-    fn ngram_increase_frequency_bigram() {
+    fn ngram_increase_count_bigram() {
         let conn = Connection::open(":memory:").unwrap();
         setup_presage_db(&conn);
         let shared = SharedSqliteConnection::new(conn);
         let backend = PresageSqliteBackend::from_shared(shared, true, true);
 
         backend
-            .increase_ngram_frequency(&["hello", "world"], 3.0, false)
+            .increase_ngram_count(&["hello", "world"], 3, false)
             .unwrap();
         assert_eq!(backend.ngram_count(&["hello", "world"]), 43);
 
         backend
-            .increase_ngram_frequency(&["hello", "moon"], 20.0, true)
+            .increase_ngram_count(&["hello", "moon"], 20, true)
             .unwrap();
         assert_eq!(backend.ngram_count(&["hello", "moon"]), 20);
     }
@@ -801,7 +801,7 @@ mod tests {
         let backend = PresageSqliteBackend::from_shared(shared, false, false);
 
         assert!(!NgramBackend::is_writable(&backend));
-        let err = backend.increase_ngram_frequency(&["test"], 1.0, true);
+        let err = backend.increase_ngram_count(&["test"], 1, true);
         assert!(err.is_err());
     }
 
@@ -812,7 +812,7 @@ mod tests {
         let shared = SharedSqliteConnection::new(conn);
         let backend = PresageSqliteBackend::from_shared(shared, true, true);
 
-        let err = backend.increase_ngram_frequency(&["nonexistent"], 1.0, false);
+        let err = backend.increase_ngram_count(&["nonexistent"], 1, false);
         assert!(err.is_err());
     }
 

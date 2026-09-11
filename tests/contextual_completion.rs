@@ -296,13 +296,13 @@ fn sqlite_contextual_prediction_prefix_chain_and_bos_use_one_ranking() {
     }
     let predictor = SmoothedPredictor::new(dict.clone());
     for (ngram, count) in [
-        (vec!["see", "you"], 90.0),
-        (vec!["you", "later"], 90.0),
-        (vec!["see", "you", "later"], 85.0),
-        (vec![BOS, "see"], 90.0),
+        (vec!["see", "you"], 90),
+        (vec!["you", "later"], 90),
+        (vec!["see", "you", "later"], 85),
+        (vec![BOS, "see"], 90),
     ] {
         predictor
-            .increase_ngram_frequency(&ngram, count, true)
+            .increase_ngram_count(&ngram, count, true)
             .unwrap();
     }
     let engine = AndroidCompleter::new(dict.as_ref()).with_predictor(Some(&predictor));

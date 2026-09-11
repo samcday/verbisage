@@ -396,10 +396,10 @@ impl DaemonHandler {
             .map_err(|e| e.to_string())
     }
 
-    pub fn increase_ngram_frequency(
+    pub fn increase_ngram_count(
         &self,
         ngram: &[String],
-        delta: f64,
+        count: u64,
         save_unknown: bool,
         lang: &str,
     ) -> Result<(), String> {
@@ -410,10 +410,10 @@ impl DaemonHandler {
         match &backend.predictor {
             Some(pred) => {
                 let refs: Vec<&str> = ngram.iter().map(|s| s.as_str()).collect();
-                pred.increase_ngram_frequency(&refs, delta, save_unknown)
+                pred.increase_ngram_count(&refs, count, save_unknown)
                     .map_err(|e| e.to_string())
             }
-            None => Err("no predictor loaded for n-gram frequency updates".into()),
+            None => Err("no predictor loaded for n-gram count updates".into()),
         }
     }
 
@@ -612,9 +612,9 @@ impl DaemonHandler {
                     Ok(p) => p,
                     Err(e) => return DaemonResponse::error(id, format!("bad params: {}", e)),
                 };
-                match self.increase_ngram_frequency(
+                match self.increase_ngram_count(
                     &params.ngram,
-                    params.delta,
+                    params.count,
                     params.save_unknown,
                     lang,
                 ) {
@@ -717,7 +717,7 @@ mod tests {
 
         let ngram = vec!["hello".to_string()];
         handler
-            .increase_ngram_frequency(&ngram, 5.0, false, "en_US")
+            .increase_ngram_count(&ngram, 5, false, "en_US")
             .unwrap();
     }
 
@@ -755,7 +755,7 @@ mod tests {
         let req = DaemonRequest {
             id: Some(1),
             method: "ngram_bump".to_string(),
-            params: json!({"ngram": ["hello"], "delta": 1.0, "save_unknown": true}),
+            params: json!({"ngram": ["hello"], "count": 1, "save_unknown": true}),
             lang: None,
         };
         let resp = handler.handle(req);

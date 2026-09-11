@@ -31,6 +31,30 @@ pub trait NgramBackend: Send + Sync {
     /// Returns 0 if the n‑gram is not found.
     fn ngram_count(&self, ngram: &[&str]) -> u64;
 
+    /// Probability `P(last(ngram) | prefix(ngram))`, or `None` when the store
+    /// cannot provide one (for example a zero context denominator).
+    ///
+    /// This is the single scoring primitive consumed by the shared
+    /// interpolation in [`crate::prediction::scoring`]. Count stores get it for
+    /// free by deriving it from [`unigram_total`](Self::unigram_total) and
+    /// [`ngram_count`](Self::ngram_count); stores that already keep quantized
+    /// probabilities override it directly.
+    fn probability(&self, ngram: &[&str]) -> Option<f64> {
+        let order = ngram.len();
+        if order == 0 {
+            return None;
+        }
+        let denominator = if order == 1 {
+            self.unigram_total()
+        } else {
+            self.ngram_count(&ngram[..order - 1])
+        };
+        if denominator == 0 {
+            return None;
+        }
+        Some((self.ngram_count(ngram) as f64 / denominator as f64).clamp(0.0, 1.0))
+    }
+
     /// Gather candidate continuation words for a given context.
     ///
     /// The context is the last `order-1` words.  Returns `(word, count)`
@@ -42,21 +66,21 @@ pub trait NgramBackend: Send + Sync {
         false
     }
 
-    /// Increase the frequency of an n-gram by `delta`.
+    /// Increase the count of an n-gram by `count`.
     ///
     /// `ngram` is the full sequence including context and next word
     /// (e.g., `["hello", "world"]` for bigram "hello world").
     /// For unigrams, `ngram` is `["world"]`.
     ///
-    /// `delta` is in native count units. Integer stores round to nearest
-    /// rather than truncating fractional deltas.
-    ///
-    /// `save_unknown`: if true, create the n-gram with frequency = `delta`
+    /// `save_unknown`: if true, create the n-gram with count = `count`
     /// when it doesn't exist; if false, return Err for unknown n-grams.
-    fn increase_ngram_frequency(
+    ///
+    /// Count stores implement this; quantized probability stores are
+    /// read-only and inherit the default `Err`.
+    fn increase_ngram_count(
         &self,
         _ngram: &[&str],
-        _delta: f64,
+        _count: u64,
         _save_unknown: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err("not supported".into())
@@ -80,6 +104,10 @@ impl<T: NgramBackend + ?Sized> NgramBackend for std::sync::Arc<T> {
         self.as_ref().ngram_count(ngram)
     }
 
+    fn probability(&self, ngram: &[&str]) -> Option<f64> {
+        self.as_ref().probability(ngram)
+    }
+
     fn candidates(&self, context: &[&str], max_candidates: usize) -> Vec<(String, u64)> {
         self.as_ref().candidates(context, max_candidates)
     }
@@ -88,13 +116,13 @@ impl<T: NgramBackend + ?Sized> NgramBackend for std::sync::Arc<T> {
         self.as_ref().is_writable()
     }
 
-    fn increase_ngram_frequency(
+    fn increase_ngram_count(
         &self,
         ngram: &[&str],
-        delta: f64,
+        count: u64,
         save_unknown: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.as_ref()
-            .increase_ngram_frequency(ngram, delta, save_unknown)
+            .increase_ngram_count(ngram, count, save_unknown)
     }
 }

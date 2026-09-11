@@ -166,8 +166,8 @@ pub struct WordAddParams {
 #[derive(Debug, Deserialize)]
 pub struct NgramBumpParams {
     pub ngram: Vec<String>,
-    #[serde(default = "default_delta")]
-    pub delta: f64,
+    #[serde(default = "default_count")]
+    pub count: u64,
     #[serde(default = "default_true")]
     pub save_unknown: bool,
 }
@@ -190,8 +190,8 @@ fn default_frequency() -> f64 {
     1.0
 }
 
-fn default_delta() -> f64 {
-    1.0
+fn default_count() -> u64 {
+    1
 }
 
 fn default_true() -> bool {

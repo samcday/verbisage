@@ -511,29 +511,29 @@ impl VerbisageDbus {
             .map_err(log_and_err)
     }
 
-    /// Increase the frequency of an n-gram for the given language.
+    /// Increase the count of an n-gram for the given language.
     ///
     /// @param ngram        Full n-gram sequence (context + next word).
-    /// @param delta        Amount to increase the frequency by.
+    /// @param count        Number of observations to add.
     /// @param save_unknown If true, create the n-gram if it doesn't exist.
     /// @param lang         Language tag.
     #[zbus(out_args("result"))]
     async fn bump_ngram(
         &self,
         ngram: Vec<String>,
-        delta: f64,
+        count: u64,
         save_unknown: bool,
         lang: &str,
     ) -> Result<bool, FdoError> {
         crate::veprintln!(
             "[dbus-server] BumpNgram({:?}, {}, {}, {})",
             ngram,
-            delta,
+            count,
             save_unknown,
             lang
         );
         self.handler
-            .increase_ngram_frequency(&ngram, delta, save_unknown, lang)
+            .increase_ngram_count(&ngram, count, save_unknown, lang)
             .map(|_| true)
             .map_err(log_and_err)
     }

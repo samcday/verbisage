@@ -224,18 +224,18 @@ impl DbusClient {
         msg.body().deserialize()
     }
 
-    /// Increase the frequency of an n-gram by `delta` for `lang`.
+    /// Add `count` observations of an n-gram for `lang`.
     pub fn bump_ngram(
         &self,
         ngram: Vec<String>,
-        delta: f64,
+        count: u64,
         save_unknown: bool,
         lang: &str,
     ) -> zbus::Result<bool> {
         let msg = self.call(
             "BumpNgram",
             self.dest(),
-            &(ngram, delta, save_unknown, lang),
+            &(ngram, count, save_unknown, lang),
         )?;
         msg.body().deserialize()
     }

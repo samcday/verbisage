@@ -187,19 +187,19 @@ impl Predictor for MergedPredictor {
         results
     }
 
-    fn increase_ngram_frequency(
+    fn increase_ngram_count(
         &self,
         ngram: &[&str],
-        delta: f64,
+        count: u64,
         save_unknown: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         for pred in &self.predictors {
-            match pred.increase_ngram_frequency(ngram, delta, save_unknown) {
+            match pred.increase_ngram_count(ngram, count, save_unknown) {
                 Ok(()) => return Ok(()),
                 Err(_) => continue,
             }
         }
-        Err("no predictor supports n-gram frequency updates".into())
+        Err("no predictor supports n-gram count updates".into())
     }
 }
 

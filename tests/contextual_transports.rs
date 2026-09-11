@@ -23,12 +23,12 @@ fn real_stdio_and_dbus_clients_share_context_preparation_limits_and_chaining() {
     }
     let predictor = SmoothedPredictor::new(dict.clone());
     for (ngram, count) in [
-        (vec!["see", "you"], 90.0),
-        (vec!["you", "later"], 90.0),
-        (vec!["see", "you", "later"], 85.0),
+        (vec!["see", "you"], 90),
+        (vec!["you", "later"], 90),
+        (vec!["see", "you", "later"], 85),
     ] {
         predictor
-            .increase_ngram_frequency(&ngram, count, true)
+            .increase_ngram_count(&ngram, count, true)
             .unwrap();
     }
     let handler = DaemonHandler::new(

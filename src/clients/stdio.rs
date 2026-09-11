@@ -315,17 +315,17 @@ impl StdioClient {
         serde_json::from_value(v).map_err(ClientError::Json)
     }
 
-    /// Increase the frequency of an n-gram by `delta`.
+    /// Add `count` observations of an n-gram.
     pub fn bump_ngram(
         &mut self,
         ngram: &[&str],
-        delta: f64,
+        count: u64,
         save_unknown: bool,
     ) -> Result<bool, ClientError> {
         let ngram_vec: Vec<String> = ngram.iter().map(|s| s.to_string()).collect();
         let v = self.send_request(
             "ngram_bump",
-            json!({"ngram": ngram_vec, "delta": delta, "save_unknown": save_unknown}),
+            json!({"ngram": ngram_vec, "count": count, "save_unknown": save_unknown}),
         )?;
         serde_json::from_value(v).map_err(ClientError::Json)
     }

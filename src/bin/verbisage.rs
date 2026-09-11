@@ -189,14 +189,14 @@ enum Command {
     /// Dump the effective runtime config (config file + CLI overrides + defaults) as TOML.
     ConfigDump,
 
-    /// Bump the n-gram frequency for a sequence of words.
+    /// Add observations to the count of an n-gram sequence.
     NgramBump {
         /// N-gram words (space-separated).
         #[arg(long)]
         context: String,
-        /// Frequency delta.
-        #[arg(long, default_value_t = 1.0)]
-        delta: f64,
+        /// Number of observations to add.
+        #[arg(long, default_value_t = 1)]
+        count: u64,
         /// Save unknown n-grams.
         #[arg(long, default_value_t = true)]
         save_unknown: bool,
@@ -312,14 +312,14 @@ fn main() {
         ),
         Command::NgramBump {
             context,
-            delta,
+            count,
             save_unknown,
         } => run_ngram_bump(
             &shared,
             named_backends,
             client_mode,
             &context,
-            delta,
+            count,
             save_unknown,
         ),
     }
@@ -625,20 +625,20 @@ fn run_ngram_bump(
     named_backends: Option<&HashMap<String, BackendDef>>,
     client_mode: ClientMode,
     context: &str,
-    delta: f64,
+    count: u64,
     save_unknown: bool,
 ) {
     let ngram: Vec<String> = context.split_whitespace().map(String::from).collect();
     let lang = shared.lang();
 
     if client_mode == ClientMode::Dbus {
-        dbus_bump_ngram(ngram, delta, save_unknown, lang);
+        dbus_bump_ngram(ngram, count, save_unknown, lang);
     } else {
         let (_, _, predictor) = open_backend(shared, lang, named_backends);
         match predictor {
             Some(pred) => {
                 let ngram_refs: Vec<&str> = ngram.iter().map(|s| s.as_str()).collect();
-                match pred.increase_ngram_frequency(&ngram_refs, delta, save_unknown) {
+                match pred.increase_ngram_count(&ngram_refs, count, save_unknown) {
                     Ok(()) => println!("true"),
                     Err(e) => {
                         eprintln!("error: {}", e);
@@ -879,9 +879,9 @@ fn dbus_add_word(_word: &str, _frequency: f64, _allow_existing: bool, _lang: &st
 }
 
 #[cfg(feature = "dbus")]
-fn dbus_bump_ngram(ngram: Vec<String>, delta: f64, save_unknown: bool, lang: &str) {
+fn dbus_bump_ngram(ngram: Vec<String>, count: u64, save_unknown: bool, lang: &str) {
     match DbusClient::new() {
-        Ok(client) => match client.bump_ngram(ngram, delta, save_unknown, lang) {
+        Ok(client) => match client.bump_ngram(ngram, count, save_unknown, lang) {
             Ok(true) => println!("true"),
             Ok(false) => {
                 eprintln!("ngram bump failed");
@@ -900,6 +900,6 @@ fn dbus_bump_ngram(ngram: Vec<String>, delta: f64, save_unknown: bool, lang: &st
 }
 
 #[cfg(not(feature = "dbus"))]
-fn dbus_bump_ngram(_ngram: Vec<String>, _delta: f64, _save_unknown: bool, _lang: &str) {
+fn dbus_bump_ngram(_ngram: Vec<String>, _count: u64, _save_unknown: bool, _lang: &str) {
     dbus_call(|| Err("dbus not enabled".into()))
 }

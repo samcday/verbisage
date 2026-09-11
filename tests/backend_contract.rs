@@ -109,6 +109,6 @@ fn sqlite_exact_literals_normalization_and_cross_connection_updates() {
         .unwrap();
     assert_eq!(db.get_frequency("Café"), 0.75);
     assert_eq!(db.query_prefixes(&[prefix("C")])[0].confidence, 0.75);
-    db.increase_ngram_frequency(&["Café"], 0.6, false).unwrap();
+    db.increase_ngram_count(&["Café"], 1, false).unwrap();
     assert_eq!(db.ngram_count(&["Café"]), 91);
 }

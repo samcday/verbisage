@@ -114,16 +114,10 @@ impl Predictor for SmoothedPredictor {
         candidates: &[(&str, &str)],
         deadline: std::time::Instant,
     ) -> Result<Vec<Option<f64>>, String> {
-        let scorer = super::scoring::CountScorer::new(
-            self.backend.as_ref(),
-            context,
-            self.backend.max_order(),
-            &self.deltas,
-        );
         let mut scores = Vec::with_capacity(candidates.len());
         for (_, candidate) in candidates {
             crate::dictionary::search::check_deadline(deadline)?;
-            scores.push(Some(scorer.score(candidate)));
+            scores.push(Some(self.score_candidate(context, candidate)));
         }
         crate::dictionary::search::check_deadline(deadline)?;
         Ok(scores)
@@ -156,16 +150,6 @@ impl Predictor for SmoothedPredictor {
 
     fn candidate_score(&self, context: &[&str], candidate: &str) -> Option<f64> {
         Some(self.score_candidate(context, candidate))
-    }
-
-    fn increase_ngram_frequency(
-        &self,
-        ngram: &[&str],
-        delta: f64,
-        save_unknown: bool,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.backend
-            .increase_ngram_frequency(ngram, delta, save_unknown)
     }
 
     fn ngram_backend(&self) -> Option<std::sync::Arc<dyn NgramBackend>> {
