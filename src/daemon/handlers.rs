@@ -187,7 +187,7 @@ impl DaemonHandler {
         let input = crate::spellcheck::SuggestionInput {
             word,
             context: &[],
-            layout,
+            spatial: crate::spatial::SpatialInput::from_parts(layout, Vec::new()),
         };
         let mut suggestions = match &backend.spellchecker {
             Some(sc) => sc.suggest_with(&input, max),

@@ -3,8 +3,8 @@
 pub struct SuggestionInput<'a> {
     pub word: &'a str,
     pub context: &'a [&'a str],
-    /// A registered keyboard layout used to weight corrections by proximity.
-    pub layout: Option<std::sync::Arc<keyboard_layout::RectKeyLayout>>,
+    /// Runtime-selected spatial context (none, layout-only, or touch).
+    pub spatial: crate::spatial::SpatialInput,
 }
 
 /// Spell‑checking trait analogous to the Hunspell API.

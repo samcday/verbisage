@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use crate::dictionary::DictionaryBackend;
-use crate::spatial::PhysicalEdits;
 use crate::spellcheck::edits::EditSource;
 use crate::spellcheck::{SpellChecker, SuggestionInput};
 
@@ -41,24 +40,72 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
     }
 
     fn suggest_with(&self, input: &SuggestionInput<'_>, max: usize) -> Vec<String> {
-        let layout_edits = input.layout.as_deref().map(PhysicalEdits::new);
-        let source = layout_edits.as_ref().map(|edits| edits as &dyn EditSource);
-        crate::spellcheck::suggest::suggest_edits(
+        let source = input.spatial.edit_source();
+        let source_ref: Option<&dyn EditSource> = if input.spatial.is_none() {
+            None
+        } else {
+            Some(&source)
+        };
+        let mut suggestions = crate::spellcheck::suggest::suggest_edits(
             &*self.backend,
             None,
             input.word,
             input.context,
             max,
-            source,
-        )
+            source_ref,
+        );
+        if !input.spatial.is_none() {
+            suggestions.sort_by(|a, b| {
+                let distance_a = input.spatial.word_distance(input.word, a).unwrap_or(0.0);
+                let distance_b = input.spatial.word_distance(input.word, b).unwrap_or(0.0);
+                distance_a.total_cmp(&distance_b).then_with(|| a.cmp(b))
+            });
+        }
+        suggestions
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spatial::{SpatialInput, TouchPoint};
     use keyboard_layout::{RectKey, RectKeyLayout};
     use std::sync::Arc;
+
+    #[test]
+    fn touch_distance_ranks_spelling_corrections() {
+        let mut dict = crate::dictionary::FileDictionaryBackend::new();
+        dict.add_word_mut("cat".to_string(), 10.0);
+        dict.add_word_mut("car".to_string(), 10.0);
+        let checker = DictionarySpellChecker::new(Arc::new(dict));
+
+        let layout = Arc::new(RectKeyLayout::new(
+            vec![
+                RectKey::from_rect(Some("c".into()), vec![], 0.0, 0.0, 10.0, 10.0),
+                RectKey::from_rect(Some("a".into()), vec![], 10.0, 0.0, 10.0, 10.0),
+                RectKey::from_rect(Some("z".into()), vec![], 20.0, 0.0, 10.0, 10.0),
+                RectKey::from_rect(Some("t".into()), vec![], 20.0, 10.0, 10.0, 10.0),
+                RectKey::from_rect(Some("r".into()), vec![], 10.0, 10.0, 10.0, 10.0),
+            ],
+            &[],
+        ));
+        let points = vec![
+            TouchPoint::new(5.0, 5.0),
+            TouchPoint::new(15.0, 5.0),
+            TouchPoint::new(25.0, 5.0),
+        ];
+        let input = SuggestionInput {
+            word: "caz",
+            context: &[],
+            spatial: SpatialInput::from_parts(Some(layout), points),
+        };
+        let suggestions = checker.suggest_with(&input, 10);
+        assert_eq!(
+            suggestions.first().map(String::as_str),
+            Some("cat"),
+            "{suggestions:?}"
+        );
+    }
 
     #[test]
     fn layout_restricts_spelling_corrections() {
@@ -71,7 +118,7 @@ mod tests {
             &SuggestionInput {
                 word: "caz",
                 context: &[],
-                layout: None,
+                spatial: crate::spatial::SpatialInput::None,
             },
             10,
         );
@@ -92,7 +139,7 @@ mod tests {
             &SuggestionInput {
                 word: "caz",
                 context: &[],
-                layout: Some(layout),
+                spatial: crate::spatial::SpatialInput::from_parts(Some(layout), Vec::new()),
             },
             10,
         );

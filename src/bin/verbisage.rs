@@ -419,7 +419,10 @@ fn run_correct(
                 let input = verbisage::spellcheck::SuggestionInput {
                     word,
                     context: &[],
-                    layout: layout.map(rect_layout),
+                    spatial: verbisage::spatial::SpatialInput::from_parts(
+                        layout.map(rect_layout),
+                        Vec::new(),
+                    ),
                 };
                 checker.suggest_with(&input, 10)
             }
