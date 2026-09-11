@@ -1,119 +1,112 @@
 # Contextual completion, prediction and swipe integration
 
-The accepted objective is shared contextual ranking, preservation of the
-working swipe integration, and Stevia predictions refreshed after each
-accepted word. This branch starts at Prawn's `completion` branch `96d1e7c`.
-The paired Stevia branch starts at the tested `95db18fa` swipe UI.
+This implements the agreed source milestone: shared contextual ranking,
+preservation of the working swipe integration, and Stevia predictions refreshed
+after every accepted word. Verbisage starts at Prawn's `completion` branch
+`96d1e7cedb5984582929a19d7b934f2b58bd3e78`; its remote was rechecked on
+2026-09-11 and still points there. Stevia starts at the tested `95db18fa` UI.
 
-## Requirements and acceptance
+## Implementation
 
-- [x] Keep upstream `completion/`; do not restore obsolete `completion.rs`.
-- [x] Selectively restore `b325ab6` (Patricia pin) and `825d0cb` (swipe).
-  Resolution retains the newer backend frequency contract.
-- [ ] Verify restored swipe baseline, then retain whole-path recognition,
-  actual layout geometry, finite ranked results, bounded work, stale-response
-  protection, editable top guess, alternatives, consecutive words, Shift,
-  fading trail, stationary long press and one-step completion undo.
-- [ ] Explicit result limits: honor caller maximum, reject requests above
-  configured transport caps; remove silent clamps from restored swipe.
-- [ ] `plan_caps`: explicit per-request NFC/case preparation, registries and
-  empty language map, exact backend matching, normalized frequencies, stored
-  casing, consistent finite-score/lexical ordering, frontend case preference.
-- [ ] Share the edit generator and contextual scoring between completion,
-  prediction and spelling. Preserve the distinction between native counts and
-  Patricia's quantized probabilities; do not fabricate corpus counts.
-- [ ] `plan_android`: contextual input, prefix+edit candidate gathering before
-  truncation, shared language score, edit costs, case preference, exact-match
-  promotions, deterministic ordering and documented missing-data fallbacks.
-- [ ] Use the shared engine for next-word prediction with empty current input;
-  gather contextual candidates as well as unigram candidates.
-- [ ] Beginning-of-sentence context is authored by the keyboard. Translate at
-  entry, preserve supported SQLite/Patricia markers, safely back off otherwise,
-  and never expose markers as suggestions.
-- [ ] D-Bus and stdio have matching completion/prediction parameters and limits;
-  CLI exposes preparation selection. Keep existing clients usable.
-- [ ] Search budgets and transport response deadlines are enforced and tested.
-- [ ] Stevia passes bounded context before the cursor, refreshes after accepted
-  typed/swiped words and suggestion selection, supports chaining predictions,
-  and invalidates stale results on edits/cursor/focus/language/mode changes.
-- [ ] Test typed context (including `see you l` fixtures), prediction chains,
-  both count and probability dictionaries, beginning-of-sentence, Unicode,
-  request limits, unavailable services, cancellation, undo and swipe regressions.
-- [ ] Run isolated real daemon/Wayland integration with real dictionary data;
-  validate the actual interaction behavior, not just mocked response lists.
+- Retain upstream `completion/` and selectively restore the Patricia pin and
+  whole-path Drift Type recognition. Do not restore obsolete `completion.rs`.
+- Honor requested result counts; reject requests above configurable transport
+  caps, without silent `min(100)` truncation. Candidate budgets are separate
+  from display limits and exhaustion is an error.
+- Explicit per-request NFC/case preparation, an extensible empty language map,
+  exact backend matching, normalized frequencies, stored result spelling and
+  canonical finite-score/lexical ordering.
+- Shared edit generation and count/probability scoring. Patricia probabilities
+  remain native probabilities, never invented counts. Its spelling candidates
+  are now context-ranked before the display limit, using one prepared context.
+  Merged predictors preserve each model's stored-word/prepared-key policy.
+- `AndroidCompleter` ranks prefix and edit candidates before truncation. Empty
+  input uses this same engine for next-word prediction. Case preference is a
+  per-call input-side signal; stored candidate spelling is preserved.
+- Explicit keyboard-authored sentence boundaries: wire `<s>`, internal U+FFFF,
+  SQLite marker rows and Patricia native 0x110000 prepared-context addressing.
+  Missing marker data backs off; markers never become suggestions.
+- D-Bus `CompleteWith`/`PredictWith`, stdio equivalents and CLI preparation
+  options. Legacy methods remain available. D-Bus has two completion workers;
+  stdio has one. Timed-out work retains its slot until it exits; late replies
+  are discarded. Built-in scans cooperate with search budgets.
+- Stevia sends at most three complete context words from a bounded suffix of
+  the text before the cursor. It excludes the current fragment and crosses no
+  visible sentence boundary. Predictions wait for application text updates
+  after acceptance; ordinary completion still works without surrounding text.
+- Focus, selection, mode, purpose, language and context changes invalidate
+  requests. Exact acknowledgement of a swipe-selection undo preserves restored
+  alternatives. Next-word selection also has whole-word Backspace undo.
 
-`plan_of_plans.md` is an ordering aid, not a reason to repeat completed work.
-The sequence is limits/foundations, shared engine and transports, frontend,
-then end-to-end acceptance. Deferred layout uploads/multi-touch, learned user
-dictionaries, dictionary conversion and broad multilingual pipelines remain
-separate projects. Existing English v202 supports one preceding context word;
-tests with richer fixture data must not be presented as shipped-corpus coverage.
-
-## Current evidence
-
-Upstream refs were refreshed on 2026-09-11; `completion` is still `96d1e7c`.
-The first offline baseline attempt found missing bundled-SQLite build dependencies
-in the reused cache. Resolve dependencies in the isolated builder, then run the
-baseline; this is not a test success. No device or installed deployment changed.
-
-Foundation checkpoint: restored baseline passed (82 unit tests plus 2 doctests).
-After exact matching, normalized counts, explicit text preparation and shared
-scoring/edit extraction, all-feature tests passed: 97 unit tests, 4 backend
-contract regressions and 2 doctests. This does not establish the new completion
-engine, contextual transports, Stevia prediction chaining or runtime acceptance.
-Full folding uses caseless 0.2.2 (Unicode 16 tables); NFC remains explicit.
-The planning example that maps dotted capital I to plain i under default full
-folding is corrected: non-Turkic folding yields i plus combining dot.
-Logs: ../restored-tests.log and ../all-foundations-tests.log.
-
-## Engine and transport checkpoint
-
-Implemented AndroidCompleter as handler and CLI default, keeping completion/
-and the optional PrefixCompleter. The legacy prefix algorithm now also respects
-max > 100; only the obsolete cap changed. CompleteWith/PredictWith have explicit
-input/context preparation; stdio has corresponding methods and bounded queries.
-D-Bus runs completion on two bounded workers and retains permits after timeouts.
-A real private D-Bus client and real stdio daemon returned identical fixture
-rankings, limits and errors. Default-feature verification is recorded separately.
-
-Candidates are gathered before display truncation, with a documented 200,000-word
-intermediate budget. Exhaustion is an error, not silent truncation. Built-in
-searches check their deadline while traversing; SQLite installs and removes a
-progress handler. Custom backends retain a compatibility fallback and should
-implement cooperative cancellation. Shared count scoring prepares denominators
-once per request. Patricia caches its v2 bigram list once per prepared context.
-
-Two deliberate adaptations of plan_android: quality must increase as distance
+Two deliberate adaptations of `plan_android`: quality increases as distance
 falls; edit likelihood is a joint factor rather than an additive-only term,
-which regressed helo -> hello in the prior acceptance fixture. Native probability
-models now distinguish an absent candidate at an available conditional order
-(zero probability floor) from unavailable context (backoff). They receive stored
-candidate spelling, while count models receive prepared model keys. Otherwise,
-capitalized native entries could bypass context and incorrectly dominate.
-No fabricated counts are used for Patricia.
+which regressed `helo -> hello` in the acceptance fixture. Native models
+separate an absent candidate at an available conditional order (zero floor)
+from unavailable context (backoff). Native candidates use stored spelling;
+count models use prepared keys. Full non-Turkic Unicode folding maps dotted
+capital I to i plus combining dot; NFC remains explicit.
 
-Patricia has a small LOCAL delta in src/common/ngram.rs, src/v2/mod.rs and
-src/dict.rs: cached v2 followers and PreparedContext::available_order(), including
-checking v402 sidecars. Its own 4 unit and 27 ngram tests passed. This delta needs
-its own public branch/pin on eventual publication. It is not published yet.
+`plan_of_plans.md` remains upstream's ordering aid, not a reason to redo completed
+work. The effective order was limits/foundations, shared engine/transports,
+frontend integration, then real interaction acceptance.
 
-Verification before final formatting: all-feature Verbisage passed 97 unit,
-4 backend regression, 6 contextual regression, 1 real transport-parity tests,
-and 2 doctests (../engine-all-tests.log). The real English v202 trial dictionary
-also returned hello first for helo and later first for contextual l. In release
-on this desktop, completion measured 2-17ms but next-word queries ~540ms. These
-are desktop observations, not device acceptance. The corpus produces e.g.
-have/can/know after you; fixture see->you->later is NOT a claim that the current
-corpus contains that whole chain. Real smoke driver: ../real-smoke.py.
+## Patricia delta
 
-Still required before acceptance: optimize broad prediction searches; preserve
-Patricia BOS through its native sentinel path; test transport cancellation and
-stdio response deadlines; connect Stevia (currently unchanged) including focus,
-selection, cursor, undo and delayed acknowledgement handling; native Wayland
-interaction/swipe/trail regression. No phone, COPR, deployment, public fork,
-image, or unrelated PocketFed source changed during this checkpoint.
+`patricia_dict` points to the paired `codex/contextual-prepared` branch. Its new
+commits are `7b76b8d` (prepared v2 follower cache and available context order)
+and `32121e2` (native sentence-start addressing and removal of duplicate target
+lookups in v2/v402/v403 scoring). These build on the earlier integration pin
+`c76e17a`. No Drift Type source delta was needed for this milestone.
 
-The default feature suite also passed: 82 unit, 4 backend, 5 contextual tests,
-and 1 doctest (../engine-default-tests.log). Final all-feature verification
-passed after removing the legacy prefix cap; counts remain as above.
-Patricia checkpoint: 7b76b8d on codex/contextual-prepared; parent gitlink is pinned.
+## Verification on 2026-09-11
+
+- Verbisage, all features: 101 unit tests, 4 backend regressions, 8 contextual
+  regressions, 1 real D-Bus/stdio parity test and 2 doctests passed.
+- Verbisage, default features: 84 unit tests, 4 backend regressions, 5 contextual
+  regressions and 1 doctest passed.
+- Patricia: 4 unit and 27 n-gram tests passed, including prepared/unprepared
+  parity across formats. A Verbisage fixture additionally verifies the actual
+  native integer sentence-start marker and missing-marker backoff.
+- Stevia: all 73 configured Meson checks passed on private headless Phoc,
+  including 33 Verbisage completer cases and 14 gesture/widget cases. The
+  container requires the documented Glycin rendering override for GTK images.
+- Eleven native real-dictionary cases passed: fading trail, swipe acceptance,
+  tap-after-swipe, consecutive swipes, swipe alternative undo/reselection,
+  editing, focus cancellation, Shift, typed undo/reselection, undo invalidation
+  on focus change and ordinary literal input.
+- Three native SQLite cases passed: `see -> you -> later`, contextual
+  `see you l -> later`, and prediction undo/reselection. A native v403 case
+  passed `swipe hello -> accept -> you -> later`. These use deliberately
+  constructed counts/probabilities, not claims about production corpus content.
+- Real English v202 data returns `hello` first for `helo`, and `later` first
+  for `l` after `see you`. Unrestricted next-word output after `you` includes
+  `have`, `can`, `know`; the corpus does not guarantee the illustrative chain.
+
+Local logs live beside the checkout in `final-all-tests.log`,
+`final-default-tests.log`, `final-stevia-tests.log`, `native-final-matrix.json`,
+and the individual `native-context-*` output directories. Reusable native test
+sources and fixture instructions are in the paired Stevia `tests/native/`;
+Verbisage's `examples/context_fixture.rs` builds the native probability fixture.
+
+The private tests exposed and fixed an ignored Patricia `--system-dict`
+override. Earlier real-corpus runs happened to use the same bytes installed in
+the builder: both paths were checked against SHA-256
+`bd950ef4b57655120eee65cee62a5d216a63f721d9a8bb759ce2022437840443`.
+The distinct v403 fixture then verified that explicit selection actually works.
+
+## Limits of this checkpoint
+
+The existing rebuilt English v202 dictionary contains bigrams: the format
+supports one preceding context word. Unigram-only dictionary contents cannot
+supply contextual associations simply because an engine supports n-grams.
+Conversion of Presage data into richer Patricia dictionaries, generic ingest,
+learning, multi-touch and broader language/layout policies remain follow-up
+projects; no new production dictionary was generated for this milestone.
+
+Removing redundant preparation and duplicate trie walks lowered broad
+next-word queries on this desktop from approximately 440–470 ms to 240–300 ms.
+Typed completion measured 7–12 ms in the same release smoke run. These are
+observations, not device latency guarantees. Further caching/recall optimization
+and an aarch64/device trial are appropriate before promoting the new source
+checkpoint through COPR and the personal image. No phone, installed settings,
+COPR packages, image or deployment changed during this milestone.

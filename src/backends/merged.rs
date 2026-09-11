@@ -127,6 +127,30 @@ impl MergedPredictor {
 }
 
 impl Predictor for MergedPredictor {
+    fn score_candidates(
+        &self,
+        context: &[&str],
+        candidates: &[(&str, &str)],
+        deadline: std::time::Instant,
+    ) -> Result<Vec<Option<f64>>, String> {
+        // Preserve each model's stored-word versus prepared-key policy and
+        // context batching instead of resolving it afresh for every candidate.
+        let mut scores: Vec<Option<f64>> = vec![None; candidates.len()];
+        for predictor in &self.predictors {
+            let model = predictor.score_candidates(context, candidates, deadline)?;
+            if model.len() != scores.len() {
+                return Err("predictor returned an invalid batch length".into());
+            }
+            for (sum, value) in scores.iter_mut().zip(model) {
+                crate::dictionary::search::check_deadline(deadline)?;
+                if let Some(value) = value.filter(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+                    *sum = Some((sum.unwrap_or(0.0) + value).min(1.0));
+                }
+            }
+        }
+        Ok(scores)
+    }
+
     fn candidate_score(&self, context: &[&str], candidate: &str) -> Option<f64> {
         let scores: Vec<_> = self
             .predictors
@@ -187,6 +211,39 @@ impl Predictor for MergedPredictor {
 mod tests {
     use super::*;
     use crate::dictionary::FileDictionaryBackend;
+
+    struct BatchModel(f64);
+    impl Predictor for BatchModel {
+        fn predict_next(&self, _: &[&str], _: usize) -> Vec<Prediction> {
+            vec![]
+        }
+        fn candidate_score(&self, _: &[&str], _: &str) -> Option<f64> {
+            panic!("merging must preserve the model's batch key policy")
+        }
+        fn score_candidates(
+            &self,
+            context: &[&str],
+            candidates: &[(&str, &str)],
+            _: std::time::Instant,
+        ) -> Result<Vec<Option<f64>>, String> {
+            assert_eq!(context, ["see"]);
+            assert_eq!(candidates, [("London", "london"), ("missing", "missing")]);
+            Ok(vec![Some(self.0), None])
+        }
+    }
+    #[test]
+    fn merged_batch_preserves_native_keys_and_absent_scores() {
+        let merged =
+            MergedPredictor::new(vec![Box::new(BatchModel(0.6)), Box::new(BatchModel(0.7))]);
+        let result = merged
+            .score_candidates(
+                &["see"],
+                &[("London", "london"), ("missing", "missing")],
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
+            )
+            .unwrap();
+        assert_eq!(result, [Some(1.0), None]);
+    }
 
     fn make_dict(words: &[(&str, f64)]) -> Box<dyn DictionaryBackend> {
         let mut d = FileDictionaryBackend::new();
