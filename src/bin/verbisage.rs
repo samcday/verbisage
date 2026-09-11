@@ -93,6 +93,21 @@ struct GlobalArgs {
     shared: SharedArgs,
 }
 
+/// Per-call preparation. CLI defaults are explicit NFC plus language folding.
+#[derive(clap::Args)]
+struct TextOptions {
+    #[arg(long, default_value="nfc", value_parser=["none","nfc"])]
+    normalize: String,
+    #[arg(long, default_value="lang_specific", value_parser=["none","ascii_lowercase","unicode_lowercase","full","lang_specific"])]
+    fold: String,
+    #[arg(long, default_value="nfc", value_parser=["none","nfc"])]
+    context_normalize: String,
+    #[arg(long, default_value="lang_specific", value_parser=["none","ascii_lowercase","unicode_lowercase","full","lang_specific"])]
+    context_fold: String,
+    #[arg(long, default_value="prefer_matched", value_parser=["insensitive","prefer_matched"])]
+    case_preference: String,
+}
+
 // ── Subcommands ────────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
@@ -111,6 +126,18 @@ enum Command {
         word: String,
     },
 
+    /// Complete an unfinished word using committed context.
+    Complete {
+        #[arg(long)]
+        word: String,
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        max: usize,
+        #[command(flatten)]
+        text: TextOptions,
+    },
+
     /// Predict the next word given a context.
     Predict {
         /// Context words (space-separated).
@@ -119,6 +146,8 @@ enum Command {
         /// Maximum number of suggestions.
         #[arg(long, default_value_t = 10)]
         max: usize,
+        #[command(flatten)]
+        text: TextOptions,
     },
 
     /// Query the dictionary by prefix/suffix.
@@ -216,12 +245,28 @@ fn main() {
         Command::Check { word } => run_check(&shared, named_backends, client_mode, &word),
         Command::Correct { word } => run_correct(&shared, named_backends, client_mode, &word),
         Command::ConfigDump => run_config_dump(&cli.global.shared, config.as_ref()),
-        Command::Predict { context, max } => run_predict(
+        Command::Predict { context, max, text } => run_complete(
             &shared,
             named_backends,
             client_mode,
+            "",
             context.as_deref(),
             max,
+            &text,
+        ),
+        Command::Complete {
+            word,
+            context,
+            max,
+            text,
+        } => run_complete(
+            &shared,
+            named_backends,
+            client_mode,
+            &word,
+            context.as_deref(),
+            max,
+            &text,
         ),
         Command::Query {
             prefix,
@@ -323,41 +368,50 @@ fn run_correct(
     }
 }
 
-fn run_predict(
+fn run_complete(
     shared: &SharedArgs,
     named_backends: Option<&HashMap<String, BackendDef>>,
     client_mode: ClientMode,
+    word: &str,
     context: Option<&str>,
     max: usize,
+    text: &TextOptions,
 ) {
-    let context_words: Vec<String> = context
-        .map(|s| s.split_whitespace().map(String::from).collect())
-        .unwrap_or_default();
-
-    let lang = shared.lang();
-    let predictions: Vec<(String, f64)> = if client_mode == ClientMode::Dbus {
-        dbus_predict(context_words, max, lang)
+    use verbisage::completion::{AndroidCompleter, CompletionEngine, CompletionInput};
+    use verbisage::text::TextPrep;
+    let context: Vec<_> = context.unwrap_or("").split_whitespace().collect();
+    let input = CompletionInput {
+        input: word,
+        context: &context,
+        input_prep: TextPrep::from_names(&text.normalize, &text.fold).unwrap(),
+        context_prep: TextPrep::from_names(&text.context_normalize, &text.context_fold).unwrap(),
+        case_preference: serde_json::from_value(serde_json::json!(text.case_preference)).unwrap(),
+    };
+    for prep in [input.input_prep, input.context_prep] {
+        if let Some(warning) = prep.warning() {
+            eprintln!("warning: {warning}");
+        }
+    }
+    let rows: Vec<(String, f64)> = if client_mode == ClientMode::Dbus {
+        dbus_complete_with(&input, max, shared.lang())
     } else {
-        let (_, _, predictor) = open_backend(shared, lang, named_backends);
-        match predictor {
-            Some(pred) => {
-                let ctx_refs: Vec<&str> = context_words.iter().map(|s| s.as_str()).collect();
-                pred.predict_next(&ctx_refs, max)
-                    .into_iter()
-                    .map(|p| (p.word, p.confidence))
-                    .collect()
-            }
-            None => {
-                eprintln!("error: no predictor backend available for the given chain");
-                std::process::exit(1)
+        let (dict, _, predictor) = open_backend(shared, shared.lang(), named_backends);
+        match AndroidCompleter::new(dict.as_ref())
+            .with_predictor(predictor.as_deref())
+            .with_language(shared.lang())
+            .complete_with(&input, max)
+        {
+            Ok(rows) => rows.into_iter().map(|r| (r.word, r.score)).collect(),
+            Err(error) => {
+                eprintln!("error: {error}");
+                std::process::exit(1);
             }
         }
     };
-
-    for (word, confidence) in &predictions {
-        println!("{}  {}", word, confidence);
+    for (word, score) in &rows {
+        println!("{word}  {score}");
     }
-    if predictions.is_empty() {
+    if rows.is_empty() && max != 0 {
         std::process::exit(1);
     }
 }
@@ -617,12 +671,22 @@ fn dbus_suggest(_word: &str, _max: usize, _lang: &str) -> Vec<String> {
 }
 
 #[cfg(feature = "dbus")]
-fn dbus_predict(context: Vec<String>, max: usize, lang: &str) -> Vec<(String, f64)> {
-    dbus_call(|client| Ok(client.predict(context, max as u32, lang)?))
+fn dbus_complete_with(
+    input: &verbisage::completion::CompletionInput<'_>,
+    max: usize,
+    lang: &str,
+) -> Vec<(String, f64)> {
+    dbus_call(|client| {
+        let max = u32::try_from(max).map_err(|_| "requested max exceeds D-Bus integer range")?;
+        Ok(client.complete_with(input, max, lang)?)
+    })
 }
-
 #[cfg(not(feature = "dbus"))]
-fn dbus_predict(_context: Vec<String>, _max: usize, _lang: &str) -> Vec<(String, f64)> {
+fn dbus_complete_with(
+    _input: &verbisage::completion::CompletionInput<'_>,
+    _max: usize,
+    _lang: &str,
+) -> Vec<(String, f64)> {
     dbus_call(|| Err("dbus not enabled".into()))
 }
 

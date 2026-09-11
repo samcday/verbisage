@@ -148,6 +148,56 @@ impl StdioClient {
         serde_json::from_value(v).map_err(ClientError::Json)
     }
 
+    pub fn complete(
+        &mut self,
+        word: &str,
+        max: usize,
+    ) -> Result<Vec<DictionaryResult>, ClientError> {
+        self.complete_with(
+            &crate::completion::CompletionInput {
+                input: word,
+                ..Default::default()
+            },
+            max,
+        )
+    }
+    pub fn complete_with(
+        &mut self,
+        input: &crate::completion::CompletionInput<'_>,
+        max: usize,
+    ) -> Result<Vec<DictionaryResult>, ClientError> {
+        let value = self.send_request("complete_with",json!({"word":input.input,"context":input.context,"max":max,
+            "options":{"input_prep":input.input_prep,"context_prep":input.context_prep,"case_preference":input.case_preference}}))?;
+        serde_json::from_value(value).map_err(ClientError::Json)
+    }
+    pub fn predict_with(
+        &mut self,
+        context: &[&str],
+        max: usize,
+        prep: crate::text::TextPrep,
+    ) -> Result<Vec<DictionaryResult>, ClientError> {
+        self.complete_with(
+            &crate::completion::CompletionInput {
+                context,
+                context_prep: prep,
+                ..Default::default()
+            },
+            max,
+        )
+    }
+    pub fn query_limited(
+        &mut self,
+        query: &DictionaryQuery,
+        max: usize,
+    ) -> Result<Vec<DictionaryResult>, ClientError> {
+        let value = self.send_request(
+            "query_limited",
+            json!({"prefix":query.prefix,"suffix":query.suffix,
+            "min_len":query.min_length,"max_len":query.max_length,"max":max}),
+        )?;
+        serde_json::from_value(value).map_err(ClientError::Json)
+    }
+
     /// Query the dictionary with prefix / suffix / length constraints.
     pub fn query(&mut self, query: &DictionaryQuery) -> Result<Vec<DictionaryResult>, ClientError> {
         let params = json!({

@@ -77,6 +77,43 @@ impl DbusClient {
         message.body().deserialize()
     }
 
+    pub fn complete_with(
+        &self,
+        input: &crate::completion::CompletionInput<'_>,
+        max: u32,
+        lang: &str,
+    ) -> zbus::Result<Vec<(String, f64)>> {
+        let case = serde_json::to_value(input.case_preference).unwrap();
+        let message = self.call(
+            "CompleteWith",
+            self.dest(),
+            &(
+                input.input,
+                input.context,
+                max,
+                lang,
+                input.input_prep.names(),
+                input.context_prep.names(),
+                case.as_str().unwrap(),
+            ),
+        )?;
+        message.body().deserialize()
+    }
+    pub fn predict_with(
+        &self,
+        context: &[&str],
+        max: u32,
+        lang: &str,
+        prep: crate::text::TextPrep,
+    ) -> zbus::Result<Vec<(String, f64)>> {
+        let message = self.call(
+            "PredictWith",
+            self.dest(),
+            &(context, max, lang, prep.names()),
+        )?;
+        message.body().deserialize()
+    }
+
     /// Query the dictionary with prefix/suffix/length constraints for `lang`.
     /// Multiple prefixes and suffixes produce the Cartesian product of queries.
     pub fn query(

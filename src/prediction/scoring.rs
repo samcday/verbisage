@@ -20,42 +20,66 @@ pub fn interpolate_with_weights(
     max_order: usize,
     weights: &[f64],
 ) -> f64 {
-    let context = if context.contains(&crate::text::BOS) && !backend.supports_sentence_start() {
-        crate::text::after_boundary(context)
-    } else {
-        context
-    };
-    let order = max_order.min(backend.max_order()).min(context.len() + 1);
-    let mut sum = 0.0;
-    let mut mass = 0.0;
-    for n in 1..=order {
-        let tail = &context[context.len() + 1 - n..];
-        let denominator = if n == 1 {
-            backend.unigram_total()
+    CountScorer::new(backend, context, max_order, weights).score(candidate)
+}
+
+/// Resolve context denominators once, then score each candidate with the same
+/// interpolation. This avoids repeated totals and context queries on SQLite.
+pub struct CountScorer<'a> {
+    backend: &'a dyn NgramBackend,
+    orders: Vec<(Vec<&'a str>, f64, f64)>,
+    mass: f64,
+}
+impl<'a> CountScorer<'a> {
+    pub fn new(
+        backend: &'a dyn NgramBackend,
+        context: &[&'a str],
+        max_order: usize,
+        weights: &[f64],
+    ) -> Self {
+        let context = if context.contains(&crate::text::BOS) && !backend.supports_sentence_start() {
+            crate::text::after_boundary(context)
         } else {
-            backend.ngram_count(tail)
+            context
         };
-        if denominator == 0 {
-            continue;
+        let mut orders = Vec::new();
+        let mut mass = 0.0;
+        for n in 1..=max_order.min(backend.max_order()).min(context.len() + 1) {
+            let tail = &context[context.len() + 1 - n..];
+            let denominator = if n == 1 {
+                backend.unigram_total()
+            } else {
+                backend.ngram_count(tail)
+            };
+            let weight = if weights.is_empty() {
+                1.0
+            } else {
+                *weights.get(n - 1).unwrap_or(&0.0)
+            };
+            if denominator == 0 || !weight.is_finite() || weight <= 0.0 {
+                continue;
+            }
+            orders.push((tail.to_vec(), denominator as f64, weight));
+            mass += weight;
         }
-        let weight = if weights.is_empty() {
-            1.0
-        } else {
-            weights.get(n - 1).copied().unwrap_or(0.0)
-        };
-        if !weight.is_finite() || weight <= 0.0 {
-            continue;
+        Self {
+            backend,
+            orders,
+            mass,
         }
-        let mut key = tail.to_vec();
-        key.push(candidate);
-        let count = backend.ngram_count(&key).max(1);
-        sum += weight * (count as f64 / denominator as f64).min(1.0);
-        mass += weight;
     }
-    if mass > 0.0 {
-        (sum / mass).clamp(0.0, 1.0)
-    } else {
-        0.0
+    pub fn score(&self, candidate: &str) -> f64 {
+        let mut score = 0.0;
+        for (tail, denominator, weight) in &self.orders {
+            let mut key = tail.clone();
+            key.push(candidate);
+            score += weight * (self.backend.ngram_count(&key).max(1) as f64 / denominator).min(1.0);
+        }
+        if self.mass > 0.0 {
+            (score / self.mass).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
     }
 }
 

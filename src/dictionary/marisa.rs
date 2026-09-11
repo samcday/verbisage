@@ -38,6 +38,22 @@ impl Default for MarisaDictionaryBackend {
 }
 
 impl DictionaryBackend for MarisaDictionaryBackend {
+    fn search_words(
+        &self,
+        search: &super::search::WordSearch<'_>,
+        deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        super::search::check_deadline(deadline)?;
+        let mut results = Vec::new();
+        let mut agent = Agent::new();
+        agent.set_query_str("");
+        while self.trie.predictive_search(&mut agent) {
+            search.push(&mut results, agent.key().as_str(), -1.0, deadline)?;
+        }
+        super::search::check_deadline(deadline)?;
+        Ok(results)
+    }
+
     fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
         let mut results = Vec::new();
 

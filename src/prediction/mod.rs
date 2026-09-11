@@ -36,6 +36,24 @@ pub trait Predictor: Send + Sync {
         })
     }
 
+    /// Batch scoring receives (stored word, prepared model key) pairs. Native
+    /// case-preserving dictionaries use stored words; pre-folded count stores
+    /// use model keys. Context is prepared separately, once per request.
+    fn score_candidates(
+        &self,
+        context: &[&str],
+        candidates: &[(&str, &str)],
+        deadline: std::time::Instant,
+    ) -> Result<Vec<Option<f64>>, String> {
+        let mut scores = Vec::with_capacity(candidates.len());
+        for (_, candidate) in candidates {
+            crate::dictionary::search::check_deadline(deadline)?;
+            scores.push(self.candidate_score(context, candidate));
+        }
+        crate::dictionary::search::check_deadline(deadline)?;
+        Ok(scores)
+    }
+
     /// Increase the frequency of an n-gram by `delta`.
     ///
     /// `ngram` is the full sequence including context and next word

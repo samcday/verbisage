@@ -65,3 +65,55 @@ Full folding uses caseless 0.2.2 (Unicode 16 tables); NFC remains explicit.
 The planning example that maps dotted capital I to plain i under default full
 folding is corrected: non-Turkic folding yields i plus combining dot.
 Logs: ../restored-tests.log and ../all-foundations-tests.log.
+
+## Engine and transport checkpoint
+
+Implemented AndroidCompleter as handler and CLI default, keeping completion/
+and the optional PrefixCompleter. The legacy prefix algorithm now also respects
+max > 100; only the obsolete cap changed. CompleteWith/PredictWith have explicit
+input/context preparation; stdio has corresponding methods and bounded queries.
+D-Bus runs completion on two bounded workers and retains permits after timeouts.
+A real private D-Bus client and real stdio daemon returned identical fixture
+rankings, limits and errors. Default-feature verification is recorded separately.
+
+Candidates are gathered before display truncation, with a documented 200,000-word
+intermediate budget. Exhaustion is an error, not silent truncation. Built-in
+searches check their deadline while traversing; SQLite installs and removes a
+progress handler. Custom backends retain a compatibility fallback and should
+implement cooperative cancellation. Shared count scoring prepares denominators
+once per request. Patricia caches its v2 bigram list once per prepared context.
+
+Two deliberate adaptations of plan_android: quality must increase as distance
+falls; edit likelihood is a joint factor rather than an additive-only term,
+which regressed helo -> hello in the prior acceptance fixture. Native probability
+models now distinguish an absent candidate at an available conditional order
+(zero probability floor) from unavailable context (backoff). They receive stored
+candidate spelling, while count models receive prepared model keys. Otherwise,
+capitalized native entries could bypass context and incorrectly dominate.
+No fabricated counts are used for Patricia.
+
+Patricia has a small LOCAL delta in src/common/ngram.rs, src/v2/mod.rs and
+src/dict.rs: cached v2 followers and PreparedContext::available_order(), including
+checking v402 sidecars. Its own 4 unit and 27 ngram tests passed. This delta needs
+its own public branch/pin on eventual publication. It is not published yet.
+
+Verification before final formatting: all-feature Verbisage passed 97 unit,
+4 backend regression, 6 contextual regression, 1 real transport-parity tests,
+and 2 doctests (../engine-all-tests.log). The real English v202 trial dictionary
+also returned hello first for helo and later first for contextual l. In release
+on this desktop, completion measured 2-17ms but next-word queries ~540ms. These
+are desktop observations, not device acceptance. The corpus produces e.g.
+have/can/know after you; fixture see->you->later is NOT a claim that the current
+corpus contains that whole chain. Real smoke driver: ../real-smoke.py.
+
+Still required before acceptance: optimize broad prediction searches; preserve
+Patricia BOS through its native sentinel path; test transport cancellation and
+stdio response deadlines; connect Stevia (currently unchanged) including focus,
+selection, cursor, undo and delayed acknowledgement handling; native Wayland
+interaction/swipe/trail regression. No phone, COPR, deployment, public fork,
+image, or unrelated PocketFed source changed during this checkpoint.
+
+The default feature suite also passed: 82 unit, 4 backend, 5 contextual tests,
+and 1 doctest (../engine-default-tests.log). Final all-feature verification
+passed after removing the legacy prefix cap; counts remain as above.
+Patricia checkpoint: 7b76b8d on codex/contextual-prepared; parent gitlink is pinned.

@@ -226,6 +226,25 @@ impl CompactDictionary {
 }
 
 impl DictionaryBackend for CompactDictionary {
+    fn search_words(
+        &self,
+        search: &super::search::WordSearch<'_>,
+        deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        super::search::check_deadline(deadline)?;
+        let mut results = Vec::new();
+        for (i, word) in self.words.iter().enumerate() {
+            search.push(
+                &mut results,
+                word,
+                super::normalized_frequency(self.frequencies[i], self.total_frequency),
+                deadline,
+            )?;
+        }
+        super::search::check_deadline(deadline)?;
+        Ok(results)
+    }
+
     fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
         let mut all_results = Vec::new();
         let mut seen = std::collections::HashSet::new();

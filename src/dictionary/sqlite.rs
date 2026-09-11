@@ -127,6 +127,45 @@ impl PresageSqliteBackend {
 }
 
 impl DictionaryBackend for PresageSqliteBackend {
+    fn search_words(
+        &self,
+        search: &super::search::WordSearch<'_>,
+        deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        super::search::check_deadline(deadline)?;
+        self.ensure_schema();
+        let conn = self.conn.lock();
+        // SQLite checks cancellation even while finding the next matching row
+        // or computing totals, not just at Rust iterator yields.
+        conn.progress_handler(1000, Some(move || std::time::Instant::now() >= deadline));
+        let result = (|| -> Result<_, rusqlite::Error> {
+            let total: f64 = conn.query_row(
+                "SELECT COALESCE(SUM(CASE WHEN count > 0 THEN count ELSE 0 END),0) FROM _1_gram",
+                [],
+                |r| r.get(0),
+            )?;
+            let mut statement = conn.prepare("SELECT word, count FROM _1_gram")?;
+            let mut rows = statement.query([])?;
+            let mut results = Vec::new();
+            while let Some(row) = rows.next()? {
+                let word: String = row.get(0)?;
+                let count: f64 = row.get(1)?;
+                if let Err(error) = search.push(
+                    &mut results,
+                    &word,
+                    super::normalized_frequency(count, total),
+                    deadline,
+                ) {
+                    return Ok(Err(error));
+                }
+            }
+            Ok(Ok(results))
+        })();
+        conn.progress_handler(0, None::<fn() -> bool>);
+        super::search::check_deadline(deadline)?;
+        result.map_err(|e| e.to_string())?
+    }
+
     fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
         self.unigram_total(); // Invalidate cached results after any database change.
         self.cache

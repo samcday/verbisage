@@ -108,6 +108,27 @@ impl SmoothedPredictor {
 }
 
 impl Predictor for SmoothedPredictor {
+    fn score_candidates(
+        &self,
+        context: &[&str],
+        candidates: &[(&str, &str)],
+        deadline: std::time::Instant,
+    ) -> Result<Vec<Option<f64>>, String> {
+        let scorer = super::scoring::CountScorer::new(
+            self.backend.as_ref(),
+            context,
+            self.backend.max_order(),
+            &self.deltas,
+        );
+        let mut scores = Vec::with_capacity(candidates.len());
+        for (_, candidate) in candidates {
+            crate::dictionary::search::check_deadline(deadline)?;
+            scores.push(Some(scorer.score(candidate)));
+        }
+        crate::dictionary::search::check_deadline(deadline)?;
+        Ok(scores)
+    }
+
     fn predict_next(&self, context: &[&str], max_suggestions: usize) -> Vec<Prediction> {
         if max_suggestions == 0 {
             return Vec::new();

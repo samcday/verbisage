@@ -25,7 +25,7 @@ pub fn complete(backend: &dyn DictionaryBackend, input: &str, max: usize) -> Vec
     };
     // word -> (match weight, dictionary frequency)
     let mut candidates = BTreeMap::new();
-    for result in backend.query_limited(&[query], max.min(100) + 1) {
+    for result in backend.query_limited(&[query], max.saturating_add(1)) {
         if result.word.to_lowercase() != word {
             candidates.insert(result.word, (1.0_f64, result.confidence));
         }
@@ -117,7 +117,7 @@ pub fn complete(backend: &dyn DictionaryBackend, input: &str, max: usize) -> Vec
             .total_cmp(&a.confidence)
             .then_with(|| a.word.cmp(&b.word))
     });
-    results.truncate(max.min(100));
+    results.truncate(max);
     results
 }
 

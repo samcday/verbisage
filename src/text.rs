@@ -100,6 +100,28 @@ impl TextPrep {
         }
     }
 
+    pub fn from_names(normalization: &str, fold: &str) -> Result<Self, String> {
+        Ok(Self {
+            normalization: serde_json::from_value(serde_json::json!(normalization))
+                .map_err(|e| e.to_string())?,
+            fold: serde_json::from_value(serde_json::json!(fold)).map_err(|e| e.to_string())?,
+        })
+    }
+    pub fn names(self) -> (String, String) {
+        (
+            serde_json::to_value(self.normalization)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .into(),
+            serde_json::to_value(self.fold)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .into(),
+        )
+    }
+
     pub fn warning(self) -> Option<&'static str> {
         (self.normalization == Normalization::None && self.fold != CaseFold::None)
             .then_some("case folding without explicit NFC may miss canonically equivalent words")

@@ -22,6 +22,30 @@ impl MergedDictionary {
 }
 
 impl DictionaryBackend for MergedDictionary {
+    fn search_words(
+        &self,
+        search: &crate::dictionary::search::WordSearch<'_>,
+        deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        let mut words: HashMap<String, f64> = HashMap::new();
+        for backend in &self.backends {
+            for row in backend.search_words(search, deadline)? {
+                crate::dictionary::search::check_deadline(deadline)?;
+                if !words.contains_key(&row.word) && words.len() >= search.limit {
+                    return Err("merged search exceeds candidate budget".into());
+                }
+                let value = words.entry(row.word).or_insert(-1.0);
+                if crate::dictionary::usable_frequency(row.confidence) >= 0.0 {
+                    *value = (value.max(0.0) + row.confidence).min(1.0);
+                }
+            }
+        }
+        Ok(words
+            .into_iter()
+            .map(|(word, confidence)| DictionaryResult { word, confidence })
+            .collect())
+    }
+
     fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
         // Collect all results, then merge by word with confidence accumulation.
         let mut acc: HashMap<String, f64> = HashMap::new();
@@ -103,6 +127,16 @@ impl MergedPredictor {
 }
 
 impl Predictor for MergedPredictor {
+    fn candidate_score(&self, context: &[&str], candidate: &str) -> Option<f64> {
+        let scores: Vec<_> = self
+            .predictors
+            .iter()
+            .filter_map(|p| p.candidate_score(context, candidate))
+            .filter(|p| p.is_finite() && (0.0..=1.0).contains(p))
+            .collect();
+        (!scores.is_empty()).then(|| scores.iter().sum::<f64>().min(1.0))
+    }
+
     fn predict_next(&self, context: &[&str], max_suggestions: usize) -> Vec<Prediction> {
         // Collect all predictions, then merge by word with probability accumulation.
         let mut acc: HashMap<String, f64> = HashMap::new();
