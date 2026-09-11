@@ -11,6 +11,7 @@ pub mod patricia;
 pub mod compact;
 pub mod file;
 pub mod paths;
+pub mod search;
 pub mod subsequence;
 
 #[cfg(feature = "hunspell")]
@@ -66,7 +67,7 @@ pub struct DictionaryQuery {
 }
 
 /// A single dictionary entry returned from a query.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DictionaryResult {
     pub word: String,
     /// Normalized frequency in 0.0–1.0 (the word's share of the backend's
@@ -128,6 +129,35 @@ pub trait DictionaryBackend: Send + Sync {
         results
     }
 
+    /// Cancellable, prepared current-word search. Built-in backends check the
+    /// deadline while scanning. Custom backends should override this fallback
+    /// to cooperate with cancellation inside their own query implementation.
+    fn search_words(
+        &self,
+        search: &search::WordSearch<'_>,
+        deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        search::check_deadline(deadline)?;
+        let rows = self.query_limited(
+            &[DictionaryQuery {
+                prefix: None,
+                suffix: None,
+                min_length: None,
+                max_length: None,
+            }],
+            search.limit.saturating_add(1),
+        );
+        if rows.len() > search.limit {
+            return Err("custom backend search exceeds candidate budget".into());
+        }
+        let mut results = Vec::new();
+        for row in rows {
+            search.push(&mut results, &row.word, row.confidence, deadline)?;
+        }
+        search::check_deadline(deadline)?;
+        Ok(results)
+    }
+
     /// Bounded candidate snapshot for the optional whole-word swipe prototype.
     #[cfg(feature = "swipe")]
     fn swipe_candidates(
@@ -183,6 +213,14 @@ impl<T: DictionaryBackend> DictionaryBackend for Arc<T> {
 
     fn query_limited(&self, queries: &[DictionaryQuery], max: usize) -> Vec<DictionaryResult> {
         (**self).query_limited(queries, max)
+    }
+
+    fn search_words(
+        &self,
+        search: &search::WordSearch<'_>,
+        deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        (**self).search_words(search, deadline)
     }
 
     #[cfg(feature = "swipe")]

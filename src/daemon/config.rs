@@ -13,6 +13,7 @@ pub struct DaemonConfig {
     pub max_complete_results: usize,
     /// Cap on accepted bounded-query `max` values; oversized requests are rejected.
     pub max_query_results: usize,
+    pub completion: crate::completion::CompletionConfig,
 }
 
 impl DaemonConfig {
@@ -25,6 +26,7 @@ impl DaemonConfig {
             default_lang: lang.to_string(),
             max_complete_results: completion.max_complete_results,
             max_query_results: completion.max_query_results,
+            completion,
         }
     }
 
@@ -44,6 +46,7 @@ impl DaemonConfig {
             max_query_results: args
                 .max_query_results
                 .unwrap_or(completion.max_query_results),
+            completion,
         }
     }
 }

@@ -83,6 +83,34 @@ impl MarisaNgramBackend {
 }
 
 impl DictionaryBackend for MarisaNgramBackend {
+    fn search_words(
+        &self,
+        search: &crate::dictionary::search::WordSearch<'_>,
+        deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        crate::dictionary::search::check_deadline(deadline)?;
+        let mut results = Vec::new();
+        let mut agent = Agent::new();
+        agent.set_query_str("1 ");
+        while self.trie.predictive_search(&mut agent) {
+            let key = agent.key().as_str();
+            if let Some(word) = key.strip_prefix("1 ") {
+                let count = self.counts.get(agent.key().id()).copied().unwrap_or(0);
+                search.push(
+                    &mut results,
+                    word,
+                    crate::dictionary::normalized_frequency(
+                        f64::from(count),
+                        self.total_unigram_count as f64,
+                    ),
+                    deadline,
+                )?;
+            }
+            crate::dictionary::search::check_deadline(deadline)?;
+        }
+        Ok(results)
+    }
+
     fn query_prefixes(&self, queries: &[DictionaryQuery]) -> Vec<DictionaryResult> {
         let mut results: Vec<DictionaryResult> = Vec::new();
 

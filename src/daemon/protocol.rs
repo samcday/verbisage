@@ -100,8 +100,38 @@ impl QueryParams {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CompletionOptions {
+    pub input_prep: crate::text::TextPrep,
+    pub context_prep: crate::text::TextPrep,
+    pub case_preference: crate::text::CasePreference,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompleteParams {
+    #[serde(default)]
+    pub word: String,
+    #[serde(default)]
+    pub context: Vec<String>,
+    #[serde(default = "default_max")]
+    pub max: usize,
+    #[serde(default)]
+    pub options: CompletionOptions,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LimitedQueryParams {
+    #[serde(flatten)]
+    pub query: QueryParams,
+    pub max: usize,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PredictParams {
+    #[serde(default)]
+    pub options: CompletionOptions,
     pub context: Vec<String>,
     #[serde(default = "default_max")]
     pub max: usize,

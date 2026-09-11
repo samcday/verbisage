@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::json;
 
 use crate::backends::resolve_chain_with_backcompat;
-use crate::completion::{CompletionEngine, PrefixCompleter};
+use crate::completion::{AndroidCompleter, CompletionEngine, CompletionInput};
 use crate::dictionary::paths::LanguagePaths;
 use crate::dictionary::{
     DictionaryBackend, DictionaryQuery, DictionaryResult, FileDictionaryBackend,
@@ -14,8 +14,8 @@ use crate::spellcheck::SpellChecker;
 
 use super::config::DaemonConfig;
 use super::protocol::{
-    DaemonRequest, DaemonResponse, FrequencyParams, IsCorrectParams, NgramBumpParams,
-    PredictParams, QueryParams, SuggestParams, WordAddParams,
+    CompleteParams, DaemonRequest, DaemonResponse, FrequencyParams, IsCorrectParams,
+    LimitedQueryParams, NgramBumpParams, PredictParams, QueryParams, SuggestParams, WordAddParams,
 };
 
 struct CachedBackend {
@@ -192,25 +192,93 @@ impl DaemonHandler {
         max: usize,
         lang: &str,
     ) -> Result<Vec<DictionaryResult>, String> {
+        self.complete_with(
+            &CompletionInput {
+                input: word,
+                ..Default::default()
+            },
+            max,
+            lang,
+        )
+    }
+
+    pub fn completion_deadline(&self) -> std::time::Duration {
+        self.config.completion.response_deadline
+    }
+
+    pub fn validate_complete(&self, input: &CompletionInput<'_>, max: usize) -> Result<(), String> {
         if max > self.config.max_complete_results {
             return Err(format!(
-                "requested max {} exceeds Complete cap {}",
-                max, self.config.max_complete_results
+                "requested max {max} exceeds Complete cap {}",
+                self.config.max_complete_results
             ));
+        }
+        let invalid = |word: &str| {
+            word.len() > 512
+                || word.chars().count() > 128
+                || word.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+        };
+        if invalid(input.input)
+            || input.context.len() > 16
+            || input
+                .context
+                .iter()
+                .any(|word| word.is_empty() || invalid(word))
+        {
+            return Err(
+                "invalid completion input or context: at most 16 words, 128 characters per word"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn complete_with(
+        &self,
+        input: &CompletionInput<'_>,
+        max: usize,
+        lang: &str,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        self.validate_complete(input, max)?;
+        if max == 0 {
+            return Ok(Vec::new());
         }
         let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
-            return Err(format!("no dictionary loaded for '{}'", lang));
+            return Err(format!("no dictionary loaded for '{lang}'"));
         }
-        let engine = PrefixCompleter::new(backend.dictionary.as_ref());
-        Ok(engine
-            .complete(Some(word), max)
-            .into_iter()
-            .map(|c| DictionaryResult {
-                word: c.word,
-                confidence: c.score,
+        AndroidCompleter::new(backend.dictionary.as_ref())
+            .with_predictor(backend.predictor.as_deref())
+            .with_language(lang)
+            .with_config(self.config.completion.clone())
+            .complete_with(input, max)
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|c| DictionaryResult {
+                        word: c.word,
+                        confidence: c.score,
+                    })
+                    .collect()
             })
-            .collect())
+    }
+
+    pub fn complete_request(
+        &self,
+        params: &CompleteParams,
+        lang: &str,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        let context: Vec<_> = params.context.iter().map(String::as_str).collect();
+        self.complete_with(
+            &CompletionInput {
+                input: &params.word,
+                context: &context,
+                input_prep: params.options.input_prep,
+                context_prep: params.options.context_prep,
+                case_preference: params.options.case_preference,
+            },
+            params.max,
+            lang,
+        )
     }
 
     #[cfg(feature = "swipe")]
@@ -219,6 +287,13 @@ impl DaemonHandler {
         request: crate::swipe::SwipeRequest,
         lang: &str,
     ) -> Result<Vec<(String, f64)>, String> {
+        if request.max_results() > self.config.max_complete_results {
+            return Err(format!(
+                "requested max {} exceeds swipe cap {}",
+                request.max_results(),
+                self.config.max_complete_results
+            ));
+        }
         let backend = self.get_or_load_backend(lang)?;
         if !backend.loaded {
             return Err(format!("no dictionary loaded for '{}'", lang));
@@ -263,14 +338,22 @@ impl DaemonHandler {
         max: usize,
         lang: &str,
     ) -> Result<Vec<Prediction>, String> {
-        let backend = self.get_or_load_backend(lang)?;
-        if !backend.loaded {
-            return Err(format!("no dictionary loaded for '{}'", lang));
-        }
-        match &backend.predictor {
-            Some(pred) => Ok(pred.predict_next(context, max)),
-            None => Ok(Vec::new()),
-        }
+        self.complete_with(
+            &CompletionInput {
+                context,
+                ..Default::default()
+            },
+            max,
+            lang,
+        )
+        .map(|rows| {
+            rows.into_iter()
+                .map(|r| Prediction {
+                    word: r.word,
+                    confidence: r.confidence,
+                })
+                .collect()
+        })
     }
 
     pub fn frequency(&self, word: &str, lang: &str) -> Result<f64, String> {
@@ -349,6 +432,54 @@ impl DaemonHandler {
                 }
             }
 
+            "complete" | "complete_with" => {
+                let params: CompleteParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => return DaemonResponse::error(id, format!("bad params: {e}")),
+                };
+                match self.complete_request(&params, lang) {
+                    Ok(rows) => DaemonResponse::success(
+                        id,
+                        json!(
+                            rows.into_iter()
+                                .map(|r| json!({"word":r.word,"confidence":r.confidence}))
+                                .collect::<Vec<_>>()
+                        ),
+                    ),
+                    Err(e) => DaemonResponse::error(id, e),
+                }
+            }
+            "query_limited" => {
+                let params: LimitedQueryParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => return DaemonResponse::error(id, format!("bad params: {e}")),
+                };
+                if params.query.prefixes.len() > 16
+                    || params.query.suffixes.len() > 16
+                    || params
+                        .query
+                        .prefixes
+                        .iter()
+                        .chain(&params.query.suffixes)
+                        .chain(params.query.prefix.iter())
+                        .chain(params.query.suffix.iter())
+                        .any(|s| s.len() > 256)
+                {
+                    return DaemonResponse::error(id, "completion query is too large");
+                }
+                match self.query_limited(&params.query.into_queries(), lang, params.max) {
+                    Ok(rows) => DaemonResponse::success(
+                        id,
+                        json!(
+                            rows.into_iter()
+                                .map(|r| json!({"word":r.word,"confidence":r.confidence}))
+                                .collect::<Vec<_>>()
+                        ),
+                    ),
+                    Err(e) => DaemonResponse::error(id, e),
+                }
+            }
+
             "query" => {
                 let params: QueryParams = match serde_json::from_value(req.params) {
                     Ok(p) => p,
@@ -367,13 +498,20 @@ impl DaemonHandler {
                 }
             }
 
-            "predict" => {
+            "predict" | "predict_with" => {
                 let params: PredictParams = match serde_json::from_value(req.params) {
                     Ok(p) => p,
                     Err(e) => return DaemonResponse::error(id, format!("bad params: {}", e)),
                 };
-                let context: Vec<&str> = params.context.iter().map(|s| s.as_str()).collect();
-                match self.predict(&context, params.max, lang) {
+                match self.complete_request(
+                    &CompleteParams {
+                        word: String::new(),
+                        context: params.context,
+                        max: params.max,
+                        options: params.options,
+                    },
+                    lang,
+                ) {
                     Ok(predictions) => {
                         let items: Vec<serde_json::Value> = predictions
                             .into_iter()

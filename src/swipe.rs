@@ -28,6 +28,10 @@ pub struct SwipeRequest {
 }
 
 impl SwipeRequest {
+    pub fn max_results(&self) -> usize {
+        self.max
+    }
+
     pub fn new(trace: Vec<TracePoint>, keys: Vec<KeyBounds>, max: u32) -> Result<Self, String> {
         if !(2..=MAX_POINTS).contains(&trace.len()) || !(2..=MAX_KEYS).contains(&keys.len()) {
             return Err("swipe requires 2..512 points and 2..64 keys".into());
@@ -100,7 +104,7 @@ impl SwipeRequest {
         Ok(Self {
             trace: motion,
             keys,
-            max: max.min(100) as usize,
+            max: max as usize,
         })
     }
 

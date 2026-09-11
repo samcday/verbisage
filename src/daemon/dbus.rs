@@ -11,6 +11,8 @@ use super::DaemonHandler;
 /// `/org/verbisage/Dictionary`, interface `org.verbisage.Dictionary1`.
 pub struct VerbisageDbus {
     handler: std::sync::Arc<DaemonHandler>,
+    completion_slot: std::sync::Arc<tokio::sync::Semaphore>,
+    completion_runtime: tokio::runtime::Handle,
     #[cfg(feature = "swipe")]
     swipe_slot: std::sync::Arc<tokio::sync::Semaphore>,
     #[cfg(feature = "swipe")]
@@ -21,11 +23,76 @@ impl VerbisageDbus {
     pub fn new(handler: DaemonHandler) -> Self {
         Self {
             handler: std::sync::Arc::new(handler),
+            completion_slot: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
+            completion_runtime: completion_runtime(),
             #[cfg(feature = "swipe")]
             swipe_slot: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
             #[cfg(feature = "swipe")]
             swipe_runtime: tokio::runtime::Handle::try_current().ok(),
         }
+    }
+}
+
+// Synchronous/P2P library users may register this object outside Tokio.
+// Reuse one small runtime in that case; daemon users keep their existing runtime.
+fn completion_runtime() -> tokio::runtime::Handle {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    tokio::runtime::Handle::try_current().unwrap_or_else(|_| {
+        RUNTIME
+            .get_or_init(|| {
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_time()
+                    .build()
+                    .expect("create completion worker runtime")
+            })
+            .handle()
+            .clone()
+    })
+}
+
+impl VerbisageDbus {
+    async fn completion_request(
+        &self,
+        params: super::protocol::CompleteParams,
+        lang: String,
+    ) -> Result<Vec<(String, f64)>, FdoError> {
+        let context: Vec<_> = params.context.iter().map(String::as_str).collect();
+        self.handler
+            .validate_complete(
+                &crate::completion::CompletionInput {
+                    input: &params.word,
+                    context: &context,
+                    input_prep: params.options.input_prep,
+                    context_prep: params.options.context_prep,
+                    case_preference: params.options.case_preference,
+                },
+                params.max,
+            )
+            .map_err(FdoError::InvalidArgs)?;
+        if params.max == 0 {
+            return Ok(Vec::new());
+        }
+        let permit = self
+            .completion_slot
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| FdoError::Failed("completion workers are busy".into()))?;
+        let deadline = self.handler.completion_deadline();
+        let handler = self.handler.clone();
+        let worker = self.completion_runtime.spawn_blocking(move || {
+            let _permit = permit;
+            handler.complete_request(&params, &lang)
+        });
+        let rows = self
+            .completion_runtime
+            .spawn(async move { tokio::time::timeout(deadline, worker).await })
+            .await
+            .map_err(|_| FdoError::Failed("completion response task failed".into()))?
+            .map_err(|_| FdoError::Failed("completion exceeded its response deadline".into()))?
+            .map_err(|_| FdoError::Failed("completion worker failed".into()))?
+            .map_err(log_and_err)?;
+        Ok(rows.into_iter().map(|r| (r.word, r.confidence)).collect())
     }
 }
 
@@ -76,23 +143,88 @@ impl VerbisageDbus {
         max: u32,
         lang: &str,
     ) -> Result<Vec<(String, f64)>, FdoError> {
+        // Legacy clients retain the empty-input convention. CompleteWith and
+        // PredictWith explicitly request next-word candidates.
+        self.handler
+            .validate_complete(&crate::completion::CompletionInput::default(), max as usize)
+            .map_err(FdoError::InvalidArgs)?;
         if word.len() > 512 || word.chars().count() > 128 || word.chars().any(char::is_control) {
             return Err(FdoError::InvalidArgs(
                 "completion word is too large or contains control characters".into(),
             ));
         }
-        if max == 0 || word.is_empty() || word.chars().any(char::is_whitespace) {
+        if word.is_empty() || word.chars().any(char::is_whitespace) {
             return Ok(Vec::new());
         }
-        self.handler
-            .complete(word, max as usize, lang)
-            .map(|results| {
-                results
-                    .into_iter()
-                    .map(|r| (r.word, r.confidence))
-                    .collect()
-            })
-            .map_err(log_and_err)
+        self.completion_request(
+            super::protocol::CompleteParams {
+                word: word.into(),
+                context: vec![],
+                max: max as usize,
+                options: Default::default(),
+            },
+            lang.into(),
+        )
+        .await
+    }
+
+    /// Complete using committed context and explicit per-request preparation.
+    /// Each prep tuple is (normalization, fold); defaults are (none, none).
+    #[zbus(out_args("result"))]
+    async fn complete_with(
+        &self,
+        word: String,
+        context: Vec<String>,
+        max: u32,
+        lang: String,
+        input_prep: (String, String),
+        context_prep: (String, String),
+        case_preference: String,
+    ) -> Result<Vec<(String, f64)>, FdoError> {
+        let options = super::protocol::CompletionOptions {
+            input_prep: crate::text::TextPrep::from_names(&input_prep.0, &input_prep.1)
+                .map_err(FdoError::InvalidArgs)?,
+            context_prep: crate::text::TextPrep::from_names(&context_prep.0, &context_prep.1)
+                .map_err(FdoError::InvalidArgs)?,
+            case_preference: serde_json::from_value(serde_json::json!(case_preference))
+                .map_err(|e| FdoError::InvalidArgs(e.to_string()))?,
+        };
+        self.completion_request(
+            super::protocol::CompleteParams {
+                word,
+                context,
+                max: max as usize,
+                options,
+            },
+            lang,
+        )
+        .await
+    }
+
+    /// Next-word prediction uses the same engine and text options as completion.
+    #[zbus(out_args("result"))]
+    async fn predict_with(
+        &self,
+        context: Vec<String>,
+        max: u32,
+        lang: String,
+        context_prep: (String, String),
+    ) -> Result<Vec<(String, f64)>, FdoError> {
+        let prep = crate::text::TextPrep::from_names(&context_prep.0, &context_prep.1)
+            .map_err(FdoError::InvalidArgs)?;
+        self.completion_request(
+            super::protocol::CompleteParams {
+                word: String::new(),
+                context,
+                max: max as usize,
+                options: super::protocol::CompletionOptions {
+                    context_prep: prep,
+                    ..Default::default()
+                },
+            },
+            lang,
+        )
+        .await
     }
 
     /// Resolve a complete single-finger word gesture against supplied key bounds.
@@ -228,17 +360,16 @@ impl VerbisageDbus {
         max: u32,
         lang: &str,
     ) -> Result<Vec<(String, f64)>, FdoError> {
-        crate::veprintln!("[dbus-server] Predict({:?}, {}, {})", context, max, lang);
-        let ctx: Vec<&str> = context.iter().map(|s| s.as_str()).collect();
-        self.handler
-            .predict(&ctx, max as usize, lang)
-            .map(|predictions| {
-                predictions
-                    .into_iter()
-                    .map(|p| (p.word, p.confidence))
-                    .collect()
-            })
-            .map_err(log_and_err)
+        self.completion_request(
+            super::protocol::CompleteParams {
+                word: String::new(),
+                context,
+                max: max as usize,
+                options: Default::default(),
+            },
+            lang.into(),
+        )
+        .await
     }
 
     /// Return the frequency / rank of a word in the dictionary for the

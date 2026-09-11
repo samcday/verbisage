@@ -355,6 +355,26 @@ fn insert_word(inner: &mut FileDictionaryInner, word: String, frequency: f64) {
 }
 
 impl DictionaryBackend for FileDictionaryBackend {
+    fn search_words(
+        &self,
+        search: &super::search::WordSearch<'_>,
+        deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        super::search::check_deadline(deadline)?;
+        let mut results = Vec::new();
+        let inner = self.inner.read().unwrap();
+        for word in &inner.words_sorted {
+            search.push(
+                &mut results,
+                word,
+                super::normalized_frequency(inner.words[word], inner.total_frequency),
+                deadline,
+            )?;
+        }
+        super::search::check_deadline(deadline)?;
+        Ok(results)
+    }
+
     fn is_empty(&self) -> bool {
         self.inner.read().unwrap().words.is_empty()
     }

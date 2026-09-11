@@ -54,6 +54,49 @@ impl PatriciaDictionaryBackend {
 }
 
 impl DictionaryBackend for PatriciaDictionaryBackend {
+    fn search_words(
+        &self,
+        search: &super::search::WordSearch<'_>,
+        deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        use patricia_dict::VisitControl;
+        super::search::check_deadline(deadline)?;
+        let mut results = Vec::new();
+        let mut failure = None;
+        self.dictionary.traverse_nodes(&mut |node| {
+            if let Err(error) = super::search::check_deadline(deadline) {
+                failure = Some(error);
+                return VisitControl::Stop;
+            }
+            if !search.may_descend(&node.prefix) {
+                return VisitControl::PruneChildren;
+            }
+            if node.is_terminal && !node.is_not_a_word {
+                if let Some(attributes) = node
+                    .attributes
+                    .as_ref()
+                    .filter(|a| usable(a) && !a.represents_beginning_of_sentence)
+                {
+                    if let Err(error) = search.push(
+                        &mut results,
+                        &node.prefix,
+                        f64::from(attributes.probability) / 255.0,
+                        deadline,
+                    ) {
+                        failure = Some(error);
+                        return VisitControl::Stop;
+                    }
+                }
+            }
+            VisitControl::Continue
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        super::search::check_deadline(deadline)?;
+        Ok(results)
+    }
+
     fn is_empty(&self) -> bool {
         self.dictionary
             .filter(
@@ -227,30 +270,65 @@ impl SpellChecker for Arc<PatriciaDictionaryBackend> {
         // supplies membership and frequency instead of Hunspell expansion.
         let mut suggestions =
             crate::spellcheck::suggest::suggest_edits(self.as_ref(), None, word, context, 10);
-        if !context.is_empty() {
-            suggestions.sort_by_cached_key(|candidate| {
-                std::cmp::Reverse(
-                    self.dictionary
-                        .query_with_context(candidate, context)
-                        .map_or(0, |a| a.probability),
-                )
-            });
-        }
+        suggestions.sort_by(|a, b| {
+            self.candidate_score(context, b)
+                .unwrap_or(0.0)
+                .total_cmp(&self.candidate_score(context, a).unwrap_or(0.0))
+                .then_with(|| a.cmp(b))
+        });
         suggestions
     }
 }
 
 impl Predictor for Arc<PatriciaDictionaryBackend> {
+    fn score_candidates(
+        &self,
+        context: &[&str],
+        candidates: &[(&str, &str)],
+        deadline: std::time::Instant,
+    ) -> Result<Vec<Option<f64>>, String> {
+        let prepared = self
+            .dictionary
+            .prepare_context(crate::text::after_boundary(context));
+        let available = prepared.available_order();
+        let mut results = Vec::with_capacity(candidates.len());
+        for (candidate, _) in candidates {
+            super::search::check_deadline(deadline)?;
+            results.push(
+                self.dictionary
+                    .ngram_scores_prepared(candidate, &prepared)
+                    .ok()
+                    .and_then(|s| {
+                        crate::prediction::scoring::interpolate_probabilities(&[
+                            Some(f64::from(s.unigram) / 255.0),
+                            s.bigram
+                                .map(|p| f64::from(p) / 255.0)
+                                .or_else(|| (available >= 2).then_some(0.0)),
+                            s.trigram
+                                .map(|p| f64::from(p) / 255.0)
+                                .or_else(|| (available >= 3).then_some(0.0)),
+                            s.quadgram
+                                .map(|p| f64::from(p) / 255.0)
+                                .or_else(|| (available >= 4).then_some(0.0)),
+                        ])
+                    }),
+            );
+        }
+        super::search::check_deadline(deadline)?;
+        Ok(results)
+    }
+
     fn candidate_score(&self, context: &[&str], candidate: &str) -> Option<f64> {
         self.attributes(candidate)?;
-        let context = crate::text::after_boundary(context);
-        let scores = self.dictionary.ngram_scores(candidate, context).ok()?;
-        crate::prediction::scoring::interpolate_probabilities(&[
-            Some(f64::from(scores.unigram) / 255.0),
-            scores.bigram.map(|p| f64::from(p) / 255.0),
-            scores.trigram.map(|p| f64::from(p) / 255.0),
-            scores.quadgram.map(|p| f64::from(p) / 255.0),
-        ])
+        self.score_candidates(
+            context,
+            &[(candidate, candidate)],
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+        )
+        .ok()?
+        .into_iter()
+        .next()
+        .flatten()
     }
 
     fn predict_next(&self, context: &[&str], max_suggestions: usize) -> Vec<Prediction> {

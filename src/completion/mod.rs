@@ -4,11 +4,23 @@
 //! transplanted prefix + single-edit ranking algorithm. Scores are relative
 //! heuristics, not probabilities.
 
+pub mod android;
 pub mod prefix;
+pub use android::AndroidCompleter;
 
 use std::time::Duration;
 
 pub use prefix::{PrefixCompleter, complete};
+
+/// Current-word input and committed context have independent preparation.
+#[derive(Debug, Clone, Default)]
+pub struct CompletionInput<'a> {
+    pub input: &'a str,
+    pub input_prep: crate::text::TextPrep,
+    pub context: &'a [&'a str],
+    pub context_prep: crate::text::TextPrep,
+    pub case_preference: crate::text::CasePreference,
+}
 
 /// A single completion candidate returned to the caller.
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +46,12 @@ pub struct CompletionConfig {
     pub max_complete_results: usize,
     /// Transport-level cap on accepted bounded-query `max` values.
     pub max_query_results: usize,
+    /// Maximum intermediate candidates. Exceeding this budget returns an
+    /// explicit error; it never silently discards low-frequency candidates.
+    pub max_search_candidates: usize,
+    /// Suppress corrections for known words and fragments shorter than this.
+    pub suppress_known_corrections: bool,
+    pub min_correction_chars: usize,
     /// Deadline for a single completion request.
     pub response_deadline: Duration,
     /// Time budget for dictionary-side candidate search.
@@ -45,6 +63,9 @@ impl Default for CompletionConfig {
         Self {
             max_complete_results: 1_000,
             max_query_results: 200_000,
+            max_search_candidates: 200_000,
+            suppress_known_corrections: true,
+            min_correction_chars: 3,
             response_deadline: Duration::from_secs(5),
             search_budget: Duration::from_secs(5),
         }
@@ -58,6 +79,16 @@ pub trait CompletionEngine: Send + Sync {
     /// `prefix` is `None` when the caller provides no pretext. `max` is
     /// honored exactly; output caps are enforced by the caller/transport.
     fn complete(&self, prefix: Option<&str>, max: usize) -> Vec<CompletionCandidate>;
+
+    /// Contextual engines report search-budget failures through this API.
+    /// Legacy engines keep their original context-free behavior.
+    fn complete_with(
+        &self,
+        input: &CompletionInput<'_>,
+        max: usize,
+    ) -> Result<Vec<CompletionCandidate>, String> {
+        Ok(self.complete(Some(input.input), max))
+    }
 }
 
 // Kept as a public re-export for existing library users.

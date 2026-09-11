@@ -76,6 +76,20 @@ impl Default for HunspellDictionaryBackend {
 }
 
 impl DictionaryBackend for HunspellDictionaryBackend {
+    fn search_words(
+        &self,
+        search: &super::search::WordSearch<'_>,
+        deadline: std::time::Instant,
+    ) -> Result<Vec<DictionaryResult>, String> {
+        super::search::check_deadline(deadline)?;
+        let mut results = Vec::new();
+        for word in &self.words_sorted {
+            search.push(&mut results, word, -1.0, deadline)?;
+        }
+        super::search::check_deadline(deadline)?;
+        Ok(results)
+    }
+
     fn is_empty(&self) -> bool {
         self.words.is_empty()
     }
