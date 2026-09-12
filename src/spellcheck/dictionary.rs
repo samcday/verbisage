@@ -67,7 +67,7 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
         }
 
         // Raw language/frequency score per candidate, in candidate order.
-        let mut scores: Vec<f64> = match &self.predictor {
+        let scores: Vec<f64> = match &self.predictor {
             Some(predictor) => {
                 let keys: Vec<_> = candidates
                     .iter()
@@ -88,35 +88,24 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
                 .collect(),
         };
 
-        if input.spatial.is_none() {
-            // No geometry: keep the pure language/frequency ordering.
-            let mut ranked: Vec<_> = candidates.into_iter().zip(scores).collect();
-            ranked.sort_by(|((a, _), a_score), ((b, _), b_score)| {
-                b_score.total_cmp(a_score).then_with(|| a.cmp(b))
-            });
-            ranked.truncate(max);
-            return ranked.into_iter().map(|((word, _), _)| word).collect();
-        }
-
-        // Layout/touch active: combine the edit cost (edit class plus proximity,
-        // already encoded in the edit weight) with the language-model cost on a
-        // single HeliBoard-style scale. Geometry refines ranking; it must not
-        // bury the language model (a transposition like `teh` -> `the` is far
-        // on the keyboard but the most likely word).
+        // One ranking for every context: the edit cost (edit class plus
+        // geometry, already encoded by the edit source) plus a normalised
+        // language-model improbability, on HeliBoard's shared scale. Geometry
+        // refines ranking; it must not bury the language model (a transposition
+        // like `teh` -> `the` is far on the keyboard but the most likely word).
         let max_score = scores.iter().cloned().fold(f64::MIN, f64::max);
         let min_score = scores.iter().cloned().fold(f64::MAX, f64::min);
         let range = max_score - min_score;
         let input_len = input.word.chars().count();
         let mut scored: Vec<(String, f64)> = candidates
             .into_iter()
-            .zip(scores.drain(..))
-            .map(|((word, edit_weight), raw)| {
+            .zip(scores)
+            .map(|((word, edit_cost), raw)| {
                 let language = if range > 0.0 {
                     1.0 - (raw - min_score) / range
                 } else {
                     0.0
                 };
-                let edit_cost = crate::spatial::cost::quality_to_cost(edit_weight);
                 (
                     word,
                     crate::spatial::cost::combined_score(edit_cost, language, input_len),

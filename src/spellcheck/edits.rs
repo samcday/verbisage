@@ -1,5 +1,10 @@
 //! Shared one-edit generator. Callers own matching, budgets, and ranking.
 
+use crate::spatial::cost::{
+    INSERTION_COST, INSERTION_COST_FIRST_CHAR, INSERTION_COST_SAME_CHAR, OMISSION_COST,
+    OMISSION_COST_FIRST_CHAR, OMISSION_COST_SAME_CHAR, TRANSPOSITION_COST, quality_to_cost,
+};
+
 /// A source of substitution candidates for a character.
 ///
 /// The geometry-free [`LatinAlphabet`] is the default; layout- and touch-aware
@@ -18,13 +23,6 @@ pub trait EditSource {
 }
 
 pub struct LatinAlphabet;
-
-/// Weight applied to a substitution whose key is outside the proximity radius.
-///
-/// Geometry modulates edit cost but must never drop a candidate: a distant
-/// substitution is still offered, just ranked below nearby keys. Kept below the
-/// near-key floor (0.1) so ranking stays monotonic in distance.
-pub const DISTANT_SUBSTITUTION_WEIGHT: f64 = 0.05;
 
 const LATIN: [char; 26] = [
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's',
@@ -47,7 +45,11 @@ impl EditSource for LatinAlphabet {
 }
 
 /// Return false from the visitor to stop immediately (for example on timeout).
-pub fn visit_edits(word: &str, source: &dyn EditSource, mut visit: impl FnMut(String, f64) -> bool) {
+pub fn visit_edits(
+    word: &str,
+    source: &dyn EditSource,
+    mut visit: impl FnMut(String, f64) -> bool,
+) {
     let chars: Vec<char> = word.chars().collect();
     for i in 0..chars.len().saturating_sub(1) {
         let mut c = chars.clone();
@@ -81,6 +83,73 @@ pub fn visit_edits(word: &str, source: &dyn EditSource, mut visit: impl FnMut(St
                 let mut c = chars.clone();
                 c[i] = ch;
                 if !visit(c.into_iter().collect(), weight) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Like [`visit_edits`], but yields HeliBoard spatial edit *costs* (lower is
+/// better) instead of heuristic qualities. Used by the bounded correction
+/// traversal so the multi-edit budget is consistent across edit classes.
+pub fn visit_edits_cost(
+    word: &str,
+    source: &dyn EditSource,
+    mut visit: impl FnMut(String, f64) -> bool,
+) {
+    let chars: Vec<char> = word.chars().collect();
+    for i in 0..chars.len().saturating_sub(1) {
+        let mut c = chars.clone();
+        c.swap(i, i + 1);
+        if !visit(c.into_iter().collect(), TRANSPOSITION_COST) {
+            return;
+        }
+    }
+    for i in 0..chars.len() {
+        // A shorter candidate means an extra input character was typed, which
+        // HeliBoard calls an insertion.
+        let repeated = (i > 0 && chars[i - 1] == chars[i])
+            || (i + 1 < chars.len() && chars[i + 1] == chars[i]);
+        let cost = if repeated {
+            INSERTION_COST_SAME_CHAR
+        } else if i == 0 {
+            INSERTION_COST_FIRST_CHAR
+        } else {
+            INSERTION_COST
+        };
+        let mut c = chars.clone();
+        c.remove(i);
+        if !visit(c.into_iter().collect(), cost) {
+            return;
+        }
+    }
+    for i in 0..=chars.len() {
+        // A longer candidate means the dictionary has an extra character, which
+        // HeliBoard calls an omission; doubling a neighbour is cheapest.
+        for &ch in source.letters() {
+            let repeated = (i > 0 && chars[i - 1] == ch) || (i < chars.len() && chars[i] == ch);
+            let cost = if repeated {
+                OMISSION_COST_SAME_CHAR
+            } else if i == 0 {
+                OMISSION_COST_FIRST_CHAR
+            } else {
+                OMISSION_COST
+            };
+            let mut c = chars.clone();
+            c.insert(i, ch);
+            if !visit(c.into_iter().collect(), cost) {
+                return;
+            }
+        }
+    }
+    for i in 0..chars.len() {
+        for (ch, weight) in source.substitutions(chars[i], i) {
+            if ch != chars[i] {
+                // Source weights are qualities derived from spatial cost.
+                let mut c = chars.clone();
+                c[i] = ch;
+                if !visit(c.into_iter().collect(), quality_to_cost(weight)) {
                     return;
                 }
             }
