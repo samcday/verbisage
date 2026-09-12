@@ -65,6 +65,22 @@ length is an error. Touch requests use HeliBoard's additive spatial/language
 model with an edit-accuracy gate, while layout-only requests use key proximity;
 without either, the previous geometry-free output is unchanged.
 
+A client registers the layer it is actually showing, in its own spelling: an
+active Shift layer uploads capital labels. Layout labels are prepared with the
+request's own `input_prep` before the edit alphabet is built, so a folded input
+still reaches them; with the default no-op preparation labels are used as
+authored. A label that does not prepare to exactly one character is skipped.
+
+Empty input asks for next-word candidates and is ranked by the geometry-free
+model even when a layout token is supplied: there is no typed position to
+compare against, so the spatial branch charged every candidate the same
+first-completion cost and collapsed realistic low probabilities into a lexical
+tie. `PredictWith` has no layout parameter and is unaffected.
+
+Alternate labels are positions only. They let a word typed with a long-press
+accent be measured from that key, but the edit alphabet comes from single-
+character main labels, so an alternate does not generate an accent correction.
+
 An upload carries either explicit key rectangles (`keys`: label, alt labels,
 left/top/width/height) for touch layouts, or `rows` (the shared `RowLayout`
 intermediary) for physical layouts. The CLI accepts `--layout <value>` on

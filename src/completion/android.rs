@@ -84,7 +84,12 @@ impl CompletionEngine for AndroidCompleter<'_> {
             self.lang,
         );
         let context: Vec<_> = context.iter().map(String::as_str).collect();
-        let source = input.spatial.edit_source();
+        // Layout labels are authored in the client's own spelling (a Shift
+        // layer really does carry "Q"). Generated edits are matched against
+        // prepared candidates, so prepare the labels the same way as the
+        // input; with the default no-op preparation this is the identity.
+        let prepare_label = |label: &str| input.input_prep.apply(label, &self.languages, self.lang);
+        let source = input.spatial.edit_source_with(&prepare_label);
         let mut edits = HashMap::<String, f64>::new();
         if folded.chars().count() >= self.config.min_correction_chars {
             visit_edits(&folded, &source, |word, weight| {
@@ -147,8 +152,14 @@ impl CompletionEngine for AndroidCompleter<'_> {
             Some(p) => p.score_candidates(&context, &key_refs, deadline)?,
             None => vec![None; candidates.len()],
         };
-        let spatial_active = !input.spatial.is_none();
         let input_len = folded.chars().count();
+        // Empty input asks for next-word predictions. There is no typed
+        // position to compare against: every candidate is trivially "exact",
+        // so the spatial branch would charge each one the same first-completion
+        // cost and collapse ordinary low-probability candidates into a lexical
+        // tie. Rank predictions with the geometry-free model even when the
+        // caller registered a layout.
+        let spatial_active = !input.spatial.is_none() && input_len > 0;
         // HeliBoard gates error corrections on how accurately the user touched
         // the intended keys. Only meaningful when touch points are present.
         let corrections_allowed = match &input.spatial {

@@ -13,7 +13,7 @@ use super::cost::{
     ADDITIONAL_PROXIMITY_COST, MAX_SPATIAL_DISTANCE, PROXIMITY_COST, SEARCH_DISTANCE,
     SUBSTITUTION_COST, additional_proximity, cost_to_quality, key_distance_cost,
 };
-use super::physical::single_char_labels;
+use super::physical::single_char_labels_with;
 use crate::spellcheck::edits::{EditSource, LatinAlphabet};
 
 pub struct TouchEdits<'a> {
@@ -25,10 +25,20 @@ pub struct TouchEdits<'a> {
 
 impl<'a> TouchEdits<'a> {
     pub fn new(layout: &'a RectKeyLayout, points: &'a [TouchPoint]) -> Self {
+        Self::new_with(layout, points, &|label: &str| label.to_string())
+    }
+
+    /// Like [`TouchEdits::new`], but prepares the layout's labels with the
+    /// request's own preparation so edits match prepared candidates.
+    pub fn new_with(
+        layout: &'a RectKeyLayout,
+        points: &'a [TouchPoint],
+        prepare: &dyn Fn(&str) -> String,
+    ) -> Self {
         Self {
             layout,
             points,
-            letters: single_char_labels(layout),
+            letters: single_char_labels_with(layout, prepare),
             key_diameter: f64::from(layout.median_key_diameter().max(f32::EPSILON)),
         }
     }

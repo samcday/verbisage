@@ -77,12 +77,25 @@ impl SpatialInput {
         matches!(self, Self::None)
     }
 
-    /// The edit source for this context.
+    /// The edit source for this context, using each layout label as authored.
     pub fn edit_source(&self) -> EditSources<'_> {
+        self.edit_source_with(&|label: &str| label.to_string())
+    }
+
+    /// The edit source for this context, preparing the layout's labels with
+    /// `prepare`.
+    ///
+    /// Callers that fold or normalise the input must pass the same preparation
+    /// here: a client registers the layer it is really showing, so an active
+    /// Shift layer uploads `Q`, while the request's input has already been
+    /// folded to `q`. `prepare` is only consulted while the source is built.
+    pub fn edit_source_with<'a>(&'a self, prepare: &dyn Fn(&str) -> String) -> EditSources<'a> {
         match self {
             Self::None => EditSources::Latin(LatinAlphabet),
-            Self::Layout(layout) => EditSources::Physical(PhysicalEdits::new(layout)),
-            Self::Touch { layout, points } => EditSources::Touch(TouchEdits::new(layout, points)),
+            Self::Layout(layout) => EditSources::Physical(PhysicalEdits::new_with(layout, prepare)),
+            Self::Touch { layout, points } => {
+                EditSources::Touch(TouchEdits::new_with(layout, points, prepare))
+            }
         }
     }
 

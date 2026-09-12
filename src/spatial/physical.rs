@@ -25,9 +25,15 @@ pub struct PhysicalEdits<'a> {
 
 impl<'a> PhysicalEdits<'a> {
     pub fn new(layout: &'a RectKeyLayout) -> Self {
+        Self::new_with(layout, &|label: &str| label.to_string())
+    }
+
+    /// Like [`PhysicalEdits::new`], but prepares the layout's labels with the
+    /// request's own preparation so edits match prepared candidates.
+    pub fn new_with(layout: &'a RectKeyLayout, prepare: &dyn Fn(&str) -> String) -> Self {
         Self {
             layout,
-            letters: single_char_labels(layout),
+            letters: single_char_labels_with(layout, prepare),
             key_diameter: f64::from(layout.median_key_diameter().max(f32::EPSILON)),
         }
     }
@@ -81,14 +87,25 @@ impl EditSource for PhysicalEdits<'_> {
     }
 }
 
-/// Collect the single-character main labels of a layout.
-pub(super) fn single_char_labels(layout: &RectKeyLayout) -> Vec<char> {
+/// Collect the single-character main labels of a layout after applying the
+/// caller's label preparation.
+///
+/// Generated edits are compared against prepared candidate spellings, so a
+/// layout authored in its own spelling (an active Shift layer carries `Q`, not
+/// `q`) must be prepared the same way as the input. A label that does not
+/// prepare to exactly one character is skipped, which is the same rule the
+/// unprepared collector applies to multi-character labels.
+pub(super) fn single_char_labels_with(
+    layout: &RectKeyLayout,
+    prepare: &dyn Fn(&str) -> String,
+) -> Vec<char> {
     let mut letters = Vec::new();
     for key in layout.iter() {
         let Some(label) = key.main_label() else {
             continue;
         };
-        let mut chars = label.chars();
+        let prepared = prepare(label);
+        let mut chars = prepared.chars();
         if let (Some(ch), None) = (chars.next(), chars.next())
             && !letters.contains(&ch)
         {
