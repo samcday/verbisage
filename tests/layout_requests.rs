@@ -247,18 +247,20 @@ fn unprepared_capital_labels_cannot_correct_folded_input() {
 }
 
 /// Alternate (long-press) labels place accented characters on their key, so a
-/// word typed with one is measured from that key instead of taking the
-/// unknown-character penalty at that position.
+/// word typed with one is corrected using the layout around that key instead
+/// of falling back to a flat alphabet.
 #[test]
-fn alternate_labels_place_a_typed_accent_on_its_key() {
-    let dict = dictionary(&[("café", 100.0), ("cafes", 100.0)]);
+fn alternate_labels_anchor_corrections_from_a_typed_accent() {
+    // "hzllo" is the more frequent word, so only real proximity evidence can
+    // put the neighbouring "hello" first.
+    let dict = dictionary(&[("hello", 100.0), ("hzllo", 120.0)]);
     let engine = AndroidCompleter::new(&dict);
-    let accented = |layout: Arc<RectKeyLayout>| {
+    let typed_accent = |layout: Arc<RectKeyLayout>| {
         engine
             .complete_with(
                 &CompletionInput {
-                    // What the keyboard sends after the é long-press.
-                    input: "café",
+                    // What the keyboard sends after an é long-press slip.
+                    input: "héllo",
                     input_prep: keyboard_prep(),
                     context_prep: keyboard_prep(),
                     spatial: SpatialInput::Layout(layout),
@@ -269,16 +271,21 @@ fn alternate_labels_place_a_typed_accent_on_its_key() {
             .unwrap()
     };
 
-    let plain = accented(qwerty_lower());
-    let with_alternates = accented(layout_with_alternates(
+    let plain = typed_accent(qwerty_lower());
+    let with_alternates = typed_accent(layout_with_alternates(
         &["qwertyuiop", "asdfghjkl", "zxcvbnm"],
         &[("e", &["é", "è", "ê"])],
     ));
 
-    assert!(
-        score_of(&with_alternates, "café") > score_of(&plain, "café"),
-        "a key-less accent must not penalise the word it was typed into: \
-         {with_alternates:?} vs {plain:?}"
+    assert_eq!(
+        words(&with_alternates)[0],
+        "hello",
+        "the accent's own key must rank its neighbour first: {with_alternates:?}"
+    );
+    assert_eq!(
+        words(&plain)[0],
+        "hzllo",
+        "without the alternate the accent has no position and frequency decides: {plain:?}"
     );
 }
 
@@ -311,6 +318,115 @@ fn alternate_labels_do_not_join_the_edit_alphabet() {
         "documented limitation changed; update CONTEXTUAL-API.md too: {results:?}"
     );
 }
+
+/// Layout-only corrections are priced by the edit that produced them, so each
+/// kind of slip is charged once. All five candidates below are one edit from
+/// the typed word and share a frequency, leaving the edit cost to decide.
+#[test]
+fn each_edit_kind_is_charged_once_under_a_layout() {
+    let dict = dictionary(&[
+        ("qweet", 100.0), // a missed repeated letter
+        ("qwte", 100.0),  // two letters swapped
+        ("qwer", 100.0),  // t mistyped as its neighbour r
+        ("qwe", 100.0),   // an extra letter typed
+        ("qwez", 100.0),  // t mistyped as a distant z
+    ]);
+    let engine = AndroidCompleter::new(&dict);
+    let request = |spatial: SpatialInput| {
+        engine
+            .complete_with(
+                &CompletionInput {
+                    input: "qwet",
+                    input_prep: keyboard_prep(),
+                    context_prep: keyboard_prep(),
+                    spatial,
+                    ..Default::default()
+                },
+                6,
+            )
+            .unwrap()
+    };
+
+    let ranked = request(SpatialInput::Layout(qwerty_lower()));
+    let rank = |word: &str| {
+        words(&ranked)
+            .iter()
+            .position(|candidate| *candidate == word)
+            .unwrap_or_else(|| panic!("{word} missing from {ranked:?}"))
+    };
+
+    // A missing letter costs one omission, not one mismatch per following
+    // character: it must not sink below an unrelated neighbouring key.
+    assert!(rank("qweet") < rank("qwer"), "{ranked:?}");
+    assert!(rank("qwte") < rank("qwer"), "{ranked:?}");
+    // Proximity still separates same-length candidates.
+    assert!(rank("qwer") < rank("qwez"), "{ranked:?}");
+    // An extra typed letter is a real slip, but a costlier one than a
+    // neighbouring key, and still better than a distant key.
+    assert!(rank("qwer") < rank("qwe"), "{ranked:?}");
+    assert!(rank("qwe") < rank("qwez"), "{ranked:?}");
+
+    // Without geometry the two substitutions are indistinguishable, so the
+    // layout is what separates them.
+    let flat = request(SpatialInput::None);
+    assert_eq!(
+        score_of(&flat, "qwer"),
+        score_of(&flat, "qwez"),
+        "the geometry-free alphabet must not prefer either neighbour: {flat:?}"
+    );
+    assert!(
+        score_of(&ranked, "qwer") > score_of(&ranked, "qwez"),
+        "the layout must: {ranked:?}"
+    );
+}
+
+
+/// What a layout can and cannot settle on its own.
+///
+/// A dropped repeated letter and a slip onto the neighbouring key are both
+/// cheap and comparable, so the language model decides between them; a slip
+/// onto a distant key is not, and loses even when it is the likeliest word.
+/// This is the shape of the real `helo` case, where the shipped dictionary
+/// makes `help` more probable than `hello`, and it is why per-character touch
+/// points (a separate change) are what can distinguish the first two.
+#[test]
+fn a_neighbouring_slip_and_a_dropped_letter_are_settled_by_the_language_model() {
+    let ranked = |rows: &[(&str, f64)]| {
+        let mut dict = FileDictionaryBackend::new();
+        for (word, count) in rows {
+            dict.add_word_mut((*word).into(), *count);
+        }
+        let engine = AndroidCompleter::new(&dict);
+        let out = engine
+            .complete_with(
+                &CompletionInput {
+                    input: "helo",
+                    input_prep: keyboard_prep(),
+                    context_prep: keyboard_prep(),
+                    spatial: SpatialInput::Layout(qwerty_lower()),
+                    ..Default::default()
+                },
+                6,
+            )
+            .unwrap();
+        out.iter().map(|row| row.word.clone()).collect::<Vec<_>>()
+    };
+
+    // Equally probable: the cheaper edit wins.
+    assert_eq!(
+        ranked(&[("hello", 500.0), ("help", 500.0)])[0],
+        "hello"
+    );
+    // As in the shipped dictionary, where help is the more probable word.
+    assert_eq!(
+        ranked(&[("hello", 471.0), ("help", 584.0)])[0],
+        "help"
+    );
+    // A distant key is not a cheap slip, however probable the word is.
+    let distant = ranked(&[("hello", 471.0), ("held", 620.0)]);
+    assert_eq!(distant[0], "hello", "{distant:?}");
+}
+
 
 /// A layout whose alphabet is neither ASCII nor 26 keys must still correct,
 /// using its own keys rather than a built-in Latin alphabet.

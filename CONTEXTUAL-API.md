@@ -77,9 +77,20 @@ compare against, so the spatial branch charged every candidate the same
 first-completion cost and collapsed realistic low probabilities into a lexical
 tie. `PredictWith` has no layout parameter and is unaffected.
 
-Alternate labels are positions only. They let a word typed with a long-press
-accent be measured from that key, but the edit alphabet comes from single-
-character main labels, so an alternate does not generate an accent correction.
+A candidate's spatial cost is the cost of the edit that produced it, plus the
+first-completion cost for a prefix match. That edit is aligned by construction
+and its substitutions are already priced by the layout — anchored on the touch
+point when there is one — so proximity decides between same-length candidates.
+Comparing input and candidate character by character instead charged every
+following character for a single missing letter, which sank ordinary omission
+corrections below unrelated neighbouring keys.
+
+Two consequences worth knowing. A dropped repeated letter and a slip onto a
+neighbouring key are both cheap and comparable, so the language model decides
+between them; a slip onto a distant key is not, and loses even to a likelier
+word. And alternate labels are positions only: they let a correction start from
+a typed long-press accent, but the edit alphabet comes from single-character
+main labels, so an alternate does not generate an accent correction.
 
 An upload carries either explicit key rectangles (`keys`: label, alt labels,
 left/top/width/height) for touch layouts, or `rows` (the shared `RowLayout`

@@ -190,17 +190,21 @@ impl CompletionEngine for AndroidCompleter<'_> {
 
             let completion_cost = if exact { COST_FIRST_COMPLETION } else { 0.0 };
             let score = if spatial_active {
-                // HeliBoard's additive model over distances. Corrections are
-                // suppressed when the touch accuracy gate is not met.
+                // HeliBoard's additive model: one spatial cost plus the
+                // language improbability. Corrections are suppressed when the
+                // touch accuracy gate is not met.
                 if !exact && !corrections_allowed {
                     continue;
                 }
-                let spatial_cost = input
-                    .spatial
-                    .word_distance(&folded, &prepared)
-                    .unwrap_or(0.0)
-                    * DISTANCE_WEIGHT_LENGTH
-                    + completion_cost;
+                // Take the spatial cost from the edit that actually produced
+                // this candidate. That edit is aligned by construction and its
+                // substitutions are already priced by the layout (anchored on
+                // the touch point when there is one), so proximity still
+                // decides between same-length candidates. Comparing the input
+                // and the candidate position by position instead charged every
+                // following character for a single missing letter, which sank
+                // ordinary omission corrections below unrelated neighbours.
+                let spatial_cost = quality_to_cost(weight) + completion_cost;
                 let base = combined_score(spatial_cost, 1.0 - probability, input_len);
                 let base = if case_bonus { base + 0.01 } else { base };
                 (base * promotion).clamp(0.0, 1.0)
