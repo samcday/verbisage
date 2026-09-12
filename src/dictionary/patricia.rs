@@ -303,6 +303,8 @@ mod tests {
         assert_eq!(predictor.predict_next(&["hello"], 1)[0].word, "world");
         assert!(predictor.predict_next(&["unrecognized"], 3).is_empty());
         assert!(predictor.predict_next(&["hello"], 0).is_empty());
-        assert!(!crate::dictionary::DictionaryBackend::is_writable(backend.as_ref()));
+        assert!(!crate::dictionary::DictionaryBackend::is_writable(
+            backend.as_ref()
+        ));
     }
 }

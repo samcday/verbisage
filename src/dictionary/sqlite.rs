@@ -1,6 +1,7 @@
+use std::collections::HashSet;
 use std::error::Error;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::backends::SharedSqliteConnection;
 use crate::prediction::ngram_backend::NgramBackend;
@@ -8,6 +9,9 @@ use crate::prediction::ngram_backend::NgramBackend;
 use super::{DictionaryBackend, DictionaryQuery, DictionaryResult, SharedQueryCache};
 
 type SharedError = Box<dyn Error + Send + Sync>;
+
+/// Cached unigram membership set, keyed by `(data_version, total_changes)`.
+type WordSetCache = Arc<Mutex<Option<(i64, u64, Arc<HashSet<String>>)>>>;
 
 /// Unified SQLite backend using the Presage schema.
 pub struct PresageSqliteBackend {
@@ -17,6 +21,7 @@ pub struct PresageSqliteBackend {
     schema_initialized: Mutex<bool>,
     cache: SharedQueryCache,
     total_cache: Mutex<Option<(i64, u64, u64)>>,
+    word_cache: WordSetCache,
     ngrams_level_max: usize,
 }
 
@@ -41,6 +46,7 @@ impl PresageSqliteBackend {
             schema_initialized: Mutex::new(false),
             cache: SharedQueryCache::new(),
             total_cache: Mutex::new(None),
+            word_cache: Arc::new(Mutex::new(None)),
             ngrams_level_max,
         })
     }
@@ -66,6 +72,7 @@ impl PresageSqliteBackend {
             schema_initialized: Mutex::new(false),
             cache: SharedQueryCache::new(),
             total_cache: Mutex::new(None),
+            word_cache: Arc::new(Mutex::new(None)),
             ngrams_level_max,
         }
     }
@@ -82,6 +89,7 @@ impl PresageSqliteBackend {
             schema_initialized: Mutex::new(false),
             cache: SharedQueryCache::new(),
             total_cache: Mutex::new(None),
+            word_cache: Arc::new(Mutex::new(None)),
             ngrams_level_max,
         }
     }
@@ -123,6 +131,39 @@ impl PresageSqliteBackend {
 
     pub fn clear_cache(&self) {
         self.cache.clear();
+    }
+
+    /// A snapshot of the `_1_gram` membership set, rebuilt when the database
+    /// changes (own writes via `total_changes`, external writes via
+    /// `data_version`). Turns per-candidate membership checks into in-memory
+    /// lookups instead of one SQL statement each.
+    fn word_set(&self) -> Arc<HashSet<String>> {
+        let conn = self.conn.lock();
+        let version = conn
+            .query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+            .unwrap_or(-1);
+        let changes = conn.total_changes();
+        {
+            let cache = self.word_cache.lock().unwrap();
+            if let Some((cached_version, cached_changes, set)) = cache.as_ref()
+                && *cached_version == version
+                && *cached_changes == changes
+            {
+                return Arc::clone(set);
+            }
+        }
+
+        let mut set = HashSet::new();
+        if let Ok(mut stmt) = conn.prepare("SELECT word FROM _1_gram") {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                for word in rows.flatten() {
+                    set.insert(word);
+                }
+            }
+        }
+        let set = Arc::new(set);
+        *self.word_cache.lock().unwrap() = Some((version, changes, Arc::clone(&set)));
+        set
     }
 }
 
@@ -257,11 +298,17 @@ impl DictionaryBackend for PresageSqliteBackend {
     }
 
     fn contains(&self, word: &str) -> bool {
-        let sql = "SELECT 1 FROM _1_gram WHERE word = ?1 LIMIT 1";
-        let conn = self.conn.lock();
-        conn.prepare(sql)
-            .and_then(|mut stmt| stmt.exists([word]))
-            .unwrap_or(false)
+        self.word_set().contains(word)
+    }
+
+    /// Batch membership against the cached unigram set, so a correction's
+    /// candidate sweep never touches SQL per word.
+    fn contains_many(&self, words: &[String]) -> Vec<bool> {
+        if words.is_empty() {
+            return Vec::new();
+        }
+        let set = self.word_set();
+        words.iter().map(|word| set.contains(word)).collect()
     }
 
     fn is_writable(&self) -> bool {
@@ -516,6 +563,7 @@ impl Clone for PresageSqliteBackend {
             schema_initialized: Mutex::new(false),
             cache: SharedQueryCache::new(),
             total_cache: Mutex::new(None),
+            word_cache: Arc::clone(&self.word_cache),
             ngrams_level_max: self.ngrams_level_max,
         }
     }
@@ -552,6 +600,20 @@ mod tests {
         assert!(backend.contains("hello"));
         assert!(backend.contains("world"));
         assert!(!backend.contains("nonexistent"));
+    }
+
+    #[test]
+    fn dict_contains_many_batches_and_preserves_order() {
+        let conn = Connection::open(":memory:").unwrap();
+        setup_presage_db(&conn);
+        let shared = SharedSqliteConnection::new(conn);
+        let backend = PresageSqliteBackend::from_shared(shared, true, false);
+
+        let words: Vec<String> = ["hello", "nope", "world", "hello"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(backend.contains_many(&words), vec![true, false, true, true]);
     }
 
     #[test]
@@ -764,9 +826,7 @@ mod tests {
         let backend = PresageSqliteBackend::from_shared(shared, true, true);
 
         assert!(DictionaryBackend::is_writable(&backend));
-        backend
-            .increase_ngram_count(&["hello"], 5, false)
-            .unwrap();
+        backend.increase_ngram_count(&["hello"], 5, false).unwrap();
         assert_eq!(backend.ngram_count(&["hello"]), 105);
 
         backend

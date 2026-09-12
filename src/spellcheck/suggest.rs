@@ -106,7 +106,9 @@ pub fn edit_candidates(
         if frontier.is_empty() || budget == 0 {
             break;
         }
-        let mut next: std::collections::HashMap<String, (Vec<Option<usize>>, f64)> =
+        // Generate and dedup this level first, then test membership in one
+        // batch: a large win for backends with expensive per-word lookups.
+        let mut generated: std::collections::HashMap<String, (Vec<Option<usize>>, f64)> =
             std::collections::HashMap::new();
         for (word, alignment, cost) in &frontier {
             if *cost >= max_cost {
@@ -125,28 +127,34 @@ pub fn edit_candidates(
                         return true;
                     }
                     let total = cost + edit_cost;
-                    if backend.contains(&candidate) {
-                        candidates
-                            .entry(candidate.clone())
-                            .and_modify(|current| *current = current.min(total))
-                            .or_insert(total);
-                    }
-                    if total < max_cost {
-                        next.entry(candidate)
-                            .and_modify(|(alignment, current)| {
-                                if total < *current {
-                                    *current = total;
-                                    *alignment = candidate_alignment.clone();
-                                }
-                            })
-                            .or_insert((candidate_alignment, total));
-                    }
+                    generated
+                        .entry(candidate)
+                        .and_modify(|(alignment, current)| {
+                            if total < *current {
+                                *current = total;
+                                *alignment = candidate_alignment.clone();
+                            }
+                        })
+                        .or_insert((candidate_alignment, total));
                     true
                 },
             );
         }
-        let mut next: Vec<(String, Vec<Option<usize>>, f64)> = next
+
+        let words: Vec<String> = generated.keys().cloned().collect();
+        for (word, known) in words.iter().zip(backend.contains_many(&words)) {
+            if known {
+                let (_, total) = &generated[word];
+                candidates
+                    .entry(word.clone())
+                    .and_modify(|current| *current = current.min(*total))
+                    .or_insert(*total);
+            }
+        }
+
+        let mut next: Vec<(String, Vec<Option<usize>>, f64)> = generated
             .into_iter()
+            .filter(|(_, (_, cost))| *cost < max_cost)
             .map(|(word, (alignment, cost))| (word, alignment, cost))
             .collect();
         next.sort_by(|(_, _, a), (_, _, b)| a.total_cmp(b));

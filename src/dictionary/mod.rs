@@ -167,6 +167,15 @@ pub trait DictionaryBackend: Send + Sync {
     /// exactly (no case folding or normalization).
     fn contains(&self, word: &str) -> bool;
 
+    /// Test many words for membership at once, returning a parallel `bool`
+    /// vector (same order, duplicates preserved).
+    ///
+    /// Backends whose per-word lookup is expensive (SQLite) override this to
+    /// batch the query; the default checks each word in turn.
+    fn contains_many(&self, words: &[String]) -> Vec<bool> {
+        words.iter().map(|word| self.contains(word)).collect()
+    }
+
     /// Whether this backend supports write operations.
     fn is_writable(&self) -> bool {
         false
