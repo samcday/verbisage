@@ -95,43 +95,61 @@ pub fn edit_candidates(
     let max_cost = NORMALIZED_SPATIAL_DISTANCE_THRESHOLD_FOR_EDIT * (input_len as f64 + 1.0);
 
     let mut candidates: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
-    let mut frontier: Vec<(String, f64)> = vec![(word_lower.to_string(), 0.0)];
+    // Original input characters map to their own positions; edited characters
+    // are tracked so touch coordinates stay aligned across multiple edits.
+    let initial: Vec<Option<usize>> = (0..input_len).map(Some).collect();
+    let mut frontier: Vec<(String, Vec<Option<usize>>, f64)> =
+        vec![(word_lower.to_string(), initial, 0.0)];
     let mut budget = MAX_EDIT_CANDIDATES;
 
     for _ in 0..MAX_EDIT_DEPTH {
         if frontier.is_empty() || budget == 0 {
             break;
         }
-        let mut next: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
-        for (word, cost) in &frontier {
+        let mut next: std::collections::HashMap<String, (Vec<Option<usize>>, f64)> =
+            std::collections::HashMap::new();
+        for (word, alignment, cost) in &frontier {
             if *cost >= max_cost {
                 continue;
             }
-            super::edits::visit_edits_cost(word, source, |candidate, edit_cost| {
-                if budget == 0 {
-                    return false;
-                }
-                budget -= 1;
-                if candidate == word_lower {
-                    return true;
-                }
-                let total = cost + edit_cost;
-                if backend.contains(&candidate) {
-                    candidates
-                        .entry(candidate.clone())
-                        .and_modify(|current| *current = current.min(total))
-                        .or_insert(total);
-                }
-                if total < max_cost {
-                    next.entry(candidate)
-                        .and_modify(|current| *current = current.min(total))
-                        .or_insert(total);
-                }
-                true
-            });
+            super::edits::visit_edits_cost(
+                word,
+                alignment,
+                source,
+                |candidate, candidate_alignment, edit_cost| {
+                    if budget == 0 {
+                        return false;
+                    }
+                    budget -= 1;
+                    if candidate == word_lower {
+                        return true;
+                    }
+                    let total = cost + edit_cost;
+                    if backend.contains(&candidate) {
+                        candidates
+                            .entry(candidate.clone())
+                            .and_modify(|current| *current = current.min(total))
+                            .or_insert(total);
+                    }
+                    if total < max_cost {
+                        next.entry(candidate)
+                            .and_modify(|(alignment, current)| {
+                                if total < *current {
+                                    *current = total;
+                                    *alignment = candidate_alignment.clone();
+                                }
+                            })
+                            .or_insert((candidate_alignment, total));
+                    }
+                    true
+                },
+            );
         }
-        let mut next: Vec<(String, f64)> = next.into_iter().collect();
-        next.sort_by(|(_, a), (_, b)| a.total_cmp(b));
+        let mut next: Vec<(String, Vec<Option<usize>>, f64)> = next
+            .into_iter()
+            .map(|(word, (alignment, cost))| (word, alignment, cost))
+            .collect();
+        next.sort_by(|(_, _, a), (_, _, b)| a.total_cmp(b));
         next.truncate(MAX_FRONTIER);
         frontier = next;
     }
@@ -181,7 +199,7 @@ mod tests {
         fn letters(&self) -> &[char] {
             &['a', 'b']
         }
-        fn substitutions(&self, ch: char, _index: usize) -> Vec<(char, f64)> {
+        fn substitutions(&self, ch: char, _position: Option<usize>) -> Vec<(char, f64)> {
             self.letters()
                 .iter()
                 .copied()
@@ -221,7 +239,7 @@ mod tests {
         fn letters(&self) -> &[char] {
             &['a', 'b']
         }
-        fn substitutions(&self, ch: char, _index: usize) -> Vec<(char, f64)> {
+        fn substitutions(&self, ch: char, _position: Option<usize>) -> Vec<(char, f64)> {
             self.letters()
                 .iter()
                 .copied()

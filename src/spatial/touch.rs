@@ -33,11 +33,12 @@ impl<'a> TouchEdits<'a> {
         }
     }
 
-    /// The normalised anchor for input position `index`: the touch point when
-    /// one is available, otherwise the presumed typed key's centre.
-    fn anchor(&self, ch: char, index: usize) -> Option<Point> {
-        self.points
-            .get(index)
+    /// The normalised anchor for a character: the touch point of the original
+    /// input position it is aligned to when available, otherwise the presumed
+    /// typed key's centre.
+    fn anchor(&self, ch: char, position: Option<usize>) -> Option<Point> {
+        position
+            .and_then(|index| self.points.get(index))
             .map(|point| self.layout.normalise(Point::new(point.x, point.y)))
             .or_else(|| self.layout.location_of(&ch.to_string()))
     }
@@ -48,9 +49,9 @@ impl EditSource for TouchEdits<'_> {
         &self.letters
     }
 
-    fn substitutions(&self, ch: char, index: usize) -> Vec<(char, f64)> {
-        let Some(origin) = self.anchor(ch, index) else {
-            return LatinAlphabet.substitutions(ch, index);
+    fn substitutions(&self, ch: char, position: Option<usize>) -> Vec<(char, f64)> {
+        let Some(origin) = self.anchor(ch, position) else {
+            return LatinAlphabet.substitutions(ch, position);
         };
         let mut weights: HashMap<char, f64> = HashMap::new();
         for candidate in &self.letters {
@@ -106,7 +107,7 @@ mod tests {
         let points = [TouchPoint::new(15.0, 5.0)];
         let edits = TouchEdits::new(&layout, &points);
         let weights: std::collections::HashMap<char, f64> =
-            edits.substitutions('a', 0).into_iter().collect();
+            edits.substitutions('a', Some(0)).into_iter().collect();
 
         assert!(
             weights[&'b'] > weights[&'c'],
@@ -119,7 +120,40 @@ mod tests {
         let layout = layout();
         let edits = TouchEdits::new(&layout, &[]);
         let weights: std::collections::HashMap<char, f64> =
-            edits.substitutions('a', 0).into_iter().collect();
+            edits.substitutions('a', Some(0)).into_iter().collect();
         assert!(weights.contains_key(&'b'));
+    }
+
+    #[test]
+    fn substitutions_follow_the_aligned_position_not_the_string_index() {
+        let layout = layout();
+        // Touches were recorded for the original input: position 0 near `a`,
+        // position 1 near `c`.
+        let points = [TouchPoint::new(5.0, 5.0), TouchPoint::new(25.0, 5.0)];
+        let edits = TouchEdits::new(&layout, &points);
+
+        let near_a: std::collections::HashMap<char, f64> =
+            edits.substitutions('b', Some(0)).into_iter().collect();
+        let near_c: std::collections::HashMap<char, f64> =
+            edits.substitutions('b', Some(1)).into_iter().collect();
+        assert!(
+            near_a[&'a'] > near_a[&'c'],
+            "position 0 should anchor near `a`: {near_a:?}"
+        );
+        assert!(
+            near_c[&'c'] > near_c[&'a'],
+            "position 1 should anchor near `c`: {near_c:?}"
+        );
+
+        // An inserted character has no original touch point and falls back to
+        // the presumed key centre, so it anchors on `b`'s centre rather than
+        // the touch recorded for position 0.
+        let inserted: std::collections::HashMap<char, f64> =
+            edits.substitutions('b', None).into_iter().collect();
+        assert!(
+            near_a[&'a'] > inserted[&'a'] && near_a[&'c'] < inserted[&'c'],
+            "`None` should fall back to the key centre: \
+             touched={near_a:?} inserted={inserted:?}"
+        );
     }
 }

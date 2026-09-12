@@ -46,9 +46,9 @@ impl EditSource for PhysicalEdits<'_> {
         &self.letters
     }
 
-    fn substitutions(&self, ch: char, _index: usize) -> Vec<(char, f64)> {
+    fn substitutions(&self, ch: char, _position: Option<usize>) -> Vec<(char, f64)> {
         let Some(origin) = self.layout.location_of(&ch.to_string()) else {
-            return LatinAlphabet.substitutions(ch, 0);
+            return LatinAlphabet.substitutions(ch, None);
         };
         let mut weights: HashMap<char, f64> = HashMap::new();
         for candidate in &self.letters {
@@ -117,7 +117,7 @@ mod tests {
         let layout = RectKeyLayout::new(keys, &[]);
         let edits = PhysicalEdits::new(&layout);
         let weights: std::collections::HashMap<char, f64> =
-            edits.substitutions('s', 0).into_iter().collect();
+            edits.substitutions('s', Some(0)).into_iter().collect();
 
         assert!(weights.contains_key(&'w'));
         assert!(weights.contains_key(&'d'));

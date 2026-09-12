@@ -178,11 +178,11 @@ impl EditSource for EditSources<'_> {
         }
     }
 
-    fn substitutions(&self, ch: char, index: usize) -> Vec<(char, f64)> {
+    fn substitutions(&self, ch: char, position: Option<usize>) -> Vec<(char, f64)> {
         match self {
-            Self::Latin(source) => source.substitutions(ch, index),
-            Self::Physical(source) => source.substitutions(ch, index),
-            Self::Touch(source) => source.substitutions(ch, index),
+            Self::Latin(source) => source.substitutions(ch, position),
+            Self::Physical(source) => source.substitutions(ch, position),
+            Self::Touch(source) => source.substitutions(ch, position),
         }
     }
 }
