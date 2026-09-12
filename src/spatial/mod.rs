@@ -6,9 +6,14 @@
 //! none -> [`SpatialInput::None`], token -> [`SpatialInput::Layout`], token +
 //! points -> [`SpatialInput::Touch`].
 
+pub mod cost;
 pub mod physical;
 pub mod touch;
 
+pub use cost::{
+    DISTANCE_WEIGHT_LANGUAGE, DISTANCE_WEIGHT_LENGTH,
+    NORMALIZED_SPATIAL_DISTANCE_THRESHOLD_FOR_EDIT, TYPING_MAX_OUTPUT_SCORE_PER_INPUT,
+};
 pub use physical::PhysicalEdits;
 pub use touch::TouchEdits;
 
@@ -17,12 +22,6 @@ use std::sync::Arc;
 use keyboard_layout::{KeyboardLayout, Point, RectKeyLayout};
 
 use crate::spellcheck::edits::{EditSource, LatinAlphabet};
-
-/// HeliBoard's spatial/language weights, kept in sync with `plan_completion.md`.
-pub const DISTANCE_WEIGHT_LENGTH: f64 = 0.1524;
-pub const DISTANCE_WEIGHT_LANGUAGE: f64 = 1.1214;
-pub const NORMALIZED_SPATIAL_DISTANCE_THRESHOLD_FOR_EDIT: f64 = 0.095;
-pub const TYPING_MAX_OUTPUT_SCORE_PER_INPUT: f64 = 0.1;
 
 /// One touch point for a typed character, in the caller's coordinate system.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -83,9 +82,7 @@ impl SpatialInput {
         match self {
             Self::None => EditSources::Latin(LatinAlphabet),
             Self::Layout(layout) => EditSources::Physical(PhysicalEdits::new(layout)),
-            Self::Touch { layout, points } => {
-                EditSources::Touch(TouchEdits::new(layout, points))
-            }
+            Self::Touch { layout, points } => EditSources::Touch(TouchEdits::new(layout, points)),
         }
     }
 
@@ -223,8 +220,7 @@ mod tests {
 
     #[test]
     fn touch_distance_is_smaller_near_the_touched_key() {
-        let spatial =
-            SpatialInput::from_parts(Some(layout()), vec![TouchPoint::new(15.0, 5.0)]);
+        let spatial = SpatialInput::from_parts(Some(layout()), vec![TouchPoint::new(15.0, 5.0)]);
         let near = spatial.char_distance(0, 'b').unwrap();
         let far = spatial.char_distance(0, 'a').unwrap();
         assert!(near < far, "near={near} far={far}");
@@ -232,8 +228,7 @@ mod tests {
 
     #[test]
     fn word_distance_compares_touch_to_candidate_letters() {
-        let spatial =
-            SpatialInput::from_parts(Some(layout()), vec![TouchPoint::new(15.0, 5.0)]);
+        let spatial = SpatialInput::from_parts(Some(layout()), vec![TouchPoint::new(15.0, 5.0)]);
         let near = spatial.word_distance("a", "b").unwrap();
         let far = spatial.word_distance("a", "c").unwrap();
         assert!(near < far, "near={near} far={far}");

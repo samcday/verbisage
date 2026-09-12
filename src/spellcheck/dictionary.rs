@@ -60,11 +60,8 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
         } else {
             Some(&source)
         };
-        let candidates = crate::spellcheck::suggest::edit_candidates(
-            &*self.backend,
-            &word_lower,
-            source_ref,
-        );
+        let candidates =
+            crate::spellcheck::suggest::edit_candidates(&*self.backend, &word_lower, source_ref);
         if candidates.is_empty() {
             return Vec::new();
         }
@@ -110,8 +107,6 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
         let min_score = scores.iter().cloned().fold(f64::MAX, f64::min);
         let range = max_score - min_score;
         let input_len = input.word.chars().count();
-        let max_distance = crate::spatial::DISTANCE_WEIGHT_LANGUAGE
-            + input_len as f64 * crate::spatial::TYPING_MAX_OUTPUT_SCORE_PER_INPUT;
         let mut scored: Vec<(String, f64)> = candidates
             .into_iter()
             .zip(scores.drain(..))
@@ -121,9 +116,11 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
                 } else {
                     0.0
                 };
-                let edit_cost = 1.0 - edit_weight.clamp(0.0, 1.0);
-                let cost = edit_cost + language * crate::spatial::DISTANCE_WEIGHT_LANGUAGE;
-                (word, (1.0 - cost / max_distance).clamp(0.0, 1.0))
+                let edit_cost = crate::spatial::cost::quality_to_cost(edit_weight);
+                (
+                    word,
+                    crate::spatial::cost::combined_score(edit_cost, language, input_len),
+                )
             })
             .collect();
         scored.sort_by(|(a, a_score), (b, b_score)| {

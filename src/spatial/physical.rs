@@ -1,19 +1,26 @@
 //! Layout-only spatial model.
 //!
 //! Substitutions cover every key on the layout, weighted by the normalised
-//! distance between key centres: nearby keys cost less, distant keys are still
-//! offered so geometry never loses a candidate. Used for physical keyboards,
-//! where there are no touch points.
+//! distance between key centres: nearby keys are cheaper, distant keys are
+//! still offered so geometry never loses a candidate. Costs follow HeliBoard's
+//! proximity/substitution split; vowel families are added as additional
+//! proximity characters. Used for physical keyboards, where there are no touch
+//! points.
+
+use std::collections::HashMap;
 
 use keyboard_layout::{Key, KeyboardLayout, RectKeyLayout};
 
-use crate::spellcheck::edits::{DISTANT_SUBSTITUTION_WEIGHT, EditSource, LatinAlphabet};
+use super::cost::{
+    ADDITIONAL_PROXIMITY_COST, MAX_SPATIAL_DISTANCE, PROXIMITY_COST, SEARCH_DISTANCE,
+    SUBSTITUTION_COST, additional_proximity, cost_to_quality, key_distance_cost,
+};
+use crate::spellcheck::edits::{EditSource, LatinAlphabet};
 
 pub struct PhysicalEdits<'a> {
     layout: &'a RectKeyLayout,
     letters: Vec<char>,
     key_diameter: f64,
-    radius: f64,
 }
 
 impl<'a> PhysicalEdits<'a> {
@@ -22,7 +29,6 @@ impl<'a> PhysicalEdits<'a> {
             layout,
             letters: single_char_labels(layout),
             key_diameter: f64::from(layout.median_key_diameter().max(f32::EPSILON)),
-            radius: 1.2,
         }
     }
 
@@ -44,7 +50,7 @@ impl EditSource for PhysicalEdits<'_> {
         let Some(origin) = self.layout.location_of(&ch.to_string()) else {
             return LatinAlphabet.substitutions(ch, 0);
         };
-        let mut out = Vec::new();
+        let mut weights: HashMap<char, f64> = HashMap::new();
         for candidate in &self.letters {
             if *candidate == ch {
                 continue;
@@ -52,15 +58,26 @@ impl EditSource for PhysicalEdits<'_> {
             let Some(target) = self.layout.location_of(&candidate.to_string()) else {
                 continue;
             };
-            let normalized = f64::from(origin.distance(target)) / self.key_diameter;
-            let weight = if normalized <= self.radius {
-                (1.0 - normalized).clamp(0.1, 0.9)
+            let distance = f64::from(origin.distance(target)) / self.key_diameter;
+            let normalized = (distance * distance).min(MAX_SPATIAL_DISTANCE);
+            let class = if distance <= SEARCH_DISTANCE {
+                PROXIMITY_COST
             } else {
-                DISTANT_SUBSTITUTION_WEIGHT
+                SUBSTITUTION_COST
             };
-            out.push((*candidate, weight));
+            weights.insert(
+                *candidate,
+                cost_to_quality(class + key_distance_cost(normalized)),
+            );
         }
-        out
+        for extra in additional_proximity(ch) {
+            if *extra != ch {
+                weights
+                    .entry(*extra)
+                    .or_insert_with(|| cost_to_quality(ADDITIONAL_PROXIMITY_COST));
+            }
+        }
+        weights.into_iter().collect()
     }
 }
 

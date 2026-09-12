@@ -17,7 +17,10 @@ use crate::spellcheck::HunspellSpellChecker;
 
 use super::chain::SegmentRole;
 use super::merged::{MergedDictionary, MergedPredictor};
-use super::{BackendType, Capability, ResolvedBackendDef};
+use super::{BackendType, ResolvedBackendDef};
+
+#[cfg(feature = "marisa")]
+use super::Capability;
 
 /// Normalize a directory path string: expand tilde and ensure no trailing slash.
 /// This ensures consistent behavior regardless of whether the user includes
@@ -69,7 +72,8 @@ fn build_file(
     let files = resolve_files(def, lang, lp);
 
     if files.is_empty() {
-        let tried = lp.resolve_dict_files_all()
+        let tried = lp
+            .resolve_dict_files_all()
             .iter()
             .map(|p| p.display().to_string())
             .collect::<Vec<_>>()
@@ -654,13 +658,16 @@ pub fn compose_chain(
     }
 }
 
-
 #[cfg(feature = "patricia")]
 fn build_patricia(
     def: &ResolvedBackendDef,
     lang: &str,
     lp: &LanguagePaths,
-) -> (Box<dyn DictionaryBackend>, Option<Box<dyn SpellChecker>>, Option<Box<dyn Predictor>>) {
+) -> (
+    Box<dyn DictionaryBackend>,
+    Option<Box<dyn SpellChecker>>,
+    Option<Box<dyn Predictor>>,
+) {
     let candidates = patricia_candidates(def, lang, lp);
     let path = match candidates.iter().find(|candidate| candidate.exists()) {
         Some(path) => path.clone(),
@@ -681,7 +688,10 @@ fn build_patricia(
             (Box::new(backend), Some(checker), Some(model))
         }
         Err(error) => {
-            eprintln!("warning: cannot load Patricia dictionary '{}': {error}", path.display());
+            eprintln!(
+                "warning: cannot load Patricia dictionary '{}': {error}",
+                path.display()
+            );
             (Box::new(FileDictionaryBackend::new()), None, None)
         }
     }
@@ -735,7 +745,11 @@ fn build_patricia(
     _def: &ResolvedBackendDef,
     _lang: &str,
     _lp: &LanguagePaths,
-) -> (Box<dyn DictionaryBackend>, Option<Box<dyn SpellChecker>>, Option<Box<dyn Predictor>>) {
+) -> (
+    Box<dyn DictionaryBackend>,
+    Option<Box<dyn SpellChecker>>,
+    Option<Box<dyn Predictor>>,
+) {
     eprintln!("warning: patricia feature not enabled");
     (Box::new(FileDictionaryBackend::new()), None, None)
 }

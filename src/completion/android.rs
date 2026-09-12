@@ -5,12 +5,12 @@ use super::{CompletionCandidate, CompletionConfig, CompletionEngine, CompletionI
 use crate::dictionary::search::{WordSearch, check_deadline};
 use crate::dictionary::{DictionaryBackend, usable_frequency};
 use crate::prediction::Predictor;
-use crate::spellcheck::edits::visit_edits;
-use crate::spatial::{
-    DISTANCE_WEIGHT_LANGUAGE, DISTANCE_WEIGHT_LENGTH,
-    NORMALIZED_SPATIAL_DISTANCE_THRESHOLD_FOR_EDIT, SpatialInput,
-    TYPING_MAX_OUTPUT_SCORE_PER_INPUT,
+use crate::spatial::cost::{
+    COST_FIRST_COMPLETION, DISTANCE_WEIGHT_LANGUAGE, DISTANCE_WEIGHT_LENGTH, combined_score,
+    cost_to_quality, quality_to_cost,
 };
+use crate::spatial::{NORMALIZED_SPATIAL_DISTANCE_THRESHOLD_FOR_EDIT, SpatialInput};
+use crate::spellcheck::edits::visit_edits;
 use crate::text::{CaseFold, CasePreference, LangDb, prepare_context};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -177,30 +177,31 @@ impl CompletionEngine for AndroidCompleter<'_> {
                 promotion *= 1.1;
             }
 
+            let completion_cost = if exact { COST_FIRST_COMPLETION } else { 0.0 };
             let score = if spatial_active {
                 // HeliBoard's additive model over distances. Corrections are
                 // suppressed when the touch accuracy gate is not met.
                 if !exact && !corrections_allowed {
                     continue;
                 }
-                let spatial_distance =
-                    input.spatial.word_distance(&folded, &prepared).unwrap_or(0.0);
-                let language_distance = 1.0 - probability;
-                let compound = spatial_distance * DISTANCE_WEIGHT_LENGTH
-                    + language_distance * DISTANCE_WEIGHT_LANGUAGE;
-                let max_distance = DISTANCE_WEIGHT_LANGUAGE
-                    + input_len as f64 * TYPING_MAX_OUTPUT_SCORE_PER_INPUT;
-                let base = (1.0 - compound / max_distance).clamp(0.0, 1.0);
+                let spatial_cost = input
+                    .spatial
+                    .word_distance(&folded, &prepared)
+                    .unwrap_or(0.0)
+                    * DISTANCE_WEIGHT_LENGTH
+                    + completion_cost;
+                let base = combined_score(spatial_cost, 1.0 - probability, input_len);
                 let base = if case_bonus { base + 0.01 } else { base };
                 (base * promotion).clamp(0.0, 1.0)
             } else {
-                // Geometry-free/legacy path: lower language/spatial quality must
-                // improve the score, treating the edit weight as a joint factor.
+                // Geometry-free/legacy path: fold the completion cost into the
+                // edit weight and keep the length-independent blend, so a
+                // prediction and the matching prefix completion stay equal.
                 // An additive-only adaptation regressed helo -> hello.
-                let mut quality = ((DISTANCE_WEIGHT_LANGUAGE * probability
-                    + DISTANCE_WEIGHT_LENGTH)
-                    * weight)
-                    / (DISTANCE_WEIGHT_LANGUAGE + DISTANCE_WEIGHT_LENGTH);
+                let weight = cost_to_quality(quality_to_cost(weight) + completion_cost);
+                let mut quality =
+                    ((DISTANCE_WEIGHT_LANGUAGE * probability + DISTANCE_WEIGHT_LENGTH) * weight)
+                        / (DISTANCE_WEIGHT_LANGUAGE + DISTANCE_WEIGHT_LENGTH);
                 if case_bonus {
                     quality += 0.01;
                 }

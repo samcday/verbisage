@@ -4,18 +4,23 @@
 //! (normalised into layout space) rather than the key centre of the presumed
 //! typed character, which is what HeliBoard's proximity traversal does.
 
+use std::collections::HashMap;
+
 use keyboard_layout::{KeyboardLayout, Point, RectKeyLayout};
 
 use super::TouchPoint;
+use super::cost::{
+    ADDITIONAL_PROXIMITY_COST, MAX_SPATIAL_DISTANCE, PROXIMITY_COST, SEARCH_DISTANCE,
+    SUBSTITUTION_COST, additional_proximity, cost_to_quality, key_distance_cost,
+};
 use super::physical::single_char_labels;
-use crate::spellcheck::edits::{DISTANT_SUBSTITUTION_WEIGHT, EditSource, LatinAlphabet};
+use crate::spellcheck::edits::{EditSource, LatinAlphabet};
 
 pub struct TouchEdits<'a> {
     layout: &'a RectKeyLayout,
     points: &'a [TouchPoint],
     letters: Vec<char>,
     key_diameter: f64,
-    radius: f64,
 }
 
 impl<'a> TouchEdits<'a> {
@@ -25,7 +30,6 @@ impl<'a> TouchEdits<'a> {
             points,
             letters: single_char_labels(layout),
             key_diameter: f64::from(layout.median_key_diameter().max(f32::EPSILON)),
-            radius: 1.2,
         }
     }
 
@@ -48,7 +52,7 @@ impl EditSource for TouchEdits<'_> {
         let Some(origin) = self.anchor(ch, index) else {
             return LatinAlphabet.substitutions(ch, index);
         };
-        let mut out = Vec::new();
+        let mut weights: HashMap<char, f64> = HashMap::new();
         for candidate in &self.letters {
             if *candidate == ch {
                 continue;
@@ -56,15 +60,26 @@ impl EditSource for TouchEdits<'_> {
             let Some(target) = self.layout.location_of(&candidate.to_string()) else {
                 continue;
             };
-            let normalized = f64::from(origin.distance(target)) / self.key_diameter;
-            let weight = if normalized <= self.radius {
-                (1.0 - normalized).clamp(0.1, 0.9)
+            let distance = f64::from(origin.distance(target)) / self.key_diameter;
+            let normalized = (distance * distance).min(MAX_SPATIAL_DISTANCE);
+            let class = if distance <= SEARCH_DISTANCE {
+                PROXIMITY_COST
             } else {
-                DISTANT_SUBSTITUTION_WEIGHT
+                SUBSTITUTION_COST
             };
-            out.push((*candidate, weight));
+            weights.insert(
+                *candidate,
+                cost_to_quality(class + key_distance_cost(normalized)),
+            );
         }
-        out
+        for extra in additional_proximity(ch) {
+            if *extra != ch {
+                weights
+                    .entry(*extra)
+                    .or_insert_with(|| cost_to_quality(ADDITIONAL_PROXIMITY_COST));
+            }
+        }
+        weights.into_iter().collect()
     }
 }
 
