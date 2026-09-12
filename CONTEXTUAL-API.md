@@ -124,6 +124,16 @@ Completion/prediction default to an output cap of 1,000; bounded queries default
 to 200,000. Requests above configured caps return errors. `max = 0` returns no
 results. The legacy prefix engine and swipe no longer silently clamp at 100.
 
+Gesture recognition has its own capacity, separate from completion so a busy
+keyboard cannot starve typing. `--swipe-workers` (CLI), `[daemon]
+swipe_workers` (config file) or the built-in default of two set how many
+recognitions may hold a CPU worker at once, in that order of precedence. A
+requested value is honoured as given, never clamped; zero is rejected with an
+error. Each permit is held inside the blocking worker until that work really
+exits, so a response that timed out, was cancelled or lost its client still
+occupies its slot and abandoned work stays bounded. A request beyond the
+configured count is refused as busy rather than queued.
+
 `CompletionConfig` separates response/search durations (five seconds by default)
 from the intermediate search limit (200,000 candidates). Exhausting a search
 budget returns an error. Built-in scans check cancellation during traversal;

@@ -95,6 +95,10 @@ pub struct SharedArgs {
     #[arg(long)]
     pub max_query_results: Option<usize>,
 
+    /// Concurrent gesture recognitions (default 2, minimum 1).
+    #[arg(long)]
+    pub swipe_workers: Option<usize>,
+
     /// Pattern overrides — set from config file, not a CLI argument.
     #[arg(skip)]
     pub patterns: PatternOverrides,

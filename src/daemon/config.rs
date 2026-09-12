@@ -14,6 +14,21 @@ pub struct DaemonConfig {
     /// Cap on accepted bounded-query `max` values; oversized requests are rejected.
     pub max_query_results: usize,
     pub completion: crate::completion::CompletionConfig,
+    /// Concurrent gesture recognitions. Each permit is one CPU worker, held
+    /// until that work really exits, so this bounds abandoned work too.
+    pub swipe_workers: usize,
+}
+
+/// Recognition workers when nothing overrides it.
+pub const DEFAULT_SWIPE_WORKERS: usize = 2;
+
+/// Reject a worker count that cannot serve anything, before it becomes a
+/// semaphore that fails every request.
+pub fn validate_swipe_workers(value: usize) -> Result<usize, String> {
+    if value == 0 {
+        return Err("swipe workers must be at least 1".into());
+    }
+    Ok(value)
 }
 
 impl DaemonConfig {
@@ -27,6 +42,7 @@ impl DaemonConfig {
             max_complete_results: completion.max_complete_results,
             max_query_results: completion.max_query_results,
             completion,
+            swipe_workers: DEFAULT_SWIPE_WORKERS,
         }
     }
 
@@ -47,6 +63,7 @@ impl DaemonConfig {
                 .max_query_results
                 .unwrap_or(completion.max_query_results),
             completion,
+            swipe_workers: args.swipe_workers.unwrap_or(DEFAULT_SWIPE_WORKERS),
         }
     }
 }

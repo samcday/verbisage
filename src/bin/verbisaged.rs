@@ -58,10 +58,24 @@ fn main() {
                 cfg.max_query_results = v;
             }
         }
+        if shared.swipe_workers.is_none() {
+            if let Some(v) = section.swipe_workers {
+                cfg.swipe_workers = v;
+            }
+        }
+    }
+
+    match verbisage::daemon::validate_swipe_workers(cfg.swipe_workers) {
+        Ok(value) => cfg.swipe_workers = value,
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
     }
 
     veprintln!("config file: {}", config_path.as_ref().unwrap().display());
     veprintln!("backend chain: {}", cfg.backend_chain);
+    veprintln!("swipe workers: {}", cfg.swipe_workers);
     veprintln!("default language: {}", cfg.default_lang);
     veprintln!(
         "data dirs — system: {}, user: {}",

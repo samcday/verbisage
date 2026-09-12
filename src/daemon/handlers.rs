@@ -439,6 +439,18 @@ impl DaemonHandler {
 
     // ── Layout registry ───────────────────────────────────────────────────
 
+    /// Concurrent gesture recognitions this daemon is configured for.
+    pub fn swipe_workers(&self) -> usize {
+        self.config.swipe_workers
+    }
+
+    /// Set the recognition concurrency on a handler built around an explicit
+    /// backend, which does not otherwise carry a configuration.
+    pub fn with_swipe_workers(mut self, workers: usize) -> Self {
+        self.config.swipe_workers = workers;
+        self
+    }
+
     pub fn register_layout(&self, upload: &crate::layout::LayoutUpload) -> Result<String, String> {
         let mut layouts = self
             .layouts

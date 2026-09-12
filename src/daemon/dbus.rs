@@ -21,12 +21,18 @@ pub struct VerbisageDbus {
 
 impl VerbisageDbus {
     pub fn new(handler: DaemonHandler) -> Self {
+        #[cfg(feature = "swipe")]
+        // Configured, never clamped: a caller that asked for three workers gets
+        // three. Zero is rejected where the configuration is resolved, and
+        // would fail requests as busy rather than deadlock if it reached here.
+        let swipe_workers = handler.swipe_workers();
         Self {
             handler: std::sync::Arc::new(handler),
+            // Completion capacity is separate so recognition cannot starve it.
             completion_slot: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
             completion_runtime: completion_runtime(),
             #[cfg(feature = "swipe")]
-            swipe_slot: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
+            swipe_slot: std::sync::Arc::new(tokio::sync::Semaphore::new(swipe_workers)),
             #[cfg(feature = "swipe")]
             swipe_runtime: tokio::runtime::Handle::try_current().ok(),
         }
@@ -712,6 +718,121 @@ mod swipe_tests {
         )
     }
 
+    /// Exactly `workers` recognitions may occupy CPU workers at once; the next
+    /// is refused as busy, completion stays responsive meanwhile, and every
+    /// permit is retained until the abandoned CPU work actually exits.
+    async fn configured_workers_case(workers: usize) {
+        let release = Arc::new(AtomicBool::new(false));
+        let _release_on_failure = ReleaseOnDrop(release.clone());
+        let entered = Arc::new(AtomicUsize::new(0));
+        let handler = DaemonHandler::new(
+            Box::new(BlockedDictionary {
+                release: release.clone(),
+                entered: entered.clone(),
+            }),
+            None,
+            None,
+            "en_US".into(),
+        )
+        .with_swipe_workers(workers);
+        let dbus = Arc::new(VerbisageDbus::new(handler));
+        assert_eq!(dbus.swipe_slot.available_permits(), workers);
+
+        let mut running = Vec::new();
+        for _ in 0..workers {
+            let service = dbus.clone();
+            running.push(tokio::spawn(async move {
+                let (trace, keys) = arguments();
+                service.recognize_swipe(trace, keys, 6, "en_US".into()).await
+            }));
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while entered.load(Ordering::SeqCst) < workers {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("every configured worker entered candidate search");
+
+        // One more than configured is backpressure, not a queue.
+        let (trace, keys) = arguments();
+        assert!(
+            dbus.recognize_swipe(trace, keys, 6, "en_US".into())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("busy")
+        );
+
+        // Completion capacity is separate from recognition capacity.
+        let completed =
+            tokio::time::timeout(Duration::from_millis(200), dbus.complete("hel", 6, "en_US"))
+                .await
+                .expect("completion answered while recognition is saturated")
+                .unwrap();
+        assert!(completed.is_empty());
+
+        for job in running {
+            assert!(
+                job.await
+                    .unwrap()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("deadline")
+            );
+        }
+
+        // The responses gave up, but the CPU work has not: the permits are
+        // still held, so abandoned work cannot pile up behind them.
+        assert_eq!(dbus.swipe_slot.available_permits(), 0);
+        let (trace, keys) = arguments();
+        assert!(
+            dbus.recognize_swipe(trace, keys, 6, "en_US".into())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("busy")
+        );
+        assert_eq!(entered.load(Ordering::SeqCst), workers);
+
+        release.store(true, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while dbus.swipe_slot.available_permits() != workers {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("permits returned once the work exited");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn one_configured_worker() {
+        configured_workers_case(1).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_configured_workers_are_the_default() {
+        assert_eq!(
+            crate::daemon::DaemonConfig::default_for("en_US").swipe_workers,
+            crate::daemon::DEFAULT_SWIPE_WORKERS
+        );
+        assert_eq!(crate::daemon::DEFAULT_SWIPE_WORKERS, 2);
+        configured_workers_case(2).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn three_configured_workers_are_honoured_not_clamped() {
+        configured_workers_case(3).await;
+    }
+
+    #[test]
+    fn zero_workers_is_rejected() {
+        assert!(crate::daemon::validate_swipe_workers(0).is_err());
+        assert_eq!(crate::daemon::validate_swipe_workers(3).unwrap(), 3);
+    }
+
+    /// The original single-worker case, now pinned to that configuration since
+    /// the default is two.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn swipe_deadline_keeps_one_worker_and_complete_responsive() {
         let release = Arc::new(AtomicBool::new(false));
@@ -725,7 +846,8 @@ mod swipe_tests {
             None,
             None,
             "en_US".into(),
-        );
+        )
+        .with_swipe_workers(1);
         let dbus = Arc::new(VerbisageDbus::new(handler));
         let first = dbus.clone();
         let worker = tokio::spawn(async move {

@@ -33,6 +33,9 @@ pub struct DaemonConfigSection {
     /// Cap on accepted bounded-query `max` values (default 200_000).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_query_results: Option<usize>,
+    /// Concurrent gesture recognitions (default 2, minimum 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swipe_workers: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
