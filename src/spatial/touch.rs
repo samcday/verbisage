@@ -8,7 +8,7 @@ use keyboard_layout::{KeyboardLayout, Point, RectKeyLayout};
 
 use super::TouchPoint;
 use super::physical::single_char_labels;
-use crate::spellcheck::edits::{EditSource, LatinAlphabet};
+use crate::spellcheck::edits::{DISTANT_SUBSTITUTION_WEIGHT, EditSource, LatinAlphabet};
 
 pub struct TouchEdits<'a> {
     layout: &'a RectKeyLayout,
@@ -57,9 +57,12 @@ impl EditSource for TouchEdits<'_> {
                 continue;
             };
             let normalized = f64::from(origin.distance(target)) / self.key_diameter;
-            if normalized <= self.radius {
-                out.push((*candidate, (1.0 - normalized).clamp(0.1, 0.9)));
-            }
+            let weight = if normalized <= self.radius {
+                (1.0 - normalized).clamp(0.1, 0.9)
+            } else {
+                DISTANT_SUBSTITUTION_WEIGHT
+            };
+            out.push((*candidate, weight));
         }
         out
     }

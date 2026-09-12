@@ -1,12 +1,13 @@
 //! Layout-only spatial model.
 //!
-//! Substitutions are limited to keys within a small radius of the typed key,
-//! weighted by the normalised distance between key centres. Used for physical
-//! keyboards, where there are no touch points.
+//! Substitutions cover every key on the layout, weighted by the normalised
+//! distance between key centres: nearby keys cost less, distant keys are still
+//! offered so geometry never loses a candidate. Used for physical keyboards,
+//! where there are no touch points.
 
 use keyboard_layout::{Key, KeyboardLayout, RectKeyLayout};
 
-use crate::spellcheck::edits::{EditSource, LatinAlphabet};
+use crate::spellcheck::edits::{DISTANT_SUBSTITUTION_WEIGHT, EditSource, LatinAlphabet};
 
 pub struct PhysicalEdits<'a> {
     layout: &'a RectKeyLayout,
@@ -52,9 +53,12 @@ impl EditSource for PhysicalEdits<'_> {
                 continue;
             };
             let normalized = f64::from(origin.distance(target)) / self.key_diameter;
-            if normalized <= self.radius {
-                out.push((*candidate, (1.0 - normalized).clamp(0.1, 0.9)));
-            }
+            let weight = if normalized <= self.radius {
+                (1.0 - normalized).clamp(0.1, 0.9)
+            } else {
+                DISTANT_SUBSTITUTION_WEIGHT
+            };
+            out.push((*candidate, weight));
         }
         out
     }
@@ -101,8 +105,8 @@ mod tests {
         assert!(weights.contains_key(&'w'));
         assert!(weights.contains_key(&'d'));
         assert!(
-            !weights.contains_key(&'p'),
-            "a distant key must not be a substitution"
+            weights[&'p'] < weights[&'w'],
+            "a distant key must still be offered but rank below a nearby one"
         );
         assert!(weights[&'w'] > weights[&'e']);
     }

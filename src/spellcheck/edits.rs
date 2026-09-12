@@ -19,6 +19,13 @@ pub trait EditSource {
 
 pub struct LatinAlphabet;
 
+/// Weight applied to a substitution whose key is outside the proximity radius.
+///
+/// Geometry modulates edit cost but must never drop a candidate: a distant
+/// substitution is still offered, just ranked below nearby keys. Kept below the
+/// near-key floor (0.1) so ranking stays monotonic in distance.
+pub const DISTANT_SUBSTITUTION_WEIGHT: f64 = 0.05;
+
 const LATIN: [char; 26] = [
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's',
     't', 'u', 'v', 'w', 'x', 'y', 'z',

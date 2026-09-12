@@ -33,7 +33,10 @@ pub fn suggest_edits(
         return vec![word_lower];
     }
 
-    let mut candidates = edit_candidates(backend, &word_lower, source);
+    let mut candidates: Vec<String> = edit_candidates(backend, &word_lower, source)
+        .into_iter()
+        .map(|(word, _weight)| word)
+        .collect();
 
     // Score candidates using best available strategy
     let use_context = ngram_backend.is_some() && !context.is_empty();
@@ -51,25 +54,32 @@ pub fn suggest_edits(
     candidates
 }
 
-/// One-edit candidates present in the dictionary, unranked. Callers handle the
-/// "input is already correct" case and choose a ranking policy.
+/// One-edit candidates present in the dictionary, with the best edit weight
+/// seen for each. Unranked; callers handle the "input is already correct" case
+/// and choose a ranking policy.
+///
+/// The weight combines the edit class (transposition/insertion/deletion) with
+/// the [`EditSource`] proximity weight for substitutions, so callers can treat
+/// it as a layout-aware edit cost.
 pub fn edit_candidates(
     backend: &dyn DictionaryBackend,
     word_lower: &str,
     source: Option<&dyn EditSource>,
-) -> Vec<String> {
+) -> Vec<(String, f64)> {
     let latin = super::edits::LatinAlphabet;
     let source: &dyn EditSource = source.unwrap_or(&latin);
 
-    let mut candidates = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    super::edits::visit_edits(word_lower, source, |word, _weight| {
-        if word != word_lower && backend.contains(&word) && seen.insert(word.clone()) {
-            candidates.push(word);
+    let mut candidates: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    super::edits::visit_edits(word_lower, source, |word, weight| {
+        if word != word_lower && backend.contains(&word) {
+            candidates
+                .entry(word)
+                .and_modify(|current| *current = current.max(weight))
+                .or_insert(weight);
         }
         true
     });
-    candidates
+    candidates.into_iter().collect()
 }
 
 /// Rank existing candidates by descending dictionary frequency, lexical tie-break.

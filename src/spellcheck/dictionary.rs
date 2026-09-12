@@ -60,45 +60,77 @@ impl<B: DictionaryBackend> SpellChecker for DictionarySpellChecker<B> {
         } else {
             Some(&source)
         };
-        let mut candidates = crate::spellcheck::suggest::edit_candidates(
+        let candidates = crate::spellcheck::suggest::edit_candidates(
             &*self.backend,
             &word_lower,
             source_ref,
         );
+        if candidates.is_empty() {
+            return Vec::new();
+        }
 
-        let mut ranked_by_model = false;
-        if let Some(predictor) = &self.predictor {
-            let keys: Vec<_> = candidates
-                .iter()
-                .map(|word| (word.as_str(), word.as_str()))
-                .collect();
-            let deadline = Instant::now() + Duration::from_secs(5);
-            if let Ok(scores) = predictor.score_candidates(input.context, &keys, deadline) {
-                let mut ranked: Vec<_> = candidates.into_iter().zip(scores).collect();
-                ranked.sort_by(|(a, a_score), (b, b_score)| {
-                    b_score
-                        .unwrap_or(0.0)
-                        .total_cmp(&a_score.unwrap_or(0.0))
-                        .then_with(|| a.cmp(b))
-                });
-                candidates = ranked.into_iter().map(|(word, _)| word).collect();
-                ranked_by_model = true;
+        // Raw language/frequency score per candidate, in candidate order.
+        let mut scores: Vec<f64> = match &self.predictor {
+            Some(predictor) => {
+                let keys: Vec<_> = candidates
+                    .iter()
+                    .map(|(word, _)| (word.as_str(), word.as_str()))
+                    .collect();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                match predictor.score_candidates(input.context, &keys, deadline) {
+                    Ok(scores) => scores.into_iter().map(|s| s.unwrap_or(0.0)).collect(),
+                    Err(_) => candidates
+                        .iter()
+                        .map(|(word, _)| self.backend.get_frequency(word))
+                        .collect(),
+                }
             }
-        }
-        if !ranked_by_model {
-            crate::spellcheck::suggest::sort_by_frequency(&*self.backend, &mut candidates);
-        }
+            None => candidates
+                .iter()
+                .map(|(word, _)| self.backend.get_frequency(word))
+                .collect(),
+        };
 
-        if !input.spatial.is_none() {
-            candidates.sort_by(|a, b| {
-                let distance_a = input.spatial.word_distance(input.word, a).unwrap_or(0.0);
-                let distance_b = input.spatial.word_distance(input.word, b).unwrap_or(0.0);
-                distance_a.total_cmp(&distance_b).then_with(|| a.cmp(b))
+        if input.spatial.is_none() {
+            // No geometry: keep the pure language/frequency ordering.
+            let mut ranked: Vec<_> = candidates.into_iter().zip(scores).collect();
+            ranked.sort_by(|((a, _), a_score), ((b, _), b_score)| {
+                b_score.total_cmp(a_score).then_with(|| a.cmp(b))
             });
+            ranked.truncate(max);
+            return ranked.into_iter().map(|((word, _), _)| word).collect();
         }
 
-        candidates.truncate(max);
-        candidates
+        // Layout/touch active: combine the edit cost (edit class plus proximity,
+        // already encoded in the edit weight) with the language-model cost on a
+        // single HeliBoard-style scale. Geometry refines ranking; it must not
+        // bury the language model (a transposition like `teh` -> `the` is far
+        // on the keyboard but the most likely word).
+        let max_score = scores.iter().cloned().fold(f64::MIN, f64::max);
+        let min_score = scores.iter().cloned().fold(f64::MAX, f64::min);
+        let range = max_score - min_score;
+        let input_len = input.word.chars().count();
+        let max_distance = crate::spatial::DISTANCE_WEIGHT_LANGUAGE
+            + input_len as f64 * crate::spatial::TYPING_MAX_OUTPUT_SCORE_PER_INPUT;
+        let mut scored: Vec<(String, f64)> = candidates
+            .into_iter()
+            .zip(scores.drain(..))
+            .map(|((word, edit_weight), raw)| {
+                let language = if range > 0.0 {
+                    1.0 - (raw - min_score) / range
+                } else {
+                    0.0
+                };
+                let edit_cost = 1.0 - edit_weight.clamp(0.0, 1.0);
+                let cost = edit_cost + language * crate::spatial::DISTANCE_WEIGHT_LANGUAGE;
+                (word, (1.0 - cost / max_distance).clamp(0.0, 1.0))
+            })
+            .collect();
+        scored.sort_by(|(a, a_score), (b, b_score)| {
+            b_score.total_cmp(a_score).then_with(|| a.cmp(b))
+        });
+        scored.truncate(max);
+        scored.into_iter().map(|(word, _)| word).collect()
     }
 }
 
@@ -145,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_restricts_spelling_corrections() {
+    fn layout_ranks_near_key_corrections_first() {
         let mut dict = crate::dictionary::FileDictionaryBackend::new();
         dict.add_word_mut("cat".to_string(), 10.0);
         dict.add_word_mut("cay".to_string(), 10.0);
@@ -180,10 +212,14 @@ mod tests {
             },
             10,
         );
-        assert!(with_layout.contains(&"cat".to_string()), "{with_layout:?}");
+        assert_eq!(
+            with_layout.first().map(String::as_str),
+            Some("cat"),
+            "a near-key correction must rank first: {with_layout:?}"
+        );
         assert!(
-            !with_layout.contains(&"cay".to_string()),
-            "a far-key correction must be pruned: {with_layout:?}"
+            with_layout.contains(&"cay".to_string()),
+            "a far-key correction must still be offered: {with_layout:?}"
         );
     }
 
