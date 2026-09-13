@@ -1,3 +1,14 @@
-# No-op: the D-Bus introspection XML is generated at build time when
-# -Ddbus=true (see top-level meson.build). When dbus is disabled there
-# is no interface to describe, so no XML is installed.
+# The D-Bus introspection XML is generated at build time in top-level meson.build.
+if get_option('dbus')
+  python = import('python').find_installation()
+  configure_file(
+    input: 'org.verbisage.Dictionary.service.in',
+    output: 'org.verbisage.Dictionary.service',
+    command: [
+      python, files('configure-service.py'), '@INPUT@', '@OUTPUT@',
+      get_option('prefix') / get_option('bindir'),
+    ],
+    install: true,
+    install_dir: get_option('datadir') / 'dbus-1' / 'services',
+  )
+endif
