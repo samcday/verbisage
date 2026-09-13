@@ -773,6 +773,76 @@ fn caller_max_and_the_service_cap_are_honoured() {
     assert!(error.message.contains("exceeds swipe cap"), "{error}");
 }
 
+/// A request for no results is answered at once even while every recognition
+/// worker is occupied: it resolves no token, validates no trace and takes no
+/// permit, while a request that does want results is still refused as busy.
+#[test]
+fn zero_max_returns_empty_immediately_under_saturated_workers() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = dictionary(temp.path(), "en_US", &[("cat", 180), ("cut", 100)]);
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let gated = GatedPatricia {
+        inner: PatriciaDictionaryBackend::open(&path).unwrap(),
+        entered: entered.clone(),
+        release: release.clone(),
+    };
+    let handler =
+        DaemonHandler::new(Box::new(gated), None, None, "en_US".into()).with_swipe_workers(1);
+    let service = Arc::new(Service::start(handler));
+    let upload = qwerty(&[], 1.0, (0.0, 0.0));
+    let token = service.register(&upload);
+
+    let occupant_service = service.clone();
+    let occupant_token = token.clone();
+    let occupant_trace = trace(&upload, &["c", "a", "t"]);
+    let occupant = std::thread::spawn(move || {
+        occupant_service.recognize(occupant_trace, &occupant_token, 6, "en_US")
+    });
+    let started = Instant::now();
+    while !entered.load(Ordering::SeqCst) {
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the occupant never entered candidate search"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    // The only worker is busy. Asking for nothing still gets an immediate,
+    // empty answer, whatever the token or trace.
+    let answered = Instant::now();
+    assert_eq!(
+        service
+            .recognize(trace(&upload, &["c", "a", "t"]), &token, 0, "en_US")
+            .unwrap(),
+        Vec::new()
+    );
+    assert_eq!(
+        service
+            .recognize(trace(&upload, &["c", "a", "t"]), "deadbeef", 0, "en_US")
+            .unwrap(),
+        Vec::new()
+    );
+    assert_eq!(
+        service.recognize(Vec::new(), &token, 0, "en_US").unwrap(),
+        Vec::new()
+    );
+    assert!(
+        answered.elapsed() < Duration::from_millis(500),
+        "empty answers waited on the busy worker: {:?}",
+        answered.elapsed()
+    );
+    // Asking for results is still backpressure, not a queue.
+    let busy = service
+        .recognize(trace(&upload, &["c", "a", "t"]), &token, 1, "en_US")
+        .unwrap_err();
+    assert!(busy.message.contains("busy"), "{busy}");
+
+    release.store(true, Ordering::SeqCst);
+    let results = occupant.join().unwrap().unwrap();
+    assert_eq!(words(&results).first(), Some(&"cat"), "{results:?}");
+}
+
 #[test]
 fn full_language_routing_is_unchanged_for_swipes() {
     let temp = tempfile::tempdir().unwrap();

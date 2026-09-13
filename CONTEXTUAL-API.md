@@ -136,7 +136,9 @@ labels, so an incomplete path is never scored; ignored labels are skipped in
 paths but never count as missing, and words containing labels the layout
 neither maps nor ignores are excluded for now. Candidate search keeps the
 time, node and result budgets; the caller's `max` is honoured up to the
-configured Complete cap, and `max = 0` returns nothing without any work.
+configured Complete cap, and `max = 0` returns nothing at once: no token is
+resolved, no trace validated and no recognition worker taken, so it never
+fails busy while every worker is occupied.
 
 ## Stdio
 

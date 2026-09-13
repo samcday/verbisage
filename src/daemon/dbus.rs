@@ -497,7 +497,10 @@ impl VerbisageDbus {
     /// normalized once by the layout. Main and alternate labels locate a
     /// word's graphemes in one canonical form (NFC, lowercase); results keep
     /// the stored spelling. An unknown or empty token is an explicit error.
-    /// The caller must discard stale replies and require explicit word selection.
+    /// A `max` of zero asks for nothing and gets nothing at once: no token is
+    /// resolved, no trace validated and no worker taken, so it cannot fail
+    /// busy. The caller must discard stale replies and require explicit word
+    /// selection.
     #[cfg(feature = "swipe")]
     #[zbus(out_args("result"))]
     async fn recognize_swipe(
@@ -514,6 +517,9 @@ impl VerbisageDbus {
             max,
             lang
         );
+        if max == 0 {
+            return Ok(Vec::new());
+        }
         if layout.is_empty() {
             return Err(FdoError::InvalidArgs(
                 "swipe recognition requires a registered layout token".into(),
@@ -969,6 +975,84 @@ mod swipe_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn three_configured_workers_are_honoured_not_clamped() {
         configured_workers_case(3).await;
+    }
+
+    /// A request for no results is answered at once while every worker is
+    /// occupied: it takes no permit, resolves no token and validates no trace,
+    /// and a request that does want results is still refused as busy.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn zero_max_is_answered_without_a_worker() {
+        let release = Arc::new(AtomicBool::new(false));
+        let _release_on_failure = ReleaseOnDrop(release.clone());
+        let entered = Arc::new(AtomicUsize::new(0));
+        let handler = DaemonHandler::new(
+            Box::new(BlockedDictionary {
+                release: release.clone(),
+                entered: entered.clone(),
+            }),
+            None,
+            None,
+            "en_US".into(),
+        )
+        .with_swipe_workers(1);
+        let dbus = Arc::new(VerbisageDbus::new(handler));
+        let token = registered(&dbus).await;
+        let occupant = dbus.clone();
+        let occupant_token = token.clone();
+        let worker = tokio::spawn(async move {
+            occupant
+                .recognize_swipe(trace(), &occupant_token, 6, "en_US".into())
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while entered.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the occupant entered candidate search");
+        assert_eq!(dbus.swipe_slot.available_permits(), 0);
+
+        assert_eq!(
+            dbus.recognize_swipe(trace(), &token, 0, "en_US".into())
+                .await
+                .unwrap(),
+            Vec::new()
+        );
+        // No token or trace is looked at either: nothing is asked for.
+        assert_eq!(
+            dbus.recognize_swipe(trace(), "deadbeef", 0, "en_US".into())
+                .await
+                .unwrap(),
+            Vec::new()
+        );
+        assert_eq!(
+            dbus.recognize_swipe(Vec::new(), &token, 0, "en_US".into())
+                .await
+                .unwrap(),
+            Vec::new()
+        );
+        assert_eq!(dbus.swipe_slot.available_permits(), 0);
+        assert_eq!(entered.load(Ordering::SeqCst), 1);
+        assert!(
+            dbus.recognize_swipe(trace(), &token, 1, "en_US".into())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("busy")
+        );
+
+        // Released well within its deadline, the occupant finishes normally
+        // with the blocked dictionary's (empty) answer and returns its permit.
+        release.store(true, Ordering::SeqCst);
+        assert_eq!(worker.await.unwrap().unwrap(), Vec::new());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while dbus.swipe_slot.available_permits() != 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[test]

@@ -81,7 +81,10 @@
      normalized once by the layout. Main and alternate labels locate a
      word's graphemes in one canonical form (NFC, lowercase); results keep
      the stored spelling. An unknown or empty token is an explicit error.
-     The caller must discard stale replies and require explicit word selection.
+     A `max` of zero asks for nothing and gets nothing at once: no token is
+     resolved, no trace validated and no worker taken, so it cannot fail
+     busy. The caller must discard stale replies and require explicit word
+     selection.
      -->
     <method name="RecognizeSwipe">
       <arg name="trace" type="a(ddu)" direction="in"/>
