@@ -22,11 +22,17 @@ pub struct DaemonConfig {
 /// Recognition workers when nothing overrides it.
 pub const DEFAULT_SWIPE_WORKERS: usize = 2;
 
-/// Reject a worker count that cannot serve anything, before it becomes a
-/// semaphore that fails every request.
+/// Reject unusable worker counts before constructing the recognition semaphore.
 pub fn validate_swipe_workers(value: usize) -> Result<usize, String> {
     if value == 0 {
         return Err("swipe workers must be at least 1".into());
+    }
+    #[cfg(feature = "swipe")]
+    if value > tokio::sync::Semaphore::MAX_PERMITS {
+        return Err(format!(
+            "swipe workers must not exceed {}",
+            tokio::sync::Semaphore::MAX_PERMITS
+        ));
     }
     Ok(value)
 }
@@ -65,5 +71,24 @@ impl DaemonConfig {
             completion,
             swipe_workers: args.swipe_workers.unwrap_or(DEFAULT_SWIPE_WORKERS),
         }
+    }
+}
+
+#[cfg(all(test, feature = "swipe"))]
+mod tests {
+    use super::validate_swipe_workers;
+    use tokio::sync::Semaphore;
+
+    #[test]
+    fn swipe_workers_accept_semaphore_limit() {
+        let workers = validate_swipe_workers(Semaphore::MAX_PERMITS).unwrap();
+        assert_eq!(workers, Semaphore::MAX_PERMITS);
+        assert_eq!(Semaphore::new(workers).available_permits(), workers);
+    }
+
+    #[test]
+    fn swipe_workers_reject_above_semaphore_limit() {
+        assert!(validate_swipe_workers(Semaphore::MAX_PERMITS + 1).is_err());
+        assert!(validate_swipe_workers(usize::MAX).is_err());
     }
 }

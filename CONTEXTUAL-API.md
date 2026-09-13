@@ -128,8 +128,9 @@ Gesture recognition has its own capacity, separate from completion so a busy
 keyboard cannot starve typing. `--swipe-workers` (CLI), `[daemon]
 swipe_workers` (config file) or the built-in default of two set how many
 recognitions may hold a CPU worker at once, in that order of precedence. A
-requested value is honoured as given, never clamped; zero is rejected with an
-error. Each permit is held inside the blocking worker until that work really
+requested value is honoured as given, never clamped; zero and, in swipe-enabled
+builds, counts above Tokio's semaphore limit are rejected with an error.
+Each permit is held inside the blocking worker until that work really
 exits, so a response that timed out, was cancelled or lost its client still
 occupies its slot and abandoned work stays bounded. A request beyond the
 configured count is refused as busy rather than queued.
