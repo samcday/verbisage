@@ -448,23 +448,57 @@ pub(crate) fn language_fallbacks(tag: &str) -> Vec<String> {
 ///
 /// The integration accepts both the POSIX (`fr_FR`) and the BCP-47
 /// (`fr-FR`) region separator, so a dictionary written in one form stays
-/// usable when the caller selected the other. Only the separator is swapped;
-/// case and component order are preserved, and no components are dropped.
-/// Fixed paths and layer overrides do not use these aliases.
+/// usable when the caller selected the other. Only the first (language/region)
+/// separator is swapped; variant separators keep their spelling, case and
+/// component order are preserved, and no components are dropped. `fr_FR-br`
+/// therefore reaches `fr-FR-br` but not `fr_FR_br`. Fixed paths and layer
+/// overrides do not use these aliases.
 pub(crate) fn language_spellings(tag: &str) -> Vec<String> {
     let mut spellings = vec![tag.to_string()];
-    if tag.contains('_') {
-        spellings.push(tag.replace('_', "-"));
-    } else if tag.contains('-') {
-        spellings.push(tag.replace('-', "_"));
+    if let Some(index) = tag.find(|c| c == '-' || c == '_') {
+        let alternate = if tag.as_bytes()[index] == b'-' { '_' } else { '-' };
+        let mut swapped = String::with_capacity(tag.len());
+        swapped.push_str(&tag[..index]);
+        swapped.push(alternate);
+        swapped.push_str(&tag[index + 1..]);
+        spellings.push(swapped);
     }
     spellings
 }
 
+/// Find `filename` in `dir`, preferring the exact spelling and falling back
+/// to an ASCII-case-insensitive match.
+///
+/// Language identity is case-insensitive, so a selection such as `fr-fr-br`
+/// still reaches `fr_FR-br.dict`. The exact file name always wins; when only
+/// case variants exist the lexicographically smallest is chosen so repeated
+/// lookups stay deterministic. Returns `None` when `dir` has no match.
+pub(crate) fn find_file(dir: &Path, filename: &str) -> Option<PathBuf> {
+    let exact = dir.join(filename);
+    if exact.exists() {
+        return Some(exact);
+    }
+
+    let mut matches: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case(filename))
+        })
+        .map(|entry| entry.path())
+        .collect();
+    matches.sort();
+    matches.into_iter().next()
+}
+
 /// Search `dir` for files matching any `pattern`, trying each language
 /// fallback in order and, within one tag, its exact spelling before the
-/// equivalent separator alias. Returns the first match per pattern (most
-/// specific language wins). Only returns existing files.
+/// equivalent separator alias and then any case variant. Returns the first
+/// match per pattern (most specific language wins). Only returns existing
+/// files.
 fn find_files(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
     let dir = expand_dir(dir);
     let fallbacks = language_fallbacks(language);
@@ -474,8 +508,7 @@ fn find_files(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
         let mut found = None;
         'spellings: for lang in &fallbacks {
             for spelling in language_spellings(lang) {
-                let f = dir.join(pattern.replace("{lang}", &spelling));
-                if f.exists() {
+                if let Some(f) = find_file(&dir, &pattern.replace("{lang}", &spelling)) {
                     found = Some(f);
                     break 'spellings;
                 }
@@ -642,6 +675,48 @@ mod tests {
         );
         assert_eq!(language_spellings("pt-PT"), vec!["pt-PT", "pt_PT"]);
         assert_eq!(language_spellings("en"), vec!["en"]);
+        // A variant separator is not a region separator: it stays as spelled.
+        assert_eq!(
+            language_spellings("fr_FR_br"),
+            vec!["fr_FR_br", "fr-FR_br"]
+        );
+    }
+
+    #[test]
+    fn find_files_resolves_case_variants() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("fr_FR-br.dic"), "variant").unwrap();
+        let lp = LanguagePaths::new("fr-fr-br").with_system_dir(temp.path().to_path_buf());
+
+        // The first-separator alias plus case-insensitive lookup keeps the
+        // full variant reachable.
+        assert_eq!(
+            lp.resolve_system(&["{lang}.dic"]),
+            vec![temp.path().join("fr_FR-br.dic")]
+        );
+
+        // The exact requested spelling still wins when both exist.
+        std::fs::write(temp.path().join("fr-fr-br.dic"), "exact").unwrap();
+        assert_eq!(
+            lp.resolve_system(&["{lang}.dic"]),
+            vec![temp.path().join("fr-fr-br.dic")]
+        );
+    }
+
+    #[test]
+    fn find_files_does_not_rewrite_variant_separators() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("fr_FR-br.dic"), "variant").unwrap();
+        std::fs::write(temp.path().join("fr_FR.dic"), "region").unwrap();
+        std::fs::write(temp.path().join("fr.dic"), "base").unwrap();
+        let lp = LanguagePaths::new("fr_FR_br").with_system_dir(temp.path().to_path_buf());
+
+        // `fr_FR_br` is a different variant, so the full variant dictionary is
+        // not silently substituted; the region and base fallbacks still apply.
+        assert_eq!(
+            lp.resolve_system(&["{lang}.dic"]),
+            vec![temp.path().join("fr_FR.dic")]
+        );
     }
 
     #[test]

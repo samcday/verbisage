@@ -705,9 +705,12 @@ fn build_patricia(
 ///
 /// Within a layer the language fallbacks are tried from most to least
 /// specific, so `fr_FR-br` reaches `fr_FR-br.dict` first, then `fr_FR.dict`,
-/// then `fr.dict`. The system layer is always resolved before the user layer,
-/// preserving the existing layer precedence: an explicit system dictionary
-/// wins over a user dictionary for the same request.
+/// then `fr.dict`. The exact requested spelling wins; the equivalent
+/// first-separator alias and then ASCII case variants resolve to an existing
+/// file, so a `fr-fr-br` selection still loads `fr_FR-br.dict`. The system
+/// layer is always resolved before the user layer, preserving the existing
+/// layer precedence: an explicit system dictionary wins over a user
+/// dictionary for the same request.
 ///
 /// An explicit `File` override or a `Skip` replaces that layer's directory
 /// search, so fixed paths stay fixed and a skipped layer contributes nothing.
@@ -717,7 +720,8 @@ fn build_patricia(
 #[cfg(feature = "patricia")]
 fn patricia_candidates(def: &ResolvedBackendDef, lang: &str, lp: &LanguagePaths) -> Vec<PathBuf> {
     use crate::dictionary::paths::{
-        PathOverride, SYSTEM_DATA_DIR, USER_DATA_DIR_REL, language_fallbacks, language_spellings,
+        PathOverride, SYSTEM_DATA_DIR, USER_DATA_DIR_REL, find_file, language_fallbacks,
+        language_spellings,
     };
 
     if let Some(path) = &def.path {
@@ -741,27 +745,24 @@ fn patricia_candidates(def: &ResolvedBackendDef, lang: &str, lp: &LanguagePaths)
     let fallbacks = language_fallbacks(lang);
 
     let mut candidates: Vec<PathBuf> = Vec::new();
+    fn push_candidates(dir: &std::path::Path, fallbacks: &[String], candidates: &mut Vec<PathBuf>) {
+        for tag in fallbacks {
+            for spelling in language_spellings(tag) {
+                let filename = format!("{spelling}.dict");
+                let path = find_file(dir, &filename).unwrap_or_else(|| dir.join(filename));
+                candidates.push(path);
+            }
+        }
+    }
     match &lp.system_file_override {
         PathOverride::File(path) => candidates.push(expand_tilde(path.to_str().unwrap_or(""))),
         PathOverride::Skip => {}
-        PathOverride::Default => {
-            for tag in &fallbacks {
-                for spelling in language_spellings(tag) {
-                    candidates.push(system_dir.join(format!("{spelling}.dict")));
-                }
-            }
-        }
+        PathOverride::Default => push_candidates(&system_dir, &fallbacks, &mut candidates),
     }
     match &lp.user_file_override {
         PathOverride::File(path) => candidates.push(expand_tilde(path.to_str().unwrap_or(""))),
         PathOverride::Skip => {}
-        PathOverride::Default => {
-            for tag in &fallbacks {
-                for spelling in language_spellings(tag) {
-                    candidates.push(user_dir.join(format!("{spelling}.dict")));
-                }
-            }
-        }
+        PathOverride::Default => push_candidates(&user_dir, &fallbacks, &mut candidates),
     }
     candidates
 }
@@ -902,6 +903,40 @@ mod tests {
         let lp = LanguagePaths::new("fr_FR").with_system_dir(other.path().to_path_buf());
         let (dict, _, _) = build_patricia(&def, "fr_FR", &lp);
         assert!(dict.contains("bcpword"), "the separator alias must be usable");
+    }
+
+    #[test]
+    fn patricia_case_variant_reselection_keeps_the_full_variant() {
+        let temp = tempfile::tempdir().unwrap();
+        write_dictionary(&temp.path().join("fr_FR-br.dict"), "fr_FR-br", "variantword");
+        let def = patricia_def();
+        let lp = LanguagePaths::new("fr-fr-br").with_system_dir(temp.path().to_path_buf());
+
+        // Case-insensitive identity plus the first-separator alias keeps the
+        // full regional/variant dictionary reachable.
+        let (dict, _, _) = build_patricia(&def, "fr-fr-br", &lp);
+        assert!(
+            dict.contains("variantword"),
+            "the full variant must not be silently lost"
+        );
+    }
+
+    #[test]
+    fn patricia_does_not_rewrite_variant_separators() {
+        let temp = tempfile::tempdir().unwrap();
+        write_dictionary(&temp.path().join("fr_FR-br.dict"), "fr_FR-br", "variantword");
+        write_dictionary(&temp.path().join("fr_FR.dict"), "fr_FR", "regionword");
+        let def = patricia_def();
+        let lp = LanguagePaths::new("fr_FR_br").with_system_dir(temp.path().to_path_buf());
+
+        // `fr_FR_br` is a different variant spelling: the full variant file is
+        // not substituted, but the region fallback still answers.
+        let (dict, _, _) = build_patricia(&def, "fr_FR_br", &lp);
+        assert!(
+            !dict.contains("variantword"),
+            "an unsupported variant spelling must not substitute"
+        );
+        assert!(dict.contains("regionword"), "the region fallback still applies");
     }
 
     #[test]
