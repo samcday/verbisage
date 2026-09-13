@@ -29,7 +29,66 @@
       <arg name="word" type="s" direction="in"/>
       <arg name="max" type="u" direction="in"/>
       <arg name="lang" type="s" direction="in"/>
+      <arg name="layout" type="s" direction="in"/>
+      <arg name="points" type="a(dd)" direction="in"/>
       <arg name="result" type="as" direction="out"/>
+    </method>
+    <!--
+     Rank current-word prefixes and single-edit corrections together.
+     Scores are relative heuristics, not probabilities. The caller keeps
+     the exact typed literal as an independent choice. Known words and
+     fragments shorter than three characters receive prefix matches only.
+     Empty/whitespace input or max=0 returns []; max above the configured
+     Complete cap (default 1_000) is rejected by the handler.
+     -->
+    <method name="Complete">
+      <arg name="word" type="s" direction="in"/>
+      <arg name="max" type="u" direction="in"/>
+      <arg name="lang" type="s" direction="in"/>
+      <arg name="result" type="a(sd)" direction="out"/>
+    </method>
+    <!--
+     Complete using committed context and explicit per-request preparation.
+     Each prep tuple is (normalization, fold); defaults are (none, none).
+     -->
+    <method name="CompleteWith">
+      <arg name="word" type="s" direction="in"/>
+      <arg name="context" type="as" direction="in"/>
+      <arg name="max" type="u" direction="in"/>
+      <arg name="lang" type="s" direction="in"/>
+      <arg name="input_prep" type="(ss)" direction="in"/>
+      <arg name="context_prep" type="(ss)" direction="in"/>
+      <arg name="case_preference" type="s" direction="in"/>
+      <arg name="layout" type="s" direction="in"/>
+      <arg name="points" type="a(dd)" direction="in"/>
+      <arg name="result" type="a(sd)" direction="out"/>
+    </method>
+    <!--
+     Next-word prediction uses the same engine and text options as completion.
+     -->
+    <method name="PredictWith">
+      <arg name="context" type="as" direction="in"/>
+      <arg name="max" type="u" direction="in"/>
+      <arg name="lang" type="s" direction="in"/>
+      <arg name="context_prep" type="(ss)" direction="in"/>
+      <arg name="result" type="a(sd)" direction="out"/>
+    </method>
+    <!--
+     Resolve a complete single-finger word gesture against a registered
+     layout. `layout` is a token from `RegisterLayout`: the same registry
+     and the same immutable layout completion uses. Trace points are in
+     that layout's own widget coordinates, each with its elapsed ms, and are
+     normalized once by the layout. Main and alternate labels locate a
+     word's graphemes in one canonical form (NFC, lowercase); results keep
+     the stored spelling. An unknown or empty token is an explicit error.
+     The caller must discard stale replies and require explicit word selection.
+     -->
+    <method name="RecognizeSwipe">
+      <arg name="trace" type="a(ddu)" direction="in"/>
+      <arg name="layout" type="s" direction="in"/>
+      <arg name="max" type="u" direction="in"/>
+      <arg name="lang" type="s" direction="in"/>
+      <arg name="result" type="a(sd)" direction="out"/>
     </method>
     <!--
      Search the dictionary for words matching prefix and/or suffix
@@ -53,10 +112,25 @@
       <arg name="result" type="a(sd)" direction="out"/>
     </method>
     <!--
+     Query completion candidates with a bounded response. Zero max returns
+     no candidates; max above the configured bounded-query cap (default
+     200_000) is rejected by the handler. Query remains available for
+     clients that need the complete dictionary result set.
+     -->
+    <method name="QueryLimited">
+      <arg name="prefixes" type="as" direction="in"/>
+      <arg name="suffixes" type="as" direction="in"/>
+      <arg name="min_len" type="u" direction="in"/>
+      <arg name="max_len" type="u" direction="in"/>
+      <arg name="lang" type="s" direction="in"/>
+      <arg name="max" type="u" direction="in"/>
+      <arg name="result" type="a(sd)" direction="out"/>
+    </method>
+    <!--
      Predict the next word(s) given a sequence of context words.
 
      @param context  Preceding words (space-split is the caller's
-                     responsibility).
+                      responsibility).
      @param max      Maximum number of predictions to return.
      @param lang     Language tag.
      @return         Array of (word, confidence) predictions.
@@ -79,6 +153,51 @@
       <arg name="word" type="s" direction="in"/>
       <arg name="lang" type="s" direction="in"/>
       <arg name="result" type="d" direction="out"/>
+    </method>
+    <!--
+     Add a word to the dictionary for the given language.
+
+     @param word          Word to add.
+     @param frequency     Frequency score for the word.
+     @param allow_existing If true, overwrite when the word already exists.
+     @param lang          Language tag.
+     -->
+    <method name="AddWord">
+      <arg name="word" type="s" direction="in"/>
+      <arg name="frequency" type="d" direction="in"/>
+      <arg name="allow_existing" type="b" direction="in"/>
+      <arg name="lang" type="s" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
+    </method>
+    <!--
+     Increase the count of an n-gram for the given language.
+
+     @param ngram        Full n-gram sequence (context + next word).
+     @param count        Number of observations to add.
+     @param save_unknown If true, create the n-gram if it doesn't exist.
+     @param lang         Language tag.
+     -->
+    <method name="BumpNgram">
+      <arg name="ngram" type="as" direction="in"/>
+      <arg name="count" type="t" direction="in"/>
+      <arg name="save_unknown" type="b" direction="in"/>
+      <arg name="lang" type="s" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
+    </method>
+    <!--
+     Register a keyboard layout and return its content-hash token. The
+     layout is a JSON-encoded `LayoutUpload`.
+     -->
+    <method name="RegisterLayout">
+      <arg name="layout" type="s" direction="in"/>
+      <arg name="result" type="s" direction="out"/>
+    </method>
+    <!--
+     Forget a previously registered keyboard layout.
+     -->
+    <method name="ForgetLayout">
+      <arg name="token" type="s" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
     </method>
   </interface>
 </node>

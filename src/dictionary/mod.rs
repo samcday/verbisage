@@ -158,15 +158,17 @@ pub trait DictionaryBackend: Send + Sync {
         Ok(results)
     }
 
-    /// Bounded candidate snapshot for the optional whole-word swipe prototype.
+    /// Bounded candidate snapshot for whole-word swipe recognition: every
+    /// stored word whose scoring form under `vocabulary` starts with one of
+    /// `starts` and ends with one of `ends`, in canonical form.
     #[cfg(feature = "swipe")]
     fn swipe_candidates(
         &self,
+        _vocabulary: &crate::swipe::SwipeVocabulary,
         _starts: &[String],
         _ends: &[String],
-        _letters: &[u8],
         _deadline: std::time::Instant,
-    ) -> Result<Vec<DictionaryResult>, String> {
+    ) -> Result<Vec<crate::swipe::SwipeCandidate>, String> {
         Err("swipe recognition requires a Patricia backend".into())
     }
 
@@ -235,12 +237,12 @@ impl<T: DictionaryBackend> DictionaryBackend for Arc<T> {
     #[cfg(feature = "swipe")]
     fn swipe_candidates(
         &self,
+        vocabulary: &crate::swipe::SwipeVocabulary,
         starts: &[String],
         ends: &[String],
-        letters: &[u8],
         deadline: std::time::Instant,
-    ) -> Result<Vec<DictionaryResult>, String> {
-        (**self).swipe_candidates(starts, ends, letters, deadline)
+    ) -> Result<Vec<crate::swipe::SwipeCandidate>, String> {
+        (**self).swipe_candidates(vocabulary, starts, ends, deadline)
     }
 
     fn get_frequency(&self, word: &str) -> f64 {

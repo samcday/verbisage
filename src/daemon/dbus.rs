@@ -490,20 +490,44 @@ impl VerbisageDbus {
         .await
     }
 
-    /// Resolve a complete single-finger word gesture against supplied key bounds.
-    /// Coordinates share widget logical units. Each point includes elapsed ms.
+    /// Resolve a complete single-finger word gesture against a registered
+    /// layout. `layout` is a token from `RegisterLayout`: the same registry
+    /// and the same immutable layout completion uses. Trace points are in
+    /// that layout's own widget coordinates, each with its elapsed ms, and are
+    /// normalized once by the layout. Main and alternate labels locate a
+    /// word's graphemes in one canonical form (NFC, lowercase); results keep
+    /// the stored spelling. An unknown or empty token is an explicit error.
     /// The caller must discard stale replies and require explicit word selection.
     #[cfg(feature = "swipe")]
     #[zbus(out_args("result"))]
     async fn recognize_swipe(
         &self,
         trace: Vec<(f64, f64, u32)>,
-        keys: Vec<(String, f64, f64, f64, f64)>,
+        layout: &str,
         max: u32,
         lang: String,
     ) -> Result<Vec<(String, f64)>, FdoError> {
+        crate::veprintln!(
+            "[dbus-server] RecognizeSwipe({} points, {}, {}, {})",
+            trace.len(),
+            layout,
+            max,
+            lang
+        );
+        if layout.is_empty() {
+            return Err(FdoError::InvalidArgs(
+                "swipe recognition requires a registered layout token".into(),
+            ));
+        }
+        // Resolved here, before any worker is dispatched: the request keeps
+        // this immutable layout, so forgetting or evicting the token afterwards
+        // cannot change a recognition already accepted.
+        let layout = self
+            .handler
+            .layout(layout)
+            .ok_or_else(|| FdoError::InvalidArgs(format!("unknown layout token '{layout}'")))?;
         let request =
-            crate::swipe::SwipeRequest::new(trace, keys, max).map_err(FdoError::InvalidArgs)?;
+            crate::swipe::SwipeRequest::new(trace, layout, max).map_err(FdoError::InvalidArgs)?;
         // zbus uses its own executor in the existing daemon configuration. Use
         // the Tokio handle captured when the daemon registered this interface;
         // neither worker creation nor the timer may assume a Tokio caller.
@@ -808,11 +832,11 @@ mod swipe_tests {
         }
         fn swipe_candidates(
             &self,
+            _: &crate::swipe::SwipeVocabulary,
             _: &[String],
             _: &[String],
-            _: &[u8],
             _: std::time::Instant,
-        ) -> Result<Vec<DictionaryResult>, String> {
+        ) -> Result<Vec<crate::swipe::SwipeCandidate>, String> {
             self.entered.fetch_add(1, Ordering::SeqCst);
             while !self.release.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(5));
@@ -826,14 +850,17 @@ mod swipe_tests {
             self.0.store(true, Ordering::SeqCst);
         }
     }
-    fn arguments() -> (Vec<(f64, f64, u32)>, Vec<(String, f64, f64, f64, f64)>) {
-        (
-            vec![(10.0, 10.0, 0), (50.0, 10.0, 100)],
-            vec![
-                ("a".into(), 0.0, 0.0, 20.0, 20.0),
-                ("b".into(), 40.0, 0.0, 20.0, 20.0),
-            ],
-        )
+    fn trace() -> Vec<(f64, f64, u32)> {
+        vec![(10.0, 10.0, 0), (50.0, 10.0, 100)]
+    }
+    /// Two keys registered through the shared registry; requests carry the
+    /// token, never the geometry.
+    async fn registered(service: &VerbisageDbus) -> String {
+        let upload = serde_json::json!({ "keys": [
+            { "label": "a", "left": 0.0, "top": 0.0, "width": 20.0, "height": 20.0 },
+            { "label": "b", "left": 40.0, "top": 0.0, "width": 20.0, "height": 20.0 },
+        ] });
+        service.register_layout(&upload.to_string()).await.unwrap()
     }
 
     /// Exactly `workers` recognitions may occupy CPU workers at once; the next
@@ -855,13 +882,16 @@ mod swipe_tests {
         .with_swipe_workers(workers);
         let dbus = Arc::new(VerbisageDbus::new(handler));
         assert_eq!(dbus.swipe_slot.available_permits(), workers);
+        let token = registered(&dbus).await;
 
         let mut running = Vec::new();
         for _ in 0..workers {
             let service = dbus.clone();
+            let token = token.clone();
             running.push(tokio::spawn(async move {
-                let (trace, keys) = arguments();
-                service.recognize_swipe(trace, keys, 6, "en_US".into()).await
+                service
+                    .recognize_swipe(trace(), &token, 6, "en_US".into())
+                    .await
             }));
         }
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -873,9 +903,8 @@ mod swipe_tests {
         .expect("every configured worker entered candidate search");
 
         // One more than configured is backpressure, not a queue.
-        let (trace, keys) = arguments();
         assert!(
-            dbus.recognize_swipe(trace, keys, 6, "en_US".into())
+            dbus.recognize_swipe(trace(), &token, 6, "en_US".into())
                 .await
                 .unwrap_err()
                 .to_string()
@@ -903,9 +932,8 @@ mod swipe_tests {
         // The responses gave up, but the CPU work has not: the permits are
         // still held, so abandoned work cannot pile up behind them.
         assert_eq!(dbus.swipe_slot.available_permits(), 0);
-        let (trace, keys) = arguments();
         assert!(
-            dbus.recognize_swipe(trace, keys, 6, "en_US".into())
+            dbus.recognize_swipe(trace(), &token, 6, "en_US".into())
                 .await
                 .unwrap_err()
                 .to_string()
@@ -967,10 +995,13 @@ mod swipe_tests {
         )
         .with_swipe_workers(1);
         let dbus = Arc::new(VerbisageDbus::new(handler));
+        let token = registered(&dbus).await;
         let first = dbus.clone();
+        let first_token = token.clone();
         let worker = tokio::spawn(async move {
-            let (trace, keys) = arguments();
-            first.recognize_swipe(trace, keys, 6, "en_US".into()).await
+            first
+                .recognize_swipe(trace(), &first_token, 6, "en_US".into())
+                .await
         });
         tokio::time::timeout(Duration::from_secs(1), async {
             while entered.load(Ordering::SeqCst) == 0 {
@@ -979,9 +1010,8 @@ mod swipe_tests {
         })
         .await
         .expect("worker entered candidate search");
-        let (trace, keys) = arguments();
         assert!(
-            dbus.recognize_swipe(trace, keys, 6, "en_US".into())
+            dbus.recognize_swipe(trace(), &token, 6, "en_US".into())
                 .await
                 .unwrap_err()
                 .to_string()
@@ -1001,9 +1031,8 @@ mod swipe_tests {
                 .to_string()
                 .contains("deadline")
         );
-        let (trace, keys) = arguments();
         assert!(
-            dbus.recognize_swipe(trace, keys, 6, "en_US".into())
+            dbus.recognize_swipe(trace(), &token, 6, "en_US".into())
                 .await
                 .unwrap_err()
                 .to_string()

@@ -38,6 +38,8 @@ Name `org.verbisage.Dictionary`, path `/org/verbisage/Dictionary`, interface
 * `PredictWith(as context, u max, s lang, (ss) context_prep) -> a(sd)`
 * `RegisterLayout(s layoutJson) -> s token`
 * `ForgetLayout(s token) -> b`
+* `RecognizeSwipe(a(ddu) trace, s layout, u max, s lang) -> a(sd)` (swipe
+  builds; see Gesture recognition)
 
 Each prep tuple is `(normalization, fold)`. Empty current input requests
 next-word candidates. Existing methods remain available; legacy `Complete`
@@ -102,6 +104,39 @@ resolved from the system/user XKB data with geometry when available. When a
 layout is present, correction candidates are limited to nearby keys and
 weighted by key distance; without one the geometry-free a–z alphabet is used,
 preserving prior output.
+
+## Gesture recognition
+
+`RecognizeSwipe(a(ddu) trace, s layout, u max, s lang) -> a(sd)` resolves a
+complete single-finger gesture against a registered layout. `layout` is a
+token from `RegisterLayout`: the same registry and the same immutable layout
+object completion uses, so one registration serves `CompleteWith` and
+`RecognizeSwipe`. The token is resolved before a recognition worker is
+dispatched; forgetting or evicting it afterwards cannot change a request
+already accepted, while an unknown token before that point is the explicit
+`unknown layout token` error completion reports, and an empty token is
+rejected. There is no geometry-free fallback; the prototype's raw key-rectangle
+argument is gone. `lang` is the complete selected language, independent of the
+layout, and resolves exactly as for completion: regional fallback applies,
+a missing dictionary is an error, and nothing substitutes English.
+
+Trace points `(x, y, elapsed ms)` are in the registered layout's own widget
+coordinates. The layout normalizes them once, so translated, scaled and
+fractional geometry recognize the same path. A trace needs 2..512 points with
+nondecreasing timestamps of at most 10 s, finite coordinates and real motion
+both before and after normalization; stationary or collapsed traces are
+rejected, as is a layout with fewer than two gesturable labels. Main and
+alternate labels both locate a word's graphemes, compared with dictionary
+words in one canonical form on both sides: NFC, then Unicode lowercase. An
+active Shift layer's capitals and a decomposed `e` + combining acute therefore
+both meet a dictionary's `é`. Results carry the stored spelling, one per
+distinct scoring form, preferring the likelier stored spelling. A word is
+offered only when every grapheme is on the layout or among its ignored
+labels, so an incomplete path is never scored; ignored labels are skipped in
+paths but never count as missing, and words containing labels the layout
+neither maps nor ignores are excluded for now. Candidate search keeps the
+time, node and result budgets; the caller's `max` is honoured up to the
+configured Complete cap, and `max = 0` returns nothing without any work.
 
 ## Stdio
 

@@ -134,23 +134,27 @@ impl DictionaryBackend for PatriciaDictionaryBackend {
     #[cfg(feature = "swipe")]
     fn swipe_candidates(
         &self,
+        vocabulary: &crate::swipe::SwipeVocabulary,
         starts: &[String],
         ends: &[String],
-        letters: &[u8],
         deadline: std::time::Instant,
-    ) -> Result<Vec<DictionaryResult>, String> {
-        use crate::swipe::{MAX_CANDIDATES, MAX_TRIE_NODES, MAX_WORD_BYTES};
+    ) -> Result<Vec<crate::swipe::SwipeCandidate>, String> {
+        use crate::swipe::{
+            MAX_CANDIDATES, MAX_TRIE_NODES, MAX_WORD_BYTES, SwipeCandidate, canonical,
+        };
         use patricia_dict::VisitControl;
+        use std::collections::BTreeSet;
+        use unicode_segmentation::UnicodeSegmentation;
 
         if std::time::Instant::now() >= deadline {
             return Err("swipe candidate search exceeded its time budget".into());
         }
-        if starts.is_empty() || ends.is_empty() || letters.is_empty() {
+        if starts.is_empty() || ends.is_empty() {
             return Ok(Vec::new());
         }
-        let starts: Vec<_> = starts.iter().map(|s| s.to_ascii_lowercase()).collect();
-        let ends: Vec<_> = ends.iter().map(|s| s.to_ascii_lowercase()).collect();
-        let mut results: Vec<DictionaryResult> = Vec::new();
+        let starts: BTreeSet<String> = starts.iter().map(|s| canonical(s)).collect();
+        let ends: BTreeSet<String> = ends.iter().map(|s| canonical(s)).collect();
+        let mut results: Vec<SwipeCandidate> = Vec::new();
         let mut visited = 0;
         let mut failure = None;
         // A filtering iterator can inspect an entire nonmatching subtree before
@@ -166,22 +170,22 @@ impl DictionaryBackend for PatriciaDictionaryBackend {
                 return VisitControl::Stop;
             }
             visited += 1;
-            if node.prefix.len() > MAX_WORD_BYTES
-                || !node
-                    .prefix
-                    .bytes()
-                    .all(|byte| letters.contains(&byte.to_ascii_lowercase()))
-            {
+            // Byte length is a resource bound only; graphemes decide matching.
+            if node.prefix.len() > MAX_WORD_BYTES {
                 return VisitControl::PruneChildren;
             }
-            let word = node.prefix.to_ascii_lowercase();
-            if !starts
-                .iter()
-                .any(|start| word.starts_with(start) || start.starts_with(&word))
-            {
+            // A node's last grapheme may still grow a combining mark below it,
+            // so only complete graphemes can prune: an unknown one anywhere
+            // before the end, or a settled first grapheme no gesture starts on.
+            let Some(form) = vocabulary.prefix_form(&node.prefix) else {
+                return VisitControl::PruneChildren;
+            };
+            let mut graphemes = form.graphemes(true);
+            let first = graphemes.next();
+            if graphemes.next().is_some() && first.is_some_and(|start| !starts.contains(start)) {
                 return VisitControl::PruneChildren;
             }
-            let descend = if word.len() < MAX_WORD_BYTES {
+            let descend = if node.prefix.len() < MAX_WORD_BYTES {
                 VisitControl::Continue
             } else {
                 VisitControl::PruneChildren
@@ -190,17 +194,25 @@ impl DictionaryBackend for PatriciaDictionaryBackend {
                 return descend;
             };
             if !node.is_terminal
-                || word.len() < 2
                 || node.is_not_a_word
                 || !usable(attributes)
                 || attributes.represents_beginning_of_sentence
-                || !starts.iter().any(|start| word.starts_with(start))
-                || !ends.iter().any(|end| word.ends_with(end))
             {
                 return descend;
             }
-            let candidate = DictionaryResult {
-                word,
+            let Some(scoring) = vocabulary.scoring_form(&node.prefix) else {
+                return descend;
+            };
+            let first = scoring.graphemes(true).next();
+            let last = scoring.graphemes(true).next_back();
+            if !first.is_some_and(|start| starts.contains(start))
+                || !last.is_some_and(|end| ends.contains(end))
+            {
+                return descend;
+            }
+            let candidate = SwipeCandidate {
+                word: node.prefix.clone(),
+                scoring,
                 confidence: f64::from(attributes.probability) / 255.0,
             };
             if let Some(index) = results.iter().position(|r| r.word == candidate.word) {
@@ -210,7 +222,7 @@ impl DictionaryBackend for PatriciaDictionaryBackend {
                 results.remove(index);
             }
             let index = results
-                .binary_search_by(|r| rank(r, &candidate))
+                .binary_search_by(|r| SwipeCandidate::rank(r, &candidate))
                 .unwrap_or_else(|i| i);
             if index < MAX_CANDIDATES {
                 results.insert(index, candidate);
@@ -444,18 +456,25 @@ mod tests {
         // not reject longer input yet; an over-limit sibling would create an
         // invalid fixture that also disrupts traversal of this valid word.
         let (_temp, backend) = swipe_fixture(&words);
+        let vocabulary = crate::swipe::SwipeVocabulary::from_labels(
+            &["a", "c", "o", "r", "s", "t", "u", "n"],
+            &[],
+        );
         let results = backend
             .swipe_candidates(
+                &vocabulary,
                 &["c".into()],
                 &["t".into(), "s".into()],
-                b"acorstun",
                 Instant::now() + Duration::from_secs(5),
             )
             .unwrap();
+        // Every stored spelling with a complete path is its own candidate, in
+        // its stored form; the capital entry is not folded into the lowercase one.
         assert_eq!(
             results.iter().map(|r| r.word.as_str()).collect::<Vec<_>>(),
-            vec!["cat", "cart", "cots", "cuts", longest.as_str()]
+            vec!["CAT", "cart", "cots", "cuts", "cat", longest.as_str()]
         );
+        assert_eq!(results[0].scoring, "cat");
         assert_eq!(results[0].confidence, 200.0 / 255.0);
         assert_eq!(
             results.len(),
@@ -469,15 +488,68 @@ mod tests {
 
     #[cfg(feature = "swipe")]
     #[test]
+    fn swipe_keeps_a_decomposed_accent_split_across_trie_nodes() {
+        use std::time::{Duration, Instant};
+        // "cafe" + combining acute shares its first four code points with
+        // "cafes", so the trie splits at "cafe": the accent lives in a child
+        // node. A prefix judged byte by byte, or by its incomplete last
+        // grapheme, would prune the accented word away.
+        let (_temp, backend) = swipe_fixture(&[
+            ("cafe\u{301}".into(), 200, 0),
+            ("cafes".into(), 100, 0),
+            ("caf\u{e9}s".into(), 90, 0),
+        ]);
+        let vocabulary =
+            crate::swipe::SwipeVocabulary::from_labels(&["c", "a", "f", "e", "\u{e9}"], &[]);
+        let results = backend
+            .swipe_candidates(
+                &vocabulary,
+                &["c".into()],
+                &["e\u{301}".into()],
+                Instant::now() + Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].word, "cafe\u{301}", "stored spelling is kept");
+        assert_eq!(results[0].scoring, "caf\u{e9}", "scored in composed form");
+
+        // Without an s on the layout neither plural has a complete path, and
+        // the accented base word is still found.
+        let without_s = backend
+            .swipe_candidates(
+                &vocabulary,
+                &["c".into()],
+                &["\u{e9}".into(), "s".into()],
+                Instant::now() + Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(
+            without_s
+                .iter()
+                .map(|r| r.word.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cafe\u{301}"]
+        );
+    }
+
+    #[cfg(feature = "swipe")]
+    #[test]
     fn swipe_expired_search_rejects_even_when_no_word_matches() {
         let (_temp, backend) = swipe_fixture(&[("cat".into(), 100, 0)]);
         let result = backend.swipe_candidates(
+            &latin_vocabulary(),
             &["c".into()],
             &["z".into()],
-            b"abcdefghijklmnopqrstuvwxyz",
             std::time::Instant::now(),
         );
         assert!(result.unwrap_err().contains("time budget"));
+    }
+
+    #[cfg(feature = "swipe")]
+    fn latin_vocabulary() -> crate::swipe::SwipeVocabulary {
+        let letters: Vec<String> = ('a'..='z').map(|c| c.to_string()).collect();
+        let labels: Vec<&str> = letters.iter().map(String::as_str).collect();
+        crate::swipe::SwipeVocabulary::from_labels(&labels, &[])
     }
 
     #[cfg(feature = "swipe")]
@@ -500,9 +572,9 @@ mod tests {
             .collect();
         let (_temp, backend) = swipe_fixture(&words);
         let result = backend.swipe_candidates(
+            &latin_vocabulary(),
             &["a".into()],
             &["z".into()],
-            b"abcdefghijklmnopqrstuvwxyz",
             Instant::now() + Duration::from_secs(60),
         );
         assert!(result.unwrap_err().contains("node budget"));
