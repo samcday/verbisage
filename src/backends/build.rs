@@ -717,7 +717,7 @@ fn build_patricia(
 #[cfg(feature = "patricia")]
 fn patricia_candidates(def: &ResolvedBackendDef, lang: &str, lp: &LanguagePaths) -> Vec<PathBuf> {
     use crate::dictionary::paths::{
-        PathOverride, SYSTEM_DATA_DIR, USER_DATA_DIR_REL, language_fallbacks,
+        PathOverride, SYSTEM_DATA_DIR, USER_DATA_DIR_REL, language_fallbacks, language_spellings,
     };
 
     if let Some(path) = &def.path {
@@ -746,7 +746,9 @@ fn patricia_candidates(def: &ResolvedBackendDef, lang: &str, lp: &LanguagePaths)
         PathOverride::Skip => {}
         PathOverride::Default => {
             for tag in &fallbacks {
-                candidates.push(system_dir.join(format!("{tag}.dict")));
+                for spelling in language_spellings(tag) {
+                    candidates.push(system_dir.join(format!("{spelling}.dict")));
+                }
             }
         }
     }
@@ -755,7 +757,9 @@ fn patricia_candidates(def: &ResolvedBackendDef, lang: &str, lp: &LanguagePaths)
         PathOverride::Skip => {}
         PathOverride::Default => {
             for tag in &fallbacks {
-                candidates.push(user_dir.join(format!("{tag}.dict")));
+                for spelling in language_spellings(tag) {
+                    candidates.push(user_dir.join(format!("{spelling}.dict")));
+                }
             }
         }
     }
@@ -882,6 +886,50 @@ mod tests {
     }
 
     #[test]
+    fn patricia_uses_the_equivalent_separator_spelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let def = patricia_def();
+
+        // A POSIX-named dictionary answers a BCP-47 selection.
+        write_dictionary(&temp.path().join("pt_PT.dict"), "pt_PT", "posixword");
+        let lp = LanguagePaths::new("pt-PT").with_system_dir(temp.path().to_path_buf());
+        let (dict, _, _) = build_patricia(&def, "pt-PT", &lp);
+        assert!(dict.contains("posixword"), "the separator alias must be usable");
+
+        // And the other way around.
+        let other = tempfile::tempdir().unwrap();
+        write_dictionary(&other.path().join("fr-FR.dict"), "fr-FR", "bcpword");
+        let lp = LanguagePaths::new("fr_FR").with_system_dir(other.path().to_path_buf());
+        let (dict, _, _) = build_patricia(&def, "fr_FR", &lp);
+        assert!(dict.contains("bcpword"), "the separator alias must be usable");
+    }
+
+    #[test]
+    fn patricia_prefers_the_exact_spelling_over_its_alias() {
+        let temp = tempfile::tempdir().unwrap();
+        write_dictionary(&temp.path().join("fr_FR.dict"), "fr_FR", "exactword");
+        write_dictionary(&temp.path().join("fr-FR.dict"), "fr-FR", "aliasword");
+        let def = patricia_def();
+        let lp = LanguagePaths::new("fr_FR").with_system_dir(temp.path().to_path_buf());
+
+        let (dict, _, _) = build_patricia(&def, "fr_FR", &lp);
+        assert!(dict.contains("exactword"), "the exact spelling must win");
+        assert!(!dict.contains("aliasword"));
+    }
+
+    #[test]
+    fn patricia_alias_does_not_reach_fixed_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        write_dictionary(&temp.path().join("pt_PT.dict"), "pt_PT", "posixword");
+        let mut def = patricia_def();
+        def.path = Some(temp.path().join("{lang}.dict").to_string_lossy().into_owned());
+        let lp = LanguagePaths::new("pt-PT");
+
+        let (dict, _, _) = build_patricia(&def, "pt-PT", &lp);
+        assert!(dict.is_empty(), "a fixed path must not use the spelling alias");
+    }
+
+    #[test]
     fn patricia_candidate_order_is_layer_then_specificity() {
         let temp = tempfile::tempdir().unwrap();
         let system = temp.path().join("system");
@@ -895,10 +943,14 @@ mod tests {
             path_strings(&patricia_candidates(&def, "fr_FR-br", &lp)),
             path_strings(&[
                 system.join("fr_FR-br.dict"),
+                system.join("fr-FR-br.dict"),
                 system.join("fr_FR.dict"),
+                system.join("fr-FR.dict"),
                 system.join("fr.dict"),
                 user.join("fr_FR-br.dict"),
+                user.join("fr-FR-br.dict"),
                 user.join("fr_FR.dict"),
+                user.join("fr-FR.dict"),
                 user.join("fr.dict"),
             ])
         );
@@ -986,7 +1038,9 @@ mod tests {
             path_strings(&patricia_candidates(&def, "fr_FR-br", &lp)),
             path_strings(&[
                 user.join("fr_FR-br.dict"),
+                user.join("fr-FR-br.dict"),
                 user.join("fr_FR.dict"),
+                user.join("fr-FR.dict"),
                 user.join("fr.dict"),
             ])
         );

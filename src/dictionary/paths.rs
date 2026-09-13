@@ -444,22 +444,45 @@ pub(crate) fn language_fallbacks(tag: &str) -> Vec<String> {
     tags
 }
 
+/// Equivalent spellings of one tag, exact first.
+///
+/// The integration accepts both the POSIX (`fr_FR`) and the BCP-47
+/// (`fr-FR`) region separator, so a dictionary written in one form stays
+/// usable when the caller selected the other. Only the separator is swapped;
+/// case and component order are preserved, and no components are dropped.
+/// Fixed paths and layer overrides do not use these aliases.
+pub(crate) fn language_spellings(tag: &str) -> Vec<String> {
+    let mut spellings = vec![tag.to_string()];
+    if tag.contains('_') {
+        spellings.push(tag.replace('_', "-"));
+    } else if tag.contains('-') {
+        spellings.push(tag.replace('-', "_"));
+    }
+    spellings
+}
+
 /// Search `dir` for files matching any `pattern`, trying each language
-/// fallback in order.  Returns the first match per pattern (most specific
-/// language wins). Only returns existing files.
+/// fallback in order and, within one tag, its exact spelling before the
+/// equivalent separator alias. Returns the first match per pattern (most
+/// specific language wins). Only returns existing files.
 fn find_files(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
     let dir = expand_dir(dir);
     let fallbacks = language_fallbacks(language);
     let mut files = Vec::new();
 
     for pattern in patterns {
-        for lang in &fallbacks {
-            let filename = pattern.replace("{lang}", lang);
-            let f = dir.join(&filename);
-            if f.exists() {
-                files.push(f);
-                break;
+        let mut found = None;
+        'spellings: for lang in &fallbacks {
+            for spelling in language_spellings(lang) {
+                let f = dir.join(pattern.replace("{lang}", &spelling));
+                if f.exists() {
+                    found = Some(f);
+                    break 'spellings;
+                }
             }
+        }
+        if let Some(f) = found {
+            files.push(f);
         }
     }
 
@@ -467,7 +490,8 @@ fn find_files(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
 }
 
 /// Generate all candidate paths for `dir` matching any `pattern`, trying each
-/// language fallback in order. Returns ALL candidates regardless of existence.
+/// language fallback in order and its equivalent spellings. Returns ALL
+/// candidates regardless of existence.
 fn find_all_candidates(dir: &Path, language: &str, patterns: &[&str]) -> Vec<PathBuf> {
     let dir = expand_dir(dir);
     let fallbacks = language_fallbacks(language);
@@ -475,8 +499,9 @@ fn find_all_candidates(dir: &Path, language: &str, patterns: &[&str]) -> Vec<Pat
 
     for pattern in patterns {
         for lang in &fallbacks {
-            let filename = pattern.replace("{lang}", lang);
-            files.push(dir.join(&filename));
+            for spelling in language_spellings(lang) {
+                files.push(dir.join(pattern.replace("{lang}", &spelling)));
+            }
         }
     }
 
@@ -607,6 +632,34 @@ mod tests {
         );
         std::fs::remove_file(temp.path().join("fr.dic")).unwrap();
         assert!(lp.resolve_system(&["{lang}.dic"]).is_empty());
+    }
+
+    #[test]
+    fn language_spellings_keep_case_and_components() {
+        assert_eq!(
+            language_spellings("fr_FR-br"),
+            vec!["fr_FR-br", "fr-FR-br"]
+        );
+        assert_eq!(language_spellings("pt-PT"), vec!["pt-PT", "pt_PT"]);
+        assert_eq!(language_spellings("en"), vec!["en"]);
+    }
+
+    #[test]
+    fn find_files_tries_the_equivalent_separator() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("pt_PT.dic"), "posix").unwrap();
+        let lp = LanguagePaths::new("pt-PT").with_system_dir(temp.path().to_path_buf());
+        assert_eq!(
+            lp.resolve_system(&["{lang}.dic"]),
+            vec![temp.path().join("pt_PT.dic")]
+        );
+
+        // The exact spelling is still preferred when both exist.
+        std::fs::write(temp.path().join("pt-PT.dic"), "bcp").unwrap();
+        assert_eq!(
+            lp.resolve_system(&["{lang}.dic"]),
+            vec![temp.path().join("pt-PT.dic")]
+        );
     }
 
     #[test]
