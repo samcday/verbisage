@@ -261,6 +261,9 @@ impl DaemonHandler {
         lang: &str,
     ) -> Result<Vec<DictionaryResult>, String> {
         self.validate_complete(input, max)?;
+        if let Some(points) = input.spatial.points() {
+            validate_points(points, input.input)?;
+        }
         if max == 0 {
             return Ok(Vec::new());
         }
@@ -685,10 +688,17 @@ impl DaemonHandler {
     }
 }
 
-/// Touch points, when present, must line up one-to-one with the input chars.
+/// Touch points, when present, must be finite and line up one-to-one with the
+/// input chars.
 fn validate_points(points: &[crate::spatial::TouchPoint], word: &str) -> Result<(), String> {
     if points.is_empty() {
         return Ok(());
+    }
+    if points
+        .iter()
+        .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
+        return Err("touch point coordinates must be finite".into());
     }
     let expected = word.chars().count();
     if points.len() != expected {
@@ -1004,5 +1014,37 @@ mod tests {
             lang: None,
         });
         assert!(aligned.error.is_none(), "{:?}", aligned.error);
+    }
+
+    #[test]
+    fn complete_with_rejects_non_finite_direct_touch_points() {
+        let handler = DaemonHandler::new(
+            Box::new(FileDictionaryBackend::new()),
+            None,
+            None,
+            "en_US".into(),
+        );
+        let layout = std::sync::Arc::new(keyboard_layout::RectKeyLayout::new(
+            vec![keyboard_layout::RectKey::from_rect(
+                Some("h".into()),
+                Vec::new(),
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+            )],
+            &[],
+        ));
+        let input = CompletionInput {
+            input: "helo",
+            spatial: crate::spatial::SpatialInput::Touch {
+                layout,
+                points: vec![crate::spatial::TouchPoint::new(f32::NAN, 0.0)],
+            },
+            ..Default::default()
+        };
+
+        let error = handler.complete_with(&input, 6, "en_US").unwrap_err();
+        assert!(error.contains("finite"), "unexpected error: {error}");
     }
 }

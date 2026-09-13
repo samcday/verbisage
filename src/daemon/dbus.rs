@@ -108,6 +108,37 @@ fn log_and_err(msg: String) -> FdoError {
     FdoError::Failed(msg)
 }
 
+/// Narrow D-Bus f64 touch coordinates to the f32 geometry space.
+///
+/// Non-finite values and values outside the f32 range are invalid arguments,
+/// not values to clamp or let saturate. Rejecting them before the handler is
+/// entered keeps a bad call from becoming a late generic failure, including
+/// when `max` is zero and no backend would otherwise be reached.
+fn checked_touch_points(
+    points: &[(f64, f64)],
+) -> Result<Vec<crate::spatial::TouchPoint>, FdoError> {
+    let limit = f32::MAX as f64;
+    let invalid = || {
+        FdoError::InvalidArgs(
+            "touch point coordinates must be finite and representable as f32".into(),
+        )
+    };
+
+    points
+        .iter()
+        .map(|&(x, y)| {
+            if !x.is_finite() || !y.is_finite() || x.abs() > limit || y.abs() > limit {
+                return Err(invalid());
+            }
+            let point = crate::spatial::TouchPoint::new(x as f32, y as f32);
+            if !point.x.is_finite() || !point.y.is_finite() {
+                return Err(invalid());
+            }
+            Ok(point)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod completion_tests {
     use super::*;
@@ -143,6 +174,86 @@ mod completion_tests {
             self.0.store(true, Ordering::SeqCst);
         }
     }
+
+    fn empty_service() -> VerbisageDbus {
+        VerbisageDbus::new(DaemonHandler::new(
+            Box::new(crate::dictionary::FileDictionaryBackend::new()),
+            None,
+            None,
+            "en_US".into(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn non_finite_or_unrepresentable_touch_points_are_invalid_args() {
+        let service = empty_service();
+        let invalid = [
+            (f64::NAN, 0.0),
+            (0.0, f64::NAN),
+            (f64::INFINITY, 0.0),
+            (0.0, f64::NEG_INFINITY),
+            (f64::MAX, 0.0),
+            (-1.0e39, 0.0),
+        ];
+
+        for (x, y) in invalid {
+            let error = service
+                .complete_with(
+                    "h".into(),
+                    vec![],
+                    0,
+                    "en_US".into(),
+                    ("nfc".into(), "full".into()),
+                    ("nfc".into(), "full".into()),
+                    "insensitive".into(),
+                    String::new(),
+                    vec![(x, y)],
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, FdoError::InvalidArgs(_)),
+                "complete_with({x}, {y}) was not InvalidArgs: {error}"
+            );
+
+            let error = service
+                .suggest("h", 6, "en_US", "", vec![(x, y)])
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, FdoError::InvalidArgs(_)),
+                "suggest({x}, {y}) was not InvalidArgs: {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn representable_fractional_and_negative_touch_points_are_accepted() {
+        let service = empty_service();
+
+        let rows = service
+            .complete_with(
+                "h".into(),
+                vec![],
+                0,
+                "en_US".into(),
+                ("nfc".into(), "full".into()),
+                ("nfc".into(), "full".into()),
+                "insensitive".into(),
+                String::new(),
+                vec![(-12.5, 0.25), (3.0, -4.75)],
+            )
+            .await
+            .unwrap();
+        assert!(rows.is_empty());
+
+        let suggestions = service
+            .suggest("h", 6, "en_US", "", vec![(-12.5, 0.25)])
+            .await
+            .unwrap();
+        assert!(suggestions.is_empty());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn timed_out_completion_keeps_both_worker_permits_until_exit() {
         let release = Arc::new(AtomicBool::new(false));
@@ -264,10 +375,7 @@ impl VerbisageDbus {
                 FdoError::InvalidArgs(format!("unknown layout token '{layout}'"))
             })?)
         };
-        let points = points
-            .into_iter()
-            .map(|(x, y)| crate::spatial::TouchPoint::new(x as f32, y as f32))
-            .collect();
+        let points = checked_touch_points(&points)?;
         self.handler
             .suggest_with(word, max as usize, lang, layout, points)
             .map_err(log_and_err)
@@ -336,6 +444,10 @@ impl VerbisageDbus {
             case_preference: serde_json::from_value(serde_json::json!(case_preference))
                 .map_err(|e| FdoError::InvalidArgs(e.to_string()))?,
         };
+        // Validate and narrow before the request, so a bad coordinate is an
+        // argument error even when max is zero and the early return would
+        // otherwise answer with an empty result.
+        let points = checked_touch_points(&points)?;
         self.completion_request(
             super::protocol::CompleteParams {
                 word,
@@ -343,10 +455,7 @@ impl VerbisageDbus {
                 max: max as usize,
                 options,
                 layout: (!layout.is_empty()).then_some(layout),
-                points: points
-                    .into_iter()
-                    .map(|(x, y)| [x as f32, y as f32])
-                    .collect(),
+                points: points.into_iter().map(|point| [point.x, point.y]).collect(),
             },
             lang,
         )
