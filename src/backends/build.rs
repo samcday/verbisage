@@ -399,6 +399,10 @@ fn build_hunspell(
 
 /// Search for Hunspell `.aff` and `.dic` files, preferring explicit paths
 /// set on the backend def, then falling back to system directories.
+///
+/// This resolution is exact-tag only: unlike the pattern and Patricia paths it
+/// does not try regional or base-language fallbacks in this batch, so a
+/// regional request needs that exact Hunspell pair installed.
 #[cfg(feature = "hunspell")]
 fn find_hunspell_files(
     _def: &ResolvedBackendDef,
@@ -697,16 +701,28 @@ fn build_patricia(
     }
 }
 
-/// Candidate Patricia dictionary files, system layer first then user.
+/// Candidate Patricia dictionary files in preference order.
 ///
+/// Within a layer the language fallbacks are tried from most to least
+/// specific, so `fr_FR-br` reaches `fr_FR-br.dict` first, then `fr_FR.dict`,
+/// then `fr.dict`. The system layer is always resolved before the user layer,
+/// preserving the existing layer precedence: an explicit system dictionary
+/// wins over a user dictionary for the same request.
+///
+/// An explicit `File` override or a `Skip` replaces that layer's directory
+/// search, so fixed paths stay fixed and a skipped layer contributes nothing.
 /// When a directory was not explicitly configured, the global data dir gets a
 /// `patricia` namespace (`/usr/share/verbisage/patricia`,
 /// `~/.local/share/verbisage/patricia`).
 #[cfg(feature = "patricia")]
 fn patricia_candidates(def: &ResolvedBackendDef, lang: &str, lp: &LanguagePaths) -> Vec<PathBuf> {
-    use crate::dictionary::paths::{PathOverride, SYSTEM_DATA_DIR, USER_DATA_DIR_REL};
+    use crate::dictionary::paths::{
+        PathOverride, SYSTEM_DATA_DIR, USER_DATA_DIR_REL, language_fallbacks,
+    };
 
     if let Some(path) = &def.path {
+        // A per-backend explicit path substitutes the exact tag; it never
+        // falls back to another file.
         return vec![expand_tilde(&path.replace("{lang}", lang))];
     }
 
@@ -722,20 +738,26 @@ fn patricia_candidates(def: &ResolvedBackendDef, lang: &str, lp: &LanguagePaths)
     };
     let system_dir = expand_tilde(&system_base.to_string_lossy());
     let user_dir = expand_tilde(&user_base.to_string_lossy());
+    let fallbacks = language_fallbacks(lang);
 
-    // Interleave the layers: system first, then user, honouring each layer's
-    // `File` override or `Skip`. Patricia wraps a single file, so the first
-    // existing candidate wins.
     let mut candidates: Vec<PathBuf> = Vec::new();
     match &lp.system_file_override {
         PathOverride::File(path) => candidates.push(expand_tilde(path.to_str().unwrap_or(""))),
         PathOverride::Skip => {}
-        PathOverride::Default => candidates.push(system_dir.join(format!("{lang}.dict"))),
+        PathOverride::Default => {
+            for tag in &fallbacks {
+                candidates.push(system_dir.join(format!("{tag}.dict")));
+            }
+        }
     }
     match &lp.user_file_override {
         PathOverride::File(path) => candidates.push(expand_tilde(path.to_str().unwrap_or(""))),
         PathOverride::Skip => {}
-        PathOverride::Default => candidates.push(user_dir.join(format!("{lang}.dict"))),
+        PathOverride::Default => {
+            for tag in &fallbacks {
+                candidates.push(user_dir.join(format!("{tag}.dict")));
+            }
+        }
     }
     candidates
 }
@@ -757,33 +779,44 @@ fn build_patricia(
 #[cfg(all(test, feature = "patricia"))]
 mod tests {
     use super::*;
+    use crate::dictionary::paths::PathOverride;
+
+    fn write_dictionary(path: &std::path::Path, tag: &str, word: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut native = patricia_dict::Dictionary::create_empty_v403(path, tag).unwrap();
+        native.append(word, 200).unwrap();
+        drop(native);
+    }
+
+    fn patricia_def() -> ResolvedBackendDef {
+        let (assignment, _) =
+            crate::backends::resolve_chain_with_backcompat("patricia", None).unwrap();
+        assignment.segments[0].def.clone()
+    }
+
+    fn path_strings(paths: &[PathBuf]) -> Vec<String> {
+        paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect()
+    }
 
     #[test]
     fn patricia_resolves_from_language_path_dirs() {
         let temp = tempfile::tempdir().unwrap();
-        let dict_path = temp.path().join("en_US.dict");
-        let mut native = patricia_dict::Dictionary::create_empty_v403(&dict_path, "en_US").unwrap();
-        native.append("fixtureword", 200).unwrap();
-        drop(native);
+        write_dictionary(&temp.path().join("en_US.dict"), "en_US", "fixtureword");
 
-        let (assignment, _) =
-            crate::backends::resolve_chain_with_backcompat("patricia", None).unwrap();
-        let def = &assignment.segments[0].def;
+        let def = patricia_def();
         let lp = LanguagePaths::new("en_US").with_system_dir(temp.path().to_path_buf());
-        let (dict, _, _) = build_patricia(def, "en_US", &lp);
+        let (dict, _, _) = build_patricia(&def, "en_US", &lp);
         assert!(!dict.is_empty());
     }
 
     #[test]
     fn patricia_default_dirs_are_namespaced() {
-        let (assignment, _) =
-            crate::backends::resolve_chain_with_backcompat("patricia", None).unwrap();
-        let def = &assignment.segments[0].def;
+        let def = patricia_def();
         let lp = LanguagePaths::new("en_US");
-        let rendered: Vec<String> = patricia_candidates(def, "en_US", &lp)
-            .iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect();
+        let rendered = path_strings(&patricia_candidates(&def, "en_US", &lp));
         assert!(
             rendered
                 .iter()
@@ -804,19 +837,160 @@ mod tests {
         let system = temp.path().join("system");
         let user = temp.path().join("user");
         std::fs::create_dir_all(&system).unwrap();
-        std::fs::create_dir_all(&user).unwrap();
-        let dict_path = user.join("en_US.dict");
-        let mut native = patricia_dict::Dictionary::create_empty_v403(&dict_path, "en_US").unwrap();
-        native.append("fixtureword", 200).unwrap();
-        drop(native);
+        write_dictionary(&user.join("en_US.dict"), "en_US", "fixtureword");
 
-        let (assignment, _) =
-            crate::backends::resolve_chain_with_backcompat("patricia", None).unwrap();
-        let def = &assignment.segments[0].def;
+        let def = patricia_def();
         let lp = LanguagePaths::new("en_US")
             .with_system_dir(system)
             .with_user_dir(user);
-        let (dict, _, _) = build_patricia(def, "en_US", &lp);
+        let (dict, _, _) = build_patricia(&def, "en_US", &lp);
         assert!(!dict.is_empty());
+    }
+
+    #[test]
+    fn patricia_prefers_exact_then_region_then_base() {
+        let temp = tempfile::tempdir().unwrap();
+        write_dictionary(&temp.path().join("fr.dict"), "fr", "baseword");
+        write_dictionary(&temp.path().join("fr_FR.dict"), "fr_FR", "regionword");
+        write_dictionary(&temp.path().join("fr_FR-br.dict"), "fr_FR-br", "exactword");
+        let def = patricia_def();
+        let lp = LanguagePaths::new("fr_FR-br").with_system_dir(temp.path().to_path_buf());
+
+        let (dict, _, _) = build_patricia(&def, "fr_FR-br", &lp);
+        assert!(dict.contains("exactword"), "the exact tag must win");
+        assert!(!dict.contains("regionword"));
+        assert!(!dict.contains("baseword"));
+
+        std::fs::remove_dir_all(temp.path().join("fr_FR-br.dict")).unwrap();
+        let (dict, _, _) = build_patricia(&def, "fr_FR-br", &lp);
+        assert!(
+            dict.contains("regionword"),
+            "the regional fallback must win"
+        );
+        assert!(!dict.contains("baseword"));
+
+        std::fs::remove_dir_all(temp.path().join("fr_FR.dict")).unwrap();
+        let (dict, _, _) = build_patricia(&def, "fr_FR-br", &lp);
+        assert!(dict.contains("baseword"), "the base fallback must win");
+
+        std::fs::remove_dir_all(temp.path().join("fr.dict")).unwrap();
+        let (dict, _, _) = build_patricia(&def, "fr_FR-br", &lp);
+        assert!(
+            dict.is_empty(),
+            "complete absence is an unavailable backend"
+        );
+    }
+
+    #[test]
+    fn patricia_candidate_order_is_layer_then_specificity() {
+        let temp = tempfile::tempdir().unwrap();
+        let system = temp.path().join("system");
+        let user = temp.path().join("user");
+        let def = patricia_def();
+        let lp = LanguagePaths::new("fr_FR-br")
+            .with_system_dir(system.clone())
+            .with_user_dir(user.clone());
+
+        assert_eq!(
+            path_strings(&patricia_candidates(&def, "fr_FR-br", &lp)),
+            path_strings(&[
+                system.join("fr_FR-br.dict"),
+                system.join("fr_FR.dict"),
+                system.join("fr.dict"),
+                user.join("fr_FR-br.dict"),
+                user.join("fr_FR.dict"),
+                user.join("fr.dict"),
+            ])
+        );
+    }
+
+    #[test]
+    fn patricia_system_layer_precedes_user_specificity() {
+        let temp = tempfile::tempdir().unwrap();
+        let system = temp.path().join("system");
+        let user = temp.path().join("user");
+        write_dictionary(&system.join("fr.dict"), "fr", "systembase");
+        write_dictionary(&user.join("fr_FR.dict"), "fr_FR", "userregion");
+        let def = patricia_def();
+        let lp = LanguagePaths::new("fr_FR-br")
+            .with_system_dir(system)
+            .with_user_dir(user);
+
+        let (dict, _, _) = build_patricia(&def, "fr_FR-br", &lp);
+        assert!(
+            dict.contains("systembase"),
+            "the system layer precedes the user layer"
+        );
+        assert!(!dict.contains("userregion"));
+    }
+
+    #[test]
+    fn patricia_explicit_path_stays_fixed() {
+        let temp = tempfile::tempdir().unwrap();
+        write_dictionary(&temp.path().join("fr_FR.dict"), "fr_FR", "regionword");
+        let mut def = patricia_def();
+        def.path = Some(
+            temp.path()
+                .join("{lang}.dict")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let lp = LanguagePaths::new("fr_FR-br");
+
+        assert_eq!(
+            path_strings(&patricia_candidates(&def, "fr_FR-br", &lp)),
+            path_strings(&[temp.path().join("fr_FR-br.dict")])
+        );
+        let (dict, _, _) = build_patricia(&def, "fr_FR-br", &lp);
+        assert!(dict.is_empty(), "an explicit path never falls back");
+
+        write_dictionary(&temp.path().join("fr_FR-br.dict"), "fr_FR-br", "exactword");
+        let (dict, _, _) = build_patricia(&def, "fr_FR-br", &lp);
+        assert!(dict.contains("exactword"));
+    }
+
+    #[test]
+    fn patricia_file_override_and_skip_replace_a_layer() {
+        let temp = tempfile::tempdir().unwrap();
+        let system = temp.path().join("system");
+        let user = temp.path().join("user");
+        let fixed = temp.path().join("fixed.dict");
+        write_dictionary(&fixed, "fixed", "fixedword");
+        write_dictionary(&system.join("fr.dict"), "fr", "systembase");
+        write_dictionary(&user.join("fr.dict"), "fr", "userbase");
+        let def = patricia_def();
+
+        // A fixed system file is the whole system layer.
+        let lp = LanguagePaths {
+            system_file_override: PathOverride::File(fixed.clone()),
+            user_file_override: PathOverride::Skip,
+            ..LanguagePaths::new("fr_FR-br")
+        }
+        .with_system_dir(system.clone())
+        .with_user_dir(user.clone());
+        assert_eq!(
+            path_strings(&patricia_candidates(&def, "fr_FR-br", &lp)),
+            path_strings(&[fixed.clone()])
+        );
+        let (dict, _, _) = build_patricia(&def, "fr_FR-br", &lp);
+        assert!(dict.contains("fixedword"));
+
+        // Skipping the system layer leaves the user fallback chain.
+        let lp = LanguagePaths {
+            system_file_override: PathOverride::Skip,
+            ..LanguagePaths::new("fr_FR-br")
+        }
+        .with_system_dir(system)
+        .with_user_dir(user.clone());
+        assert_eq!(
+            path_strings(&patricia_candidates(&def, "fr_FR-br", &lp)),
+            path_strings(&[
+                user.join("fr_FR-br.dict"),
+                user.join("fr_FR.dict"),
+                user.join("fr.dict"),
+            ])
+        );
+        let (dict, _, _) = build_patricia(&def, "fr_FR-br", &lp);
+        assert!(dict.contains("userbase"));
     }
 }

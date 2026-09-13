@@ -956,6 +956,24 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "patricia")]
+    #[test]
+    fn handler_resolves_regional_patricia_dictionary_through_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        for (tag, word) in [("fr_FR", "regionword"), ("fr", "baseword")] {
+            let path = dir.path().join(format!("{tag}.dict"));
+            let mut native = patricia_dict::Dictionary::create_empty_v403(&path, tag).unwrap();
+            native.append(word, 200).unwrap();
+        }
+        let mut cfg = DaemonConfig::default_for("fr_FR-br");
+        cfg.backend_chain = "patricia".into();
+        cfg.language_paths.system_dir = dir.path().to_path_buf();
+        let handler = DaemonHandler::with_config(cfg);
+
+        assert!(handler.is_correct("regionword", "fr_FR-br").unwrap());
+        assert!(!handler.is_correct("baseword", "fr_FR-br").unwrap());
+    }
+
     #[test]
     fn handler_rejects_oversized_layout_uploads() {
         let handler = DaemonHandler::new(

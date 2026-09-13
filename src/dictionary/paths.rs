@@ -238,9 +238,10 @@ impl LanguagePaths {
 
     /// Convenience: word-list dictionary files (file backend).
     ///
-    /// For each pattern, first tries the full language tag (e.g. `en_US`),
-    /// then falls back to the base language (e.g. `en`).  Files are checked
-    /// in system-then-user order so user frequencies take precedence.
+    /// For each pattern, tries each [`language_fallbacks`] tag from most to
+    /// least specific within a layer. The system layer is resolved before the
+    /// user layer, so an explicit system dictionary still wins over a user
+    /// dictionary for the same request.
     pub fn resolve_dict_files(&self) -> Vec<PathBuf> {
         let sys_strs: Vec<&str> = self
             .system_dict_patterns
@@ -403,16 +404,41 @@ impl LanguagePaths {
 
 /// Generate language tags to try, from most to least specific.
 ///
-/// For `en_US`: `["en_US", "en"]`
-/// For `de`:    `["de"]`
-/// For `pt_BR`: `["pt_BR", "pt"]`
-fn language_fallbacks(tag: &str) -> Vec<String> {
-    let mut tags = Vec::with_capacity(2);
-    tags.push(tag.to_string());
-    if let Some(underscore) = tag.find('_') {
-        let base = &tag[..underscore];
-        if !base.is_empty() {
-            tags.push(base.to_string());
+/// The caller's tag is preserved exactly and first. Variant subtags are then
+/// dropped from the right (`-` separates them), and afterwards
+/// underscore-separated components are dropped the same way. A full
+/// regional/variant tag therefore reaches its regional form and then its base
+/// language without changing the caller's spelling:
+///
+/// | Tag | Fallbacks |
+/// |---|---|
+/// | `fr_FR-br` | `fr_FR-br`, `fr_FR`, `fr` |
+/// | `en_US` | `en_US`, `en` |
+/// | `zh-Hant-TW` | `zh-Hant-TW`, `zh-Hant`, `zh` |
+/// | `pt_BR` | `pt_BR`, `pt` |
+/// | `de` | `de` |
+///
+/// Explicitly fixed paths do not use this chain; those stay fixed.
+pub(crate) fn language_fallbacks(tag: &str) -> Vec<String> {
+    let mut tags = vec![tag.to_string()];
+    let mut current = tag;
+
+    while let Some(index) = current.rfind('-') {
+        current = &current[..index];
+        if current.is_empty() {
+            break;
+        }
+        if tags.last().map(String::as_str) != Some(current) {
+            tags.push(current.to_string());
+        }
+    }
+    while let Some(index) = current.rfind('_') {
+        if index == 0 {
+            break;
+        }
+        current = &current[..index];
+        if tags.last().map(String::as_str) != Some(current) {
+            tags.push(current.to_string());
         }
     }
     tags
@@ -541,5 +567,59 @@ mod tests {
     fn language_fallbacks_triple() {
         let tags = language_fallbacks("pt_BR");
         assert_eq!(tags, vec!["pt_BR", "pt"]);
+    }
+
+    #[test]
+    fn language_fallbacks_variant_then_region_then_base() {
+        assert_eq!(
+            language_fallbacks("fr_FR-br"),
+            vec!["fr_FR-br", "fr_FR", "fr"]
+        );
+        assert_eq!(
+            language_fallbacks("zh-Hant-TW"),
+            vec!["zh-Hant-TW", "zh-Hant", "zh"]
+        );
+        assert_eq!(language_fallbacks("fr-FR"), vec!["fr-FR", "fr"]);
+        assert_eq!(language_fallbacks("fr"), vec!["fr"]);
+    }
+
+    #[test]
+    fn find_files_prefers_region_then_base() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("fr.dic"), "base").unwrap();
+        std::fs::write(temp.path().join("fr_FR.dic"), "region").unwrap();
+        std::fs::write(temp.path().join("fr_FR-br.dic"), "exact").unwrap();
+        let lp = LanguagePaths::new("fr_FR-br").with_system_dir(temp.path().to_path_buf());
+
+        assert_eq!(
+            lp.resolve_system(&["{lang}.dic"]),
+            vec![temp.path().join("fr_FR-br.dic")]
+        );
+        std::fs::remove_file(temp.path().join("fr_FR-br.dic")).unwrap();
+        assert_eq!(
+            lp.resolve_system(&["{lang}.dic"]),
+            vec![temp.path().join("fr_FR.dic")]
+        );
+        std::fs::remove_file(temp.path().join("fr_FR.dic")).unwrap();
+        assert_eq!(
+            lp.resolve_system(&["{lang}.dic"]),
+            vec![temp.path().join("fr.dic")]
+        );
+        std::fs::remove_file(temp.path().join("fr.dic")).unwrap();
+        assert!(lp.resolve_system(&["{lang}.dic"]).is_empty());
+    }
+
+    #[test]
+    fn fixed_file_override_does_not_fall_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixed = temp.path().join("fixed-wordlist.dic");
+        std::fs::write(&fixed, "fixed").unwrap();
+        let lp = LanguagePaths {
+            system_file_override: PathOverride::File(fixed.clone()),
+            user_file_override: PathOverride::Skip,
+            ..LanguagePaths::new("fr_FR-br")
+        };
+
+        assert_eq!(lp.resolve_dict_files(), vec![fixed]);
     }
 }
