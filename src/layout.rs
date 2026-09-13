@@ -38,8 +38,114 @@ pub struct LayoutUpload {
     pub ignored_labels: Vec<String>,
 }
 
+/// Raw upload size accepted at the D-Bus string boundary, before parsing.
+pub const MAX_LAYOUT_UPLOAD_BYTES: usize = 64 * 1024;
+/// Total keys accepted in one upload, across both representations and
+/// including gap/spacer keys.
+pub const MAX_LAYOUT_KEYS: usize = 256;
+/// Physical rows accepted in one upload.
+pub const MAX_LAYOUT_ROWS: usize = 32;
+/// Alternate labels accepted on a single key.
+pub const MAX_LAYOUT_ALTERNATES_PER_KEY: usize = 32;
+/// Ignored labels accepted in one upload, counting both lists.
+pub const MAX_LAYOUT_IGNORED_LABELS: usize = 256;
+/// Bytes accepted in one label.
+pub const MAX_LAYOUT_LABEL_BYTES: usize = 256;
+/// Bytes accepted across every label of one upload.
+pub const MAX_LAYOUT_LABEL_TOTAL_BYTES: usize = 32 * 1024;
+
+fn add_label_bytes(label: &str, total: &mut usize) -> Result<(), String> {
+    if label.len() > MAX_LAYOUT_LABEL_BYTES {
+        return Err(format!(
+            "layout label exceeds {MAX_LAYOUT_LABEL_BYTES} bytes"
+        ));
+    }
+    *total += label.len();
+    Ok(())
+}
+
+/// Reject an upload that exceeds the documented structure budgets.
+///
+/// Both representations are counted when both are supplied, because the
+/// unused one is still deserialized and hashed into the token. The raw byte
+/// bound for D-Bus strings is applied separately by the caller before JSON
+/// parsing; typed callers are checked here.
+pub fn validate_upload(upload: &LayoutUpload) -> Result<(), String> {
+    let mut keys = 0usize;
+    let mut rows = 0usize;
+    let mut ignored = 0usize;
+    let mut label_bytes = 0usize;
+
+    for label in &upload.ignored_labels {
+        add_label_bytes(label, &mut label_bytes)?;
+        ignored += 1;
+    }
+
+    if let Some(explicit) = &upload.keys {
+        keys += explicit.len();
+        for key in explicit {
+            add_label_bytes(&key.label, &mut label_bytes)?;
+            if key.alt_labels.len() > MAX_LAYOUT_ALTERNATES_PER_KEY {
+                return Err(format!(
+                    "layout key has too many alternate labels (max {MAX_LAYOUT_ALTERNATES_PER_KEY})"
+                ));
+            }
+            for label in &key.alt_labels {
+                add_label_bytes(label, &mut label_bytes)?;
+            }
+        }
+    }
+
+    if let Some(physical) = &upload.rows {
+        rows += physical.rows.len();
+        for label in &physical.ignored_labels {
+            add_label_bytes(label, &mut label_bytes)?;
+            ignored += 1;
+        }
+        for row in &physical.rows {
+            keys += row.keys.len();
+            for key in &row.keys {
+                if let Some(label) = &key.main {
+                    add_label_bytes(label, &mut label_bytes)?;
+                }
+                if key.secondary.len() > MAX_LAYOUT_ALTERNATES_PER_KEY {
+                    return Err(format!(
+                        "layout key has too many secondary labels (max {MAX_LAYOUT_ALTERNATES_PER_KEY})"
+                    ));
+                }
+                for label in &key.secondary {
+                    add_label_bytes(label, &mut label_bytes)?;
+                }
+            }
+        }
+    }
+
+    if keys > MAX_LAYOUT_KEYS {
+        return Err(format!(
+            "layout upload has too many keys (max {MAX_LAYOUT_KEYS})"
+        ));
+    }
+    if rows > MAX_LAYOUT_ROWS {
+        return Err(format!(
+            "layout upload has too many rows (max {MAX_LAYOUT_ROWS})"
+        ));
+    }
+    if ignored > MAX_LAYOUT_IGNORED_LABELS {
+        return Err(format!(
+            "layout upload has too many ignored labels (max {MAX_LAYOUT_IGNORED_LABELS})"
+        ));
+    }
+    if label_bytes > MAX_LAYOUT_LABEL_TOTAL_BYTES {
+        return Err(format!(
+            "layout upload has too many label bytes (max {MAX_LAYOUT_LABEL_TOTAL_BYTES})"
+        ));
+    }
+    Ok(())
+}
+
 /// Build a [`RectKeyLayout`] from an upload.
 pub fn build_layout(upload: &LayoutUpload) -> Result<RectKeyLayout, String> {
+    validate_upload(upload)?;
     if let Some(keys) = &upload.keys {
         if keys.is_empty() {
             return Err("layout upload contains no keys".into());
@@ -75,6 +181,7 @@ pub fn build_layout(upload: &LayoutUpload) -> Result<RectKeyLayout, String> {
 
 /// A stable content-hash token for an upload, used to deduplicate the cache.
 pub fn layout_token(upload: &LayoutUpload) -> Result<String, String> {
+    validate_upload(upload)?;
     let bytes = serde_json::to_vec(upload).map_err(|error| error.to_string())?;
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
@@ -198,6 +305,43 @@ mod tests {
         }
     }
 
+    fn keys_upload(count: usize) -> LayoutUpload {
+        LayoutUpload {
+            keys: Some(
+                (0..count)
+                    .map(|index| KeyBox {
+                        label: format!("k{index}"),
+                        alt_labels: Vec::new(),
+                        left: 0.0,
+                        top: 0.0,
+                        width: 1.0,
+                        height: 1.0,
+                    })
+                    .collect(),
+            ),
+            rows: None,
+            ignored_labels: Vec::new(),
+        }
+    }
+
+    fn rows_upload_with(rows: usize, keys_per_row: usize) -> LayoutUpload {
+        LayoutUpload {
+            keys: None,
+            rows: Some(RowLayout::new(
+                (0..rows)
+                    .map(|_| {
+                        Row::new(
+                            (0..keys_per_row)
+                                .map(|index| KeySpec::key(format!("k{index}")))
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            )),
+            ignored_labels: Vec::new(),
+        }
+    }
+
     #[test]
     fn builds_from_rows() {
         let layout = build_layout(&rows_upload()).unwrap();
@@ -279,5 +423,102 @@ mod tests {
         let token = register(&mut cache, &upload).unwrap();
         assert!(cache.forget(&token));
         assert!(cache.get(&token).is_none());
+    }
+
+    #[test]
+    fn upload_budgets_are_enforced_at_the_boundary() {
+        // Keys, in either representation, and gaps count too.
+        assert!(validate_upload(&keys_upload(MAX_LAYOUT_KEYS)).is_ok());
+        assert!(validate_upload(&keys_upload(MAX_LAYOUT_KEYS + 1)).is_err());
+        let gaps = LayoutUpload {
+            keys: None,
+            rows: Some(RowLayout::new(vec![Row::new(
+                (0..MAX_LAYOUT_KEYS + 1)
+                    .map(|_| KeySpec::gap(1.0))
+                    .collect(),
+            )])),
+            ignored_labels: Vec::new(),
+        };
+        assert!(validate_upload(&gaps).is_err());
+
+        // Rows.
+        assert!(validate_upload(&rows_upload_with(MAX_LAYOUT_ROWS, 1)).is_ok());
+        assert!(validate_upload(&rows_upload_with(MAX_LAYOUT_ROWS + 1, 1)).is_err());
+
+        // Both representations are counted, even though `keys` wins.
+        let mut both = keys_upload(MAX_LAYOUT_KEYS);
+        both.rows = rows_upload_with(1, 1).rows;
+        assert!(validate_upload(&both).is_err());
+    }
+
+    #[test]
+    fn alternate_and_ignored_label_budgets_are_enforced() {
+        let mut alternates = keys_upload(1);
+        if let Some(keys) = &mut alternates.keys {
+            keys[0].alt_labels = (0..MAX_LAYOUT_ALTERNATES_PER_KEY)
+                .map(|index| format!("ä{index}"))
+                .collect();
+        }
+        assert!(validate_upload(&alternates).is_ok());
+        if let Some(keys) = &mut alternates.keys {
+            keys[0].alt_labels.push("å".into());
+        }
+        assert!(validate_upload(&alternates).is_err());
+
+        let mut ignored = keys_upload(1);
+        ignored.ignored_labels = (0..MAX_LAYOUT_IGNORED_LABELS)
+            .map(|index| format!("i{index}"))
+            .collect();
+        assert!(validate_upload(&ignored).is_ok());
+        ignored.ignored_labels.push("i".into());
+        assert!(validate_upload(&ignored).is_err());
+    }
+
+    #[test]
+    fn label_byte_budgets_are_enforced_without_echoing_the_label() {
+        let mut huge = keys_upload(1);
+        if let Some(keys) = &mut huge.keys {
+            keys[0].label = "x".repeat(MAX_LAYOUT_LABEL_BYTES + 1);
+        }
+        let error = validate_upload(&huge).unwrap_err();
+        assert!(error.contains("label"), "unexpected error: {error}");
+        assert!(!error.contains("xxxx"), "error echoed the oversized label");
+
+        let mut at_limit = keys_upload(1);
+        if let Some(keys) = &mut at_limit.keys {
+            keys[0].label = "x".repeat(MAX_LAYOUT_LABEL_BYTES);
+        }
+        assert!(validate_upload(&at_limit).is_ok());
+
+        // Exactly the aggregate budget, then one byte over it.
+        let mut aggregate = LayoutUpload {
+            keys: Some(Vec::new()),
+            rows: None,
+            ignored_labels: (0..MAX_LAYOUT_IGNORED_LABELS / 2)
+                .map(|_| "x".repeat(MAX_LAYOUT_LABEL_BYTES))
+                .collect(),
+        };
+        assert!(validate_upload(&aggregate).is_ok());
+        aggregate.ignored_labels.push("x".into());
+        assert!(validate_upload(&aggregate).is_err());
+    }
+
+    #[test]
+    fn layout_token_and_build_reject_oversized_uploads() {
+        let oversized = keys_upload(MAX_LAYOUT_KEYS + 1);
+
+        assert!(layout_token(&oversized).is_err());
+        assert!(build_layout(&oversized).is_err());
+    }
+
+    #[test]
+    fn rejected_upload_leaves_the_cache_unchanged() {
+        let upload = keys_upload(1);
+        let mut cache = LayoutCache::new(4);
+        let token = register(&mut cache, &upload).unwrap();
+
+        assert!(register(&mut cache, &keys_upload(MAX_LAYOUT_KEYS + 1)).is_err());
+        assert_eq!(cache.len(), 1);
+        assert!(cache.get(&token).is_some());
     }
 }

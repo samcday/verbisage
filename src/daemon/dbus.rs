@@ -599,8 +599,17 @@ impl VerbisageDbus {
     #[zbus(out_args("result"))]
     async fn register_layout(&self, layout: &str) -> Result<String, FdoError> {
         crate::veprintln!("[dbus-server] RegisterLayout(...)");
+        // Bound the raw string before parsing: a malformed or oversized upload
+        // must not reach serde_json or the registry.
+        if layout.len() > crate::layout::MAX_LAYOUT_UPLOAD_BYTES {
+            return Err(FdoError::InvalidArgs(format!(
+                "layout upload exceeds {} bytes",
+                crate::layout::MAX_LAYOUT_UPLOAD_BYTES
+            )));
+        }
         let upload: crate::layout::LayoutUpload = serde_json::from_str(layout)
             .map_err(|error| FdoError::InvalidArgs(error.to_string()))?;
+        crate::layout::validate_upload(&upload).map_err(FdoError::InvalidArgs)?;
         self.handler.register_layout(&upload).map_err(log_and_err)
     }
 
@@ -900,5 +909,70 @@ mod swipe_tests {
         })
         .await
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    fn empty_service() -> VerbisageDbus {
+        VerbisageDbus::new(DaemonHandler::new(
+            Box::new(crate::dictionary::FileDictionaryBackend::new()),
+            None,
+            None,
+            "en_US".into(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn oversized_layout_upload_is_rejected_before_parsing() {
+        let service = empty_service();
+        // Deliberately invalid JSON: the raw bound must reject it first.
+        let oversized = "?".repeat(crate::layout::MAX_LAYOUT_UPLOAD_BYTES + 1);
+
+        let error = service.register_layout(&oversized).await.unwrap_err();
+        assert!(matches!(error, FdoError::InvalidArgs(_)), "{error}");
+        assert!(error.to_string().contains("exceeds"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn structurally_oversized_layout_upload_is_invalid_args() {
+        let service = empty_service();
+        let upload = serde_json::json!({
+            "keys": (0..crate::layout::MAX_LAYOUT_KEYS + 1)
+                .map(|index| serde_json::json!({
+                    "label": format!("k{index}"),
+                    "left": 0.0,
+                    "top": 0.0,
+                    "width": 1.0,
+                    "height": 1.0,
+                }))
+                .collect::<Vec<_>>(),
+        });
+
+        let error = service
+            .register_layout(&upload.to_string())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, FdoError::InvalidArgs(_)), "{error}");
+        assert!(error.to_string().contains("too many keys"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn valid_layout_registration_still_returns_a_token() {
+        let service = empty_service();
+        let upload = serde_json::json!({
+            "keys": [{
+                "label": "a",
+                "left": 0.0,
+                "top": 0.0,
+                "width": 10.0,
+                "height": 20.0,
+            }],
+        });
+
+        let token = service.register_layout(&upload.to_string()).await.unwrap();
+        assert!(!token.is_empty());
     }
 }

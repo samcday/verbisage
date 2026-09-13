@@ -452,6 +452,9 @@ impl DaemonHandler {
     }
 
     pub fn register_layout(&self, upload: &crate::layout::LayoutUpload) -> Result<String, String> {
+        // Reject before taking the registry lock. `register` validates again
+        // for library callers that reach it directly.
+        crate::layout::validate_upload(upload)?;
         let mut layouts = self
             .layouts
             .lock()
@@ -941,6 +944,36 @@ mod tests {
                 .unwrap_or_default()
                 .contains("unknown layout token")
         );
+    }
+
+    #[test]
+    fn handler_rejects_oversized_layout_uploads() {
+        let handler = DaemonHandler::new(
+            Box::new(FileDictionaryBackend::new()),
+            None,
+            None,
+            "en_US".into(),
+        );
+        let keys: Vec<serde_json::Value> = (0..crate::layout::MAX_LAYOUT_KEYS + 1)
+            .map(|index| {
+                json!({
+                    "label": format!("k{index}"),
+                    "left": 0.0,
+                    "top": 0.0,
+                    "width": 1.0,
+                    "height": 1.0,
+                })
+            })
+            .collect();
+        let response = handler.handle(DaemonRequest {
+            id: Some(1),
+            method: "register_layout".into(),
+            params: json!({ "layout": { "keys": keys } }),
+            lang: None,
+        });
+
+        let error = response.error.expect("oversized upload must be rejected");
+        assert!(error.contains("too many keys"), "unexpected error: {error}");
     }
 
     #[test]
