@@ -144,6 +144,10 @@ pub fn validate_upload(upload: &LayoutUpload) -> Result<(), String> {
 }
 
 /// Build a [`RectKeyLayout`] from an upload.
+///
+/// Uploads describe the keys a client really shows, so labels are mapped
+/// exactly as uploaded: without inferred lower/upper-case variants that would
+/// relocate a symbol onto another key's rectangle.
 pub fn build_layout(upload: &LayoutUpload) -> Result<RectKeyLayout, String> {
     validate_upload(upload)?;
     if let Some(keys) = &upload.keys {
@@ -163,7 +167,7 @@ pub fn build_layout(upload: &LayoutUpload) -> Result<RectKeyLayout, String> {
             ));
         }
         let ignored: Vec<&str> = upload.ignored_labels.iter().map(String::as_str).collect();
-        return Ok(RectKeyLayout::new(rect_keys, &ignored));
+        return Ok(RectKeyLayout::new_exact(rect_keys, &ignored));
     }
 
     if let Some(rows) = &upload.rows {
@@ -173,7 +177,7 @@ pub fn build_layout(upload: &LayoutUpload) -> Result<RectKeyLayout, String> {
                 rows.ignored_labels.push(label.clone());
             }
         }
-        return Ok(rows.to_rect_key_layout(&RowMetrics::default()));
+        return Ok(rows.to_rect_key_layout_exact(&RowMetrics::default()));
     }
 
     Err("layout upload must contain 'keys' or 'rows'".into())
@@ -365,6 +369,69 @@ mod tests {
         };
         let layout = build_layout(&upload).unwrap();
         assert!(layout.location_of("a").is_some());
+    }
+
+    #[test]
+    fn key_uploads_map_exactly_the_labels_they_declare() {
+        // An active-Shift export: the case twins come from different keys, and
+        // an apostrophe is offered only in the period key's long-press menu.
+        let upload = LayoutUpload {
+            keys: Some(vec![
+                KeyBox {
+                    label: "E".into(),
+                    alt_labels: vec!["É".into()],
+                    left: 0.0,
+                    top: 0.0,
+                    width: 10.0,
+                    height: 10.0,
+                },
+                KeyBox {
+                    label: "e".into(),
+                    alt_labels: Vec::new(),
+                    left: 10.0,
+                    top: 0.0,
+                    width: 10.0,
+                    height: 10.0,
+                },
+                KeyBox {
+                    label: ".".into(),
+                    alt_labels: vec!["'".into()],
+                    left: 20.0,
+                    top: 0.0,
+                    width: 10.0,
+                    height: 10.0,
+                },
+            ]),
+            rows: None,
+            ignored_labels: Vec::new(),
+        };
+        let layout = build_layout(&upload).unwrap();
+        let shift_e = layout.location_of("E").unwrap();
+        // Declared labels answer from the keys that declare them.
+        assert_eq!(layout.location_of("É").unwrap(), shift_e);
+        assert_ne!(layout.location_of("e").unwrap(), shift_e);
+        assert!(layout.location_of("'").is_some());
+        // An undeclared case relative is not invented on any rectangle: the
+        // upload, not a case conversion, decides where a symbol lives.
+        assert!(layout.location_of("é").is_none());
+    }
+
+    #[test]
+    fn rows_uploads_map_exactly_the_labels_they_declare() {
+        let upload = LayoutUpload {
+            keys: None,
+            rows: Some(RowLayout::new(vec![Row::new(vec![
+                KeySpec::key("Q"),
+                KeySpec::key("w"),
+            ])])),
+            ignored_labels: Vec::new(),
+        };
+        let layout = build_layout(&upload).unwrap();
+        assert!(layout.location_of("Q").is_some());
+        assert!(layout.location_of("w").is_some());
+        // Neither label gains an inferred case twin.
+        assert!(layout.location_of("q").is_none());
+        assert!(layout.location_of("W").is_none());
     }
 
     #[test]

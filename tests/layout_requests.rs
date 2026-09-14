@@ -289,33 +289,34 @@ fn alternate_labels_anchor_corrections_from_a_typed_accent() {
     );
 }
 
-/// Known limitation, asserted so it stays visible: alternate labels are only
-/// positions. The edit alphabet is built from single-character main labels, so
-/// uploading é as an alternate does not make `cafe -> café` a correction.
-/// Generating accent substitutions is a separate change to the edit source.
+/// Alternate labels are positions and edit-alphabet members alike: a word
+/// typed with a long-press character is corrected from the layout around that
+/// key, and a neighbouring key's alternate can be the correction itself.
 #[test]
-fn alternate_labels_do_not_join_the_edit_alphabet() {
+fn alternate_labels_join_the_edit_alphabet() {
     let dict = dictionary(&[("café", 100.0)]);
     let engine = AndroidCompleter::new(&dict);
+    let alternates = layout_with_alternates(
+        &["qwertyuiop", "asdfghjkl", "zxcvbnm"],
+        &[("e", &["é", "è", "ê"])],
+    );
     let results = engine
         .complete_with(
             &CompletionInput {
                 input: "cafe",
                 input_prep: keyboard_prep(),
                 context_prep: keyboard_prep(),
-                spatial: SpatialInput::Layout(layout_with_alternates(
-                    &["qwertyuiop", "asdfghjkl", "zxcvbnm"],
-                    &[("e", &["é", "è", "ê"])],
-                )),
+                spatial: SpatialInput::Layout(alternates),
                 ..Default::default()
             },
             6,
         )
         .unwrap();
 
-    assert!(
-        !words(&results).contains(&"café"),
-        "documented limitation changed; update CONTEXTUAL-API.md too: {results:?}"
+    assert_eq!(
+        words(&results)[0],
+        "café",
+        "the declared alternate generates the accent correction: {results:?}"
     );
 }
 

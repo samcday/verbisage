@@ -90,9 +90,9 @@ corrections below unrelated neighbouring keys.
 Two consequences worth knowing. A dropped repeated letter and a slip onto a
 neighbouring key are both cheap and comparable, so the language model decides
 between them; a slip onto a distant key is not, and loses even to a likelier
-word. And alternate labels are positions only: they let a correction start from
-a typed long-press accent, but the edit alphabet comes from single-character
-main labels, so an alternate does not generate an accent correction.
+word. And alternate labels are edit-alphabet members, not just positions: they
+let a correction start from a typed long-press accent, and a long-press
+character on a neighbouring key can be the correction itself.
 
 An upload carries either explicit key rectangles (`keys`: label, alt labels,
 left/top/width/height) for touch layouts, or `rows` (the shared `RowLayout`

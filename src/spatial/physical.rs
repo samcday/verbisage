@@ -87,29 +87,30 @@ impl EditSource for PhysicalEdits<'_> {
     }
 }
 
-/// Collect the single-character main labels of a layout after applying the
+/// Collect the single-character labels of a layout after applying the
 /// caller's label preparation.
 ///
-/// Generated edits are compared against prepared candidate spellings, so a
-/// layout authored in its own spelling (an active Shift layer carries `Q`, not
-/// `q`) must be prepared the same way as the input. A label that does not
-/// prepare to exactly one character is skipped, which is the same rule the
-/// unprepared collector applies to multi-character labels.
+/// Main and alternate labels are both sources of typed characters: a layout
+/// may offer a character nowhere but in a long-press menu (an apostrophe that
+/// only hangs off the period key, say), and correcting a tap against that
+/// character needs its key. Generated edits are compared against prepared
+/// candidate spellings, so a layout authored in its own spelling (an active
+/// Shift layer carries `Q`, not `q`) must be prepared the same way as the
+/// input. A label that does not prepare to exactly one character is skipped.
 pub(super) fn single_char_labels_with(
     layout: &RectKeyLayout,
     prepare: &dyn Fn(&str) -> String,
 ) -> Vec<char> {
     let mut letters = Vec::new();
     for key in layout.iter() {
-        let Some(label) = key.main_label() else {
-            continue;
-        };
-        let prepared = prepare(label);
-        let mut chars = prepared.chars();
-        if let (Some(ch), None) = (chars.next(), chars.next())
-            && !letters.contains(&ch)
-        {
-            letters.push(ch);
+        for label in key.all_labels() {
+            let prepared = prepare(label);
+            let mut chars = prepared.chars();
+            if let (Some(ch), None) = (chars.next(), chars.next())
+                && !letters.contains(&ch)
+            {
+                letters.push(ch);
+            }
         }
     }
     letters
@@ -143,5 +144,46 @@ mod tests {
             "a distant key must still be offered but rank below a nearby one"
         );
         assert!(weights[&'w'] > weights[&'e']);
+    }
+
+    #[test]
+    fn alternate_labels_are_tap_candidates_and_multichar_labels_are_not() {
+        // The apostrophe hangs only off the period key's long-press menu, yet
+        // a slip against it still gets a correction anchored at that key.
+        let keys = vec![
+            RectKey::from_rect(Some("a".into()), vec![], 0.0, 0.0, 10.0, 10.0),
+            RectKey::from_rect(Some("s".into()), vec![], 10.0, 0.0, 10.0, 10.0),
+            RectKey::from_rect(
+                Some(".".into()),
+                vec!["'".into()],
+                20.0,
+                0.0,
+                10.0,
+                10.0,
+            ),
+        ];
+        let layout = RectKeyLayout::new_exact(keys, &[]);
+        let edits = PhysicalEdits::new(&layout);
+        assert!(
+            edits.letters().contains(&'\''),
+            "an alternate-only label is still typed: {:?}",
+            edits.letters()
+        );
+        let weights: std::collections::HashMap<char, f64> =
+            edits.substitutions('a', Some(0)).into_iter().collect();
+        assert!(
+            weights.contains_key(&'\''),
+            "the alternate edits like a main label, from its own key: {weights:?}"
+        );
+
+        // A label that does not prepare to exactly one character contributes
+        // nothing, mains and alternates alike.
+        let keys = vec![
+            RectKey::from_rect(Some("ab".into()), vec![], 0.0, 0.0, 10.0, 10.0),
+            RectKey::from_rect(Some("c".into()), vec!["de".into()], 10.0, 0.0, 10.0, 10.0),
+        ];
+        let layout = RectKeyLayout::new_exact(keys, &[]);
+        let edits = PhysicalEdits::new(&layout);
+        assert_eq!(edits.letters(), ['c']);
     }
 }
