@@ -11,16 +11,20 @@ completer serializer. It is not a handcrafted 26-key approximation.
 - Coordinates: real widget rectangles; each key 36x50 on a 36-unit pitch
 - Period key: main label `.` with an apostrophe among its long-press
   alternates, exactly as the exporter emitted it
-- Frozen source copy:
-  `../claude/exported-us-fixture-20260914/layout-us-normal.json`
-- Source provenance manifest:
-  `../claude/exported-us-fixture-20260914/provenance.json`
-- Generation evidence:
-  `../claude/zcode-round-05/20260914T014723.612515Z-coordinator-export-us-fixture`
-- Generator source commit: pending (Stevia round 06); the generating tree was
-  dirty and is captured in the generation evidence manifest. The final client
-  source reference is pending, so the fixture hash and this provenance are the
-  stable identity recorded here.
+- Published client revision:
+  [`8f8b6bdc649b520cfa4210dc9c22e0af7b76039a`](https://github.com/samcday/stevia/commit/8f8b6bdc649b520cfa4210dc9c22e0af7b76039a)
+- [Identical client fixture](https://github.com/samcday/stevia/blob/8f8b6bdc649b520cfa4210dc9c22e0af7b76039a/tests/fixtures/layout-us-normal.json)
+- [Widget exporter](https://github.com/samcday/stevia/blob/8f8b6bdc649b520cfa4210dc9c22e0af7b76039a/tests/export-layout-fixture.c)
+  and [private compositor runner](https://github.com/samcday/stevia/blob/8f8b6bdc649b520cfa4210dc9c22e0af7b76039a/tests/native/export-layout-fixture.py)
+- [Generation instructions](https://github.com/samcday/stevia/blob/8f8b6bdc649b520cfa4210dc9c22e0af7b76039a/tests/fixtures/README.md)
+
+Check out that client revision, build Stevia and follow its generation
+instructions, then compare the generated file with this fixture using
+`sha256sum` or `cmp`. Both committed copies have the SHA256 above. The initial
+export was generated before the client commits and subsequently reproduced
+byte-for-byte. The coordinator's original command logs and dirty-tree manifest
+are local artifacts, unavailable from this checkout; the public source,
+fixture and regeneration instructions above are the inspectable references.
 
 The tests parse this file into `verbisage::layout::LayoutUpload`, register it
 through the real service, and score real dictionary words against its
