@@ -457,24 +457,27 @@ mod tests {
         // invalid fixture that also disrupts traversal of this valid word.
         let (_temp, backend) = swipe_fixture(&words);
         let vocabulary = crate::swipe::SwipeVocabulary::from_labels(
-            &["a", "c", "o", "r", "s", "t", "u", "n"],
+            &[
+                "a", "c", "o", "r", "s", "t", "u", "n", "A", "C", "O", "R", "S", "T", "U", "N",
+            ],
             &[],
         );
         let results = backend
             .swipe_candidates(
                 &vocabulary,
-                &["c".into()],
-                &["t".into(), "s".into()],
+                &["c".into(), "C".into()],
+                &["t".into(), "s".into(), "T".into(), "S".into()],
                 Instant::now() + Duration::from_secs(5),
             )
             .unwrap();
         // Every stored spelling with a complete path is its own candidate, in
-        // its stored form; the capital entry is not folded into the lowercase one.
+        // its stored form: the capital entry scores under its declared labels
+        // and is not folded into the lowercase one.
         assert_eq!(
             results.iter().map(|r| r.word.as_str()).collect::<Vec<_>>(),
             vec!["CAT", "cart", "cots", "cuts", "cat", longest.as_str()]
         );
-        assert_eq!(results[0].scoring, "cat");
+        assert_eq!(results[0].scoring, "CAT");
         assert_eq!(results[0].confidence, 200.0 / 255.0);
         assert_eq!(
             results.len(),
@@ -484,6 +487,28 @@ mod tests {
                 .collect::<std::collections::BTreeSet<_>>()
                 .len()
         );
+
+        // With only the lowercase labels declared, the capital entry is an
+        // undeclared case relative: it has no complete path and no scoring
+        // form, so it is not offered under the lowercase spelling either.
+        let lowercase = crate::swipe::SwipeVocabulary::from_labels(
+            &["a", "c", "o", "r", "s", "t", "u", "n"],
+            &[],
+        );
+        let results = backend
+            .swipe_candidates(
+                &lowercase,
+                &["c".into()],
+                &["t".into(), "s".into()],
+                Instant::now() + Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(
+            results.iter().map(|r| r.word.as_str()).collect::<Vec<_>>(),
+            vec!["cart", "cots", "cuts", "cat", longest.as_str()]
+        );
+        // What remains scores under its own spelling, never a fold of it.
+        assert!(results.iter().all(|r| r.scoring == r.word));
     }
 
     #[cfg(feature = "swipe")]

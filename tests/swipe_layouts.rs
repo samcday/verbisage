@@ -383,8 +383,39 @@ fn accents_are_recognized_first_interior_and_last_through_alternates() {
     }
 }
 
+/// A Shift export that still recognizes unshifted entries: every key shows
+/// its capital glyph as the main label with the unshifted twin beside it as
+/// an alternate, exactly as such a layer is really drawn.
+fn shift_layer(upload: &LayoutUpload) -> LayoutUpload {
+    let keys = upload
+        .keys
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|key| KeyBox {
+            label: key.label.to_uppercase(),
+            alt_labels: {
+                let mut alts: Vec<String> = key
+                    .alt_labels
+                    .iter()
+                    .map(|alt| alt.to_uppercase())
+                    .collect();
+                alts.push(key.label.clone());
+                alts.extend(key.alt_labels.iter().cloned());
+                alts
+            },
+            ..key.clone()
+        })
+        .collect();
+    LayoutUpload {
+        keys: Some(keys),
+        rows: None,
+        ignored_labels: upload.ignored_labels.clone(),
+    }
+}
+
 #[test]
-fn dedicated_accent_keys_shift_layers_and_stored_capitals_match_canonically() {
+fn dedicated_accent_keys_and_shift_layers_recognize_exactly_their_declared_labels() {
     let (_temp, service) = Service::patricia(
         &[
             ("été", 200),
@@ -397,7 +428,7 @@ fn dedicated_accent_keys_shift_layers_and_stored_capitals_match_canonically() {
         "fr",
     );
     // A layout with its own accent keys, like the bottom row of an AZERTY
-    // number layer.
+    // number layer, recognizes the accented word from those keys.
     let azerty: &[Row<'_>] = &[
         &[
             ("a", &[]),
@@ -431,9 +462,11 @@ fn dedicated_accent_keys_shift_layers_and_stored_capitals_match_canonically() {
         .unwrap();
     assert_eq!(words(&results).first(), Some(&"été"), "{results:?}");
 
-    // An active Shift layer registers capital labels; lowercase entries still
-    // match, and a capitalized entry is returned as stored.
-    let shifted = uppercase(&qwerty(&[("e", &["é"])], 1.0, (0.0, 0.0)));
+    // A Shift layer with both cases on every key: the capitalized entry is
+    // returned as stored, and the lowercase entries still match through the
+    // declared twins. Each stored spelling with a complete path is its own
+    // candidate, the likelier one first.
+    let shifted = shift_layer(&qwerty(&[("e", &["é"])], 1.0, (0.0, 0.0)));
     let shift_token = service.register(&shifted);
     let results = service
         .recognize(
@@ -454,8 +487,20 @@ fn dedicated_accent_keys_shift_layers_and_stored_capitals_match_canonically() {
         .unwrap();
     assert_eq!(words(&results).first(), Some(&"Paris"), "{results:?}");
     assert!(
-        !words(&results).contains(&"paris"),
-        "one result per scoring form, the likelier stored spelling: {results:?}"
+        words(&results).contains(&"paris"),
+        "both declared cases score as their own spellings: {results:?}"
+    );
+
+    // A capitals-only export declares no lowercase: a lowercase entry has no
+    // complete path and is not invented onto the capital keys.
+    let caps = uppercase(&qwerty(&[], 1.0, (0.0, 0.0)));
+    let upper_only = service.register(&caps);
+    let results = service
+        .recognize(trace(&caps, &["C", "A", "F", "E"]), &upper_only, 6, "fr")
+        .unwrap();
+    assert!(
+        results.is_empty(),
+        "undeclared case relatives are refused: {results:?}"
     );
 }
 

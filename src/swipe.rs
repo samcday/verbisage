@@ -26,12 +26,15 @@ const SEARCH_BUDGET: Duration = Duration::from_millis(500);
 pub type TracePoint = (f64, f64, u32);
 
 /// The one form in which layout labels and dictionary words are compared:
-/// NFC, then Unicode lowercase. Applied to both sides, so a decomposed label
-/// meets a composed word, an active Shift layer's capitals meet lowercase
-/// entries, and a capitalized entry still matches while keeping its spelling.
-/// No accent is stripped and no full case folding expands letters.
+/// NFC. Applied to both sides, so a decomposed label meets a composed word.
+/// Case is kept: which case variant sits on which key is the layout's own
+/// business, and Unicode lowercasing does not identify the same physical key
+/// (a Greek Σ lowercases to σ although the layout emits them from different
+/// keys). A client that wants both cases recognized uploads both, as the
+/// keyboard exports them. No accent is stripped and no full case folding
+/// expands letters.
 pub fn canonical(text: &str) -> String {
-    text.nfc().collect::<String>().to_lowercase()
+    text.nfc().collect::<String>()
 }
 
 /// The graphemes a registered layout can gesture, in canonical form, and the
@@ -553,21 +556,29 @@ mod tests {
     }
 
     #[test]
-    fn canonical_form_composes_and_lowercases_without_stripping_accents() {
-        assert_eq!(canonical("E\u{301}COLE"), "école");
-        assert_eq!(canonical("Straße"), "straße");
-        assert_eq!(canonical("ΟΔΟΣ"), "οδος");
+    fn canonical_form_composes_without_changing_case_or_stripping_accents() {
+        assert_eq!(canonical("E\u{301}COLE"), "ÉCOLE");
+        assert_eq!(canonical("cafe\u{301}"), "café");
+        assert_eq!(canonical("Straße"), "Straße");
+        assert_eq!(canonical("ΟΔΟΣ"), "ΟΔΟΣ");
+        // Case variants stay distinct: which key emits which is the layout's
+        // own business, and Unicode lowercasing would merge different keys.
+        assert_ne!(canonical("Σ"), canonical("σ"));
+        assert_ne!(canonical("É"), canonical("é"));
     }
 
     #[test]
     fn vocabulary_refuses_unmapped_graphemes_and_keeps_ignored_ones_optional() {
-        let vocabulary = SwipeVocabulary::from_labels(&["c", "a", "f", "e", "É"], &["'"]);
+        let vocabulary = SwipeVocabulary::from_labels(&["c", "a", "f", "e", "é"], &["'"]);
         assert_eq!(vocabulary.scoring_form("café").as_deref(), Some("café"));
         assert_eq!(
             vocabulary.scoring_form("cafe\u{301}").as_deref(),
             Some("café")
         );
-        assert_eq!(vocabulary.scoring_form("CAFE").as_deref(), Some("cafe"));
+        // Case is not inferred: relatives the layout never declared are
+        // refused even though their lowercase twins can gesture.
+        assert!(vocabulary.scoring_form("CAFE").is_none());
+        assert!(vocabulary.scoring_form("cafÉ").is_none());
         assert_eq!(vocabulary.scoring_form("caf'e").as_deref(), Some("caf'e"));
         assert!(
             vocabulary.scoring_form("cafés").is_none(),
@@ -616,12 +627,17 @@ mod tests {
             ignored_labels: vec!["'".into()],
         };
         let vocabulary = SwipeVocabulary::of(&build_layout(&upload).unwrap());
-        assert!(vocabulary.is_mapped("e"));
+        // Every label the keys carry is gesturable exactly as uploaded.
+        assert!(vocabulary.is_mapped("E"));
+        assert!(vocabulary.is_mapped("É"));
         assert!(vocabulary.is_mapped("é"));
         assert!(vocabulary.is_mapped("m"));
         assert!(!vocabulary.is_mapped("'"));
-        assert_eq!(vocabulary.scoring_form("m'e").as_deref(), Some("m'e"));
-        assert_eq!(vocabulary.mapped_count(), 3);
+        // The upload declares no standalone lowercase `e`, and none is
+        // invented from the labels it does carry.
+        assert!(!vocabulary.is_mapped("e"));
+        assert_eq!(vocabulary.scoring_form("m'É").as_deref(), Some("m'É"));
+        assert_eq!(vocabulary.mapped_count(), 4);
     }
 
     #[test]

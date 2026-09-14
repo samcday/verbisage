@@ -127,10 +127,13 @@ nondecreasing timestamps of at most 10 s, finite coordinates and real motion
 both before and after normalization; stationary or collapsed traces are
 rejected, as is a layout with fewer than two gesturable labels. Main and
 alternate labels both locate a word's graphemes, compared with dictionary
-words in one canonical form on both sides: NFC, then Unicode lowercase. An
-active Shift layer's capitals and a decomposed `e` + combining acute therefore
-both meet a dictionary's `é`. Results carry the stored spelling, one per
-distinct scoring form, preferring the likelier stored spelling. A word is
+words in one canonical form on both sides: NFC, with the case kept. Which
+case variant sits on which key is the layout's own business — Unicode
+lowercasing does not identify the same physical key — so a client that wants
+both cases recognized uploads both, as the keyboard exports them; a
+decomposed `e` + combining acute still meets a dictionary's `é`. Results carry
+the stored spelling, one per distinct scoring form, preferring the likelier
+stored spelling. A word is
 offered only when every grapheme is on the layout or among its ignored
 labels, so an incomplete path is never scored; ignored labels are skipped in
 paths but never count as missing, and words containing labels the layout
