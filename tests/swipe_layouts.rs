@@ -26,6 +26,28 @@ const INVALID_ARGS: &str = "org.freedesktop.DBus.Error.InvalidArgs";
 type Trace = Vec<(f64, f64, u32)>;
 type Row<'a> = &'a [(&'a str, &'a [&'a str])];
 
+/// The frozen real Stevia US normal-layer export, copied unchanged. See
+/// `tests/fixtures/README.md` for its identity and generation provenance.
+const EXPORTED_US_NORMAL: &str = include_str!("fixtures/layout-us-normal.json");
+
+/// The frozen export exactly as the client generated it: real widget
+/// rectangles and the exporter's long-press labels (the period key carries an
+/// apostrophe).
+fn exported_us_normal() -> LayoutUpload {
+    serde_json::from_str(EXPORTED_US_NORMAL).expect("frozen Stevia US normal-layer export")
+}
+
+/// The same export with the apostrophe removed from the period key's
+/// long-press menu. Every other label and rectangle is untouched, so the only
+/// difference is that an apostrophe now has no key at all.
+fn exported_us_normal_without_apostrophe() -> LayoutUpload {
+    let mut upload = exported_us_normal();
+    for key in upload.keys.as_mut().expect("keys") {
+        key.alt_labels.retain(|label| label != "'");
+    }
+    upload
+}
+
 fn dictionary(dir: &Path, tag: &str, words: &[(&str, u8)]) -> PathBuf {
     let path = dir.join(format!("{tag}.dict"));
     let mut dict = patricia_dict::Dictionary::create_empty_v403(&path, tag).unwrap();
@@ -931,6 +953,71 @@ fn full_language_routing_is_unchanged_for_swipes() {
     assert!(
         invalid.message.contains("invalid language tag"),
         "{invalid}"
+    );
+}
+
+/// A gesture over the real exported US normal layer: through the period key's
+/// centre and on to `t` returns the apostrophe word, exactly as stored. The
+/// intent is that the punctuation is the period key's apostrophe alternate,
+/// not a synthetic approximation of it.
+#[test]
+fn exported_us_normal_swipe_traces_the_period_apostrophe_alternative() {
+    let (_temp, service) = Service::patricia(&[("don't", 220), ("dont", 70), ("dot", 90)], "en_US");
+    let upload = exported_us_normal();
+    let token = service.register(&upload);
+
+    // d -> o -> n -> period -> t: the same key rectangles the client exported.
+    let results = service
+        .recognize(
+            trace(&upload, &["d", "o", "n", ".", "t"]),
+            &token,
+            6,
+            "en_US",
+        )
+        .unwrap();
+    assert_eq!(
+        results.first().map(|(word, _)| word.as_str()),
+        Some("don't"),
+        "the intended word is first, in its stored spelling: {results:?}"
+    );
+    assert!(
+        results
+            .iter()
+            .all(|(word, score)| !word.is_empty() && score.is_finite()),
+        "{results:?}"
+    );
+
+    // Control: the same rectangles and trace with the apostrophe removed from
+    // the period key's long-press menu. The apostrophe word now needs an
+    // unmapped grapheme, so the explicit punctuation trace is what reached it
+    // above. The layout is otherwise intact: the apostrophe-free entry still
+    // recognizes over its own path.
+    let plain = exported_us_normal_without_apostrophe();
+    let plain_token = service.register(&plain);
+    let results = service
+        .recognize(
+            trace(&plain, &["d", "o", "n", ".", "t"]),
+            &plain_token,
+            6,
+            "en_US",
+        )
+        .unwrap();
+    assert!(
+        !words(&results).contains(&"don't"),
+        "without an apostrophe key the word has no complete path: {results:?}"
+    );
+    let results = service
+        .recognize(
+            trace(&plain, &["d", "o", "n", "t"]),
+            &plain_token,
+            6,
+            "en_US",
+        )
+        .unwrap();
+    assert_eq!(
+        words(&results).first(),
+        Some(&"dont"),
+        "the control layout still recognizes its own words: {results:?}"
     );
 }
 

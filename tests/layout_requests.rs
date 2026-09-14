@@ -12,6 +12,7 @@ use verbisage::completion::{
     AndroidCompleter, CompletionCandidate, CompletionEngine, CompletionInput,
 };
 use verbisage::dictionary::FileDictionaryBackend;
+use verbisage::layout::{LayoutUpload, build_layout};
 use verbisage::prediction::{Prediction, Predictor};
 use verbisage::spatial::SpatialInput;
 use verbisage::text::{CaseFold, Normalization, TextPrep};
@@ -52,6 +53,26 @@ fn qwerty_lower() -> Arc<RectKeyLayout> {
 
 fn qwerty_upper() -> Arc<RectKeyLayout> {
     layout_from(&["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"])
+}
+
+/// The frozen real Stevia US normal-layer export, copied unchanged. See
+/// `tests/fixtures/README.md` for its identity and generation provenance.
+const EXPORTED_US_NORMAL: &str = include_str!("fixtures/layout-us-normal.json");
+
+fn exported_us_normal() -> Arc<RectKeyLayout> {
+    let upload: LayoutUpload =
+        serde_json::from_str(EXPORTED_US_NORMAL).expect("frozen Stevia US normal-layer export");
+    Arc::new(build_layout(&upload).expect("build exported US normal layer"))
+}
+
+/// The same export with the apostrophe removed from the period key's
+/// long-press menu, so an apostrophe has no key at all.
+fn exported_us_normal_without_apostrophe() -> Arc<RectKeyLayout> {
+    let mut upload: LayoutUpload = serde_json::from_str(EXPORTED_US_NORMAL).expect("fixture");
+    for key in upload.keys.as_mut().expect("keys") {
+        key.alt_labels.retain(|label| label != "'");
+    }
+    Arc::new(build_layout(&upload).expect("build control layer"))
 }
 
 /// What the Stevia completer sends on every request.
@@ -453,4 +474,84 @@ fn a_non_latin_layout_corrects_within_its_own_alphabet() {
         .unwrap();
 
     assert_eq!(words(&results)[0], "привет", "{results:?}");
+}
+
+/// The real exported US normal layer places an apostrophe only on the period
+/// key's long-press menu. Spatial correction resolves both the explicit
+/// punctuation slip (`don.t`, a substitution on that key) and the missing
+/// apostrophe (`dont`, an omission the same key supplies) to the stored
+/// spelling. The two are distinct edits, so they are asserted separately.
+#[test]
+fn exported_us_normal_corrects_the_period_key_apostrophe_alternative() {
+    let dict = dictionary(&[("don't", 220.0)]);
+    let engine = AndroidCompleter::new(&dict);
+    let request = |input: &str| {
+        engine
+            .complete_with(
+                &CompletionInput {
+                    input,
+                    input_prep: keyboard_prep(),
+                    context_prep: keyboard_prep(),
+                    spatial: SpatialInput::Layout(exported_us_normal()),
+                    ..Default::default()
+                },
+                6,
+            )
+            .unwrap()
+    };
+
+    // The tap landed on the period key's apostrophe alternate.
+    let dotted = request("don.t");
+    assert_eq!(
+        words(&dotted).first(),
+        Some(&"don't"),
+        "the period slip corrects through the apostrophe alternate: {dotted:?}"
+    );
+
+    // A different case: the apostrophe is simply missing, not mistyped.
+    let missing = request("dont");
+    assert_eq!(
+        words(&missing).first(),
+        Some(&"don't"),
+        "the omission is supplied by the period key's alternate: {missing:?}"
+    );
+}
+
+/// Control: with the apostrophe removed from the period key, neither input can
+/// reach the apostrophe spelling through this geometry. The layout is
+/// otherwise intact and still corrects ordinary slips against its own keys, so
+/// the control isolates the punctuation mapping rather than a broken layout.
+#[test]
+fn exported_us_normal_without_the_apostrophe_mapping_cannot_correct_to_it() {
+    let dict = dictionary(&[("don't", 220.0), ("dot", 90.0)]);
+    let engine = AndroidCompleter::new(&dict);
+    let request = |input: &str| {
+        engine
+            .complete_with(
+                &CompletionInput {
+                    input,
+                    input_prep: keyboard_prep(),
+                    context_prep: keyboard_prep(),
+                    spatial: SpatialInput::Layout(exported_us_normal_without_apostrophe()),
+                    ..Default::default()
+                },
+                6,
+            )
+            .unwrap()
+    };
+
+    for input in ["don.t", "dont"] {
+        let results = request(input);
+        assert!(
+            !words(&results).contains(&"don't"),
+            "no apostrophe key means no apostrophe correction from {input:?}: {results:?}"
+        );
+    }
+    // The control geometry still prices an ordinary neighbour slip against its
+    // own keys, so removing the apostrophe did not disable correction itself.
+    let ordinary = request("dgt");
+    assert!(
+        words(&ordinary).contains(&"dot"),
+        "the control layout still corrects its own slips: {ordinary:?}"
+    );
 }
